@@ -44,6 +44,7 @@ jobs:
         shell: pwsh
         run: |
           pnpm install --frozen-lockfile
+          pnpm --filter @salary/shared build
           pnpm db:up
           pnpm db:wait
 
