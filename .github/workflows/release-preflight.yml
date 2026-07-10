@@ -15,17 +15,19 @@ jobs:
       SYNC_AUTO_EXECUTION_ENABLED: 'false'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+          run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
-
-      - name: Enable pnpm
-        shell: powershell
-        run: corepack enable pnpm
 
       - name: Prepare local environment
         shell: powershell
@@ -45,7 +47,7 @@ jobs:
 
       - name: Upload release evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-evidence
           path: tmp/release-evidence
