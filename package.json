@@ -16,6 +16,7 @@
     "release:check": "tsx scripts/release-check.ts",
     "release:migration-status": "tsx scripts/release-evidence.ts migration-status",
     "release:audit-export-smoke": "tsx scripts/release-evidence.ts audit-export-smoke",
+    "release:ci-fixture": "tsx scripts/ci-release-fixture.ts",
     "release:preflight": "tsx scripts/release-evidence.ts preflight",
     "release:report": "tsx scripts/release-evidence.ts report",
     "db:up": "docker compose up -d postgres",

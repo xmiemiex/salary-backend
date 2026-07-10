@@ -2,6 +2,12 @@
 
 This directory contains the human approval and production operations documents for gated releases.
 
+## GitHub Actions Fixture Boundary
+
+The `release-preflight` GitHub Actions workflow uses synthetic, explicitly marked fixtures in an ephemeral CI database so that the code path and release-gate chain can be exercised from a clean checkout. Every such artifact includes `ci-fixture-context.json` and `CI-FIXTURE-NOTICE.md` with `fixtureOnly: true` and `productionEvidence: false`.
+
+CI fixture artifacts are not evidence of a production backup, production restore drill, production database state, or production readiness. Release approval still requires separate environment-specific evidence from the intended deployment environment.
+
 ## Recommended Reading Order
 
 1. `release-candidate.md` - verify the frozen commit/tag and the commit-bound CI artifact before approval.

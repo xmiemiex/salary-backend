@@ -212,6 +212,7 @@ function writeReleaseReport(): CommandEvidence {
   const env = readJson(resolve(evidenceDir, 'env-check.json'));
   const e2e = readJson(resolve(evidenceDir, 'e2e-permissions.json'));
   const audit = readJson(resolve(evidenceDir, 'audit-export-smoke.json'));
+  const ciFixture = readJson(resolve(evidenceDir, 'ci-fixture-context.json'));
   const releaseGate = runCommand(pnpm, ['run', 'release:check', '--', '--json']);
   const releaseGateJson = extractJson(releaseGate.stdout);
   if (releaseGateJson) writeJson(resolve(evidenceDir, 'release-gate.json'), releaseGateJson);
@@ -229,6 +230,14 @@ function writeReleaseReport(): CommandEvidence {
     `Current commit releasable: ${status === 'pass' && requiredFailures.length === 0 ? 'yes' : 'no'}`,
     `Manual approval needed: yes`,
     '',
+    ...(ciFixture?.fixtureOnly === true ? [
+      '## CI Fixture Boundary',
+      '- Fixture only: yes',
+      '- Production evidence: no',
+      '- This run proves only that code and the release-gate chain executed against synthetic records in an ephemeral CI database.',
+      '- It is not evidence of a production backup, restore drill, production database state, or production readiness.',
+      '',
+    ] : []),
     '## Artifacts',
     `- Release evidence: ${relativeArtifactPath('release-evidence.json')}`,
     `- Release gate JSON: ${relativeArtifactPath('release-gate.json')}`,
@@ -236,6 +245,7 @@ function writeReleaseReport(): CommandEvidence {
     `- Env check: ${relativeArtifactPath('env-check.json')}`,
     `- E2E permissions: ${relativeArtifactPath('e2e-permissions.json')}`,
     `- Audit export smoke: ${relativeArtifactPath('audit-export-smoke.json')}`,
+    ...(ciFixture?.fixtureOnly === true ? [`- CI fixture context: ${relativeArtifactPath('ci-fixture-context.json')}`] : []),
     '',
     '## Summary',
     `- Preflight status: ${releaseEvidence?.status ?? 'missing'}`,
@@ -260,7 +270,13 @@ function writeReleaseReport(): CommandEvidence {
     finishedAt: new Date().toISOString(),
     status,
     exitCode: status === 'pass' ? 0 : 1,
-    summary: { warnings, requiredFailures, reportPath: relativeArtifactPath('release-evidence.md') },
+    summary: {
+      warnings,
+      requiredFailures,
+      reportPath: relativeArtifactPath('release-evidence.md'),
+      fixtureOnly: ciFixture?.fixtureOnly === true,
+      productionEvidence: ciFixture?.productionEvidence === true,
+    },
   };
   writeJson(resolve(evidenceDir, 'release-report.json'), evidence);
   console.log(`Release report: ${resolve(evidenceDir, 'release-evidence.md')}`);

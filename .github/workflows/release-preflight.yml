@@ -47,6 +47,14 @@ jobs:
           pnpm --filter @salary/shared build
           pnpm db:up
           pnpm db:wait
+          pnpm db:migrate
+          pnpm db:seed
+
+      - name: Prepare explicit CI-only release fixture
+        shell: pwsh
+        env:
+          CI_RELEASE_FIXTURE_ENABLED: 'true'
+        run: pnpm release:ci-fixture
 
       - name: Release preflight
         shell: pwsh
