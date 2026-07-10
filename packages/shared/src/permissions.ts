@@ -1,0 +1,52 @@
+export const PERMISSIONS = [
+  'api_config.manage',
+  'employee.manage',
+  'sub_id_mapping.manage',
+  'card_binding.manage',
+  'income.import',
+  'manual_card_spend.manage',
+  'card_provider_fee_rate.manage',
+  'monthly_exchange_rate.manage',
+  'historical_negative_profit.manage',
+  'performance_group.manage',
+  'salary_item_config.manage',
+  'salary_manual_item.manage',
+  'settlement.generate',
+  'settlement.recalculate',
+  'settlement.lock',
+  'settlement.unlock',
+  'salary.view_self',
+  'salary.view_all',
+  'salary.export',
+  'audit_log.view',
+  'audit_log.export',
+  'role.manage',
+  'role.read',
+  'user.manage',
+  'admin_users.read',
+  'admin_users.manage',
+  'system_health.read',
+  'notifications.read',
+  'notifications.manage',
+  'alerts.read',
+  'alerts.manage',
+  'backup_status.read',
+  'backup_status.manage',
+  'restore_drill.read',
+  'restore_drill.manage',
+  'release_gate.read',
+  'release_gate.run',
+] as const;
+
+export type PermissionCode = (typeof PERMISSIONS)[number];
+
+export const ROLE_CODES = [
+  'super_admin',
+  'finance_manager',
+  'finance',
+  'operations_manager',
+  'employee',
+  'audit_viewer',
+] as const;
+
+export type RoleCode = (typeof ROLE_CODES)[number];

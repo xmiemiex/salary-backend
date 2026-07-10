@@ -1,0 +1,44 @@
+{
+  "name": "salary-settlement-admin",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.32.1",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "test": "pnpm -r --if-present run test",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "env:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-environment.ps1",
+    "e2e:permissions": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-permissions.ps1",
+    "release:check": "tsx scripts/release-check.ts",
+    "release:migration-status": "tsx scripts/release-evidence.ts migration-status",
+    "release:audit-export-smoke": "tsx scripts/release-evidence.ts audit-export-smoke",
+    "release:preflight": "tsx scripts/release-evidence.ts preflight",
+    "release:report": "tsx scripts/release-evidence.ts report",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:status": "docker compose ps postgres",
+    "db:wait": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wait-for-db.ps1",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "prisma:validate": "prisma validate",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "admin:create": "tsx scripts/admin-create.ts",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

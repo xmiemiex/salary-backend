@@ -1,0 +1,782 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CommonStatus {
+  draft
+  confirmed
+  locked
+  active
+  disabled
+}
+
+enum SettlementStatus {
+  draft
+  confirmed
+  locked
+}
+
+enum AttendanceStatus {
+  full_attendance
+  sick_leave
+  personal_leave
+  absent
+  other
+}
+
+enum SalaryItemType {
+  addition
+  deduction
+}
+
+enum SalaryMode {
+  single
+  group
+}
+
+enum Provider {
+  airwallex
+  photonpay
+}
+
+enum AuditResult {
+  success
+  failure
+}
+
+enum SyncTaskSourceType {
+  affiliate_income
+  card_spend
+}
+
+enum SyncTaskType {
+  affiliate_income
+  airwallex_card
+  photonpay_card
+}
+
+enum SyncTaskPlatform {
+  everflow
+  cake
+  airwallex
+  photonpay
+}
+
+enum SyncTaskStatus {
+  not_implemented
+  pending
+  retry_wait
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum SyncExecutionErrorCategory {
+  NETWORK_ERROR
+  TIMEOUT
+  RATE_LIMITED
+  PROVIDER_5XX
+  TEMPORARY_DATABASE_ERROR
+  CREDENTIAL_MISSING
+  CREDENTIAL_INVALID
+  MONTH_LOCKED
+  UNSUPPORTED_PLATFORM
+  UNSUPPORTED_PROVIDER
+  INVALID_CONFIGURATION
+  VALIDATION_ERROR
+  PERMISSION_ERROR
+  BUSINESS_REJECTED
+}
+
+enum SyncTaskTriggerType {
+  manual
+  scheduled
+}
+
+enum SyncPlanningRunStatus {
+  running
+  succeeded
+  failed
+}
+
+enum SyncUnmatchedEventStatus {
+  open
+  ignored
+  resolved
+}
+
+enum AlertSeverity {
+  info
+  warning
+  critical
+}
+
+enum AlertStatus {
+  active
+  resolved
+  silenced
+}
+
+enum BackupStatus {
+  running
+  succeeded
+  failed
+  expired
+  unknown
+}
+
+enum BackupType {
+  full
+  partial
+  schema_only
+  audit_only
+}
+
+enum RestoreDrillStatus {
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+model BackupRecord {
+  id              String       @id @default(uuid()) @db.Uuid
+  backupKey       String       @unique @map("backup_key") @db.VarChar(128)
+  status          BackupStatus
+  backupType      BackupType   @map("backup_type")
+  startedAt       DateTime     @map("started_at")
+  completedAt     DateTime?    @map("completed_at")
+  storageAlias    String       @map("storage_alias") @db.VarChar(128)
+  fileSizeBytes   BigInt?      @map("file_size_bytes")
+  checksumSha256  String?      @map("checksum_sha256") @db.Char(64)
+  encrypted       Boolean
+  encryptionAlias String?      @map("encryption_alias") @db.VarChar(128)
+  scopeSummary    Json?        @map("scope_summary")
+  safeMetadata    Json?        @map("safe_metadata")
+  failureReason   String?      @map("failure_reason") @db.Text
+  createdBy       String?      @map("created_by") @db.Uuid
+  updatedBy       String?      @map("updated_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@index([status, startedAt])
+  @@index([backupType, startedAt])
+  @@map("backup_records")
+}
+
+model RestoreDrillRecord {
+  id                String             @id @default(uuid()) @db.Uuid
+  drillKey          String             @unique @map("drill_key") @db.VarChar(128)
+  status            RestoreDrillStatus
+  environmentAlias  String             @map("environment_alias") @db.VarChar(128)
+  backupKey         String?            @map("backup_key") @db.VarChar(128)
+  startedAt         DateTime           @map("started_at")
+  completedAt       DateTime?          @map("completed_at")
+  validationSummary Json?              @map("validation_summary")
+  safeMetadata      Json?              @map("safe_metadata")
+  failureReason     String?            @map("failure_reason") @db.Text
+  createdBy         String?            @map("created_by") @db.Uuid
+  updatedBy         String?            @map("updated_by") @db.Uuid
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  @@index([status, startedAt])
+  @@index([backupKey])
+  @@map("restore_drill_records")
+}
+
+model Employee {
+  id                              String                           @id @default(uuid()) @db.Uuid
+  employeeCode                    String                           @unique @map("employee_code") @db.VarChar(64)
+  name                            String                           @db.VarChar(128)
+  email                           String?                          @db.VarChar(255)
+  phone                           String?                          @db.VarChar(64)
+  status                          CommonStatus                     @default(active)
+  hiredAt                         DateTime?                        @map("hired_at") @db.Date
+  leftAt                          DateTime?                        @map("left_at") @db.Date
+  createdAt                       DateTime                         @default(now()) @map("created_at")
+  updatedAt                       DateTime                         @updatedAt @map("updated_at")
+  affiliateAccounts               AffiliateAccount[]
+  subIdMappings                   SubIdMapping[]
+  cardBindings                    CardBinding[]
+  incomeRecords                   IncomeRecord[]
+  cardSpendEvents                 CardSpendEvent[]
+  manualCardSpendEntries          ManualCardSpendEntry[]
+  historicalNegativeProfits       HistoricalNegativeProfit[]
+  monthlyPerformanceGroupMembers  MonthlyPerformanceGroupMember[]
+  monthlySalaryManualItems        MonthlySalaryManualItem[]
+  monthlySettlementDetails        MonthlySettlementDetail[]
+  resolvedSyncUnmatchedEvents     SyncUnmatchedEvent[]              @relation("ResolvedSyncUnmatchedEventEmployee")
+  adminUsers                      AdminUser[]
+
+  @@map("employees")
+}
+
+model AffiliateAccount {
+  id              String         @id @default(uuid()) @db.Uuid
+  platform        String         @db.VarChar(64)
+  accountCode     String         @map("account_code") @db.VarChar(128)
+  accountName     String?        @map("account_name") @db.VarChar(255)
+  defaultEmployeeId String?      @map("default_employee_id") @db.Uuid
+  status          CommonStatus   @default(active)
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  defaultEmployee Employee?      @relation(fields: [defaultEmployeeId], references: [id])
+  subIdMappings   SubIdMapping[]
+  incomeRecords   IncomeRecord[]
+  syncTasks       SyncTask[]
+  syncUnmatchedEvents SyncUnmatchedEvent[]
+  credential      AffiliateAccountCredential?
+
+  @@unique([platform, accountCode])
+  @@map("affiliate_accounts")
+}
+
+model AffiliateAccountCredential {
+  id                 String           @id @default(uuid()) @db.Uuid
+  affiliateAccountId String           @unique @map("affiliate_account_id") @db.Uuid
+  encryptedPayload   String           @map("encrypted_payload") @db.Text
+  maskedPayload      Json?            @map("masked_payload")
+  status             CommonStatus     @default(active)
+  createdBy          String?          @map("created_by") @db.Uuid
+  updatedBy          String?          @map("updated_by") @db.Uuid
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  affiliateAccount   AffiliateAccount @relation(fields: [affiliateAccountId], references: [id])
+
+  @@map("affiliate_account_credentials")
+}
+
+model SubIdMapping {
+  id                 String           @id @default(uuid()) @db.Uuid
+  affiliateAccountId String           @map("affiliate_account_id") @db.Uuid
+  subField           String           @map("sub_field") @db.VarChar(64)
+  subValue           String           @map("sub_value") @db.VarChar(255)
+  effectiveMonth     DateTime         @map("effective_month") @db.Date
+  employeeId         String           @map("employee_id") @db.Uuid
+  status             CommonStatus     @default(active)
+  createdBy          String?          @map("created_by") @db.Uuid
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  affiliateAccount   AffiliateAccount @relation(fields: [affiliateAccountId], references: [id])
+  employee           Employee         @relation(fields: [employeeId], references: [id])
+
+  @@unique([affiliateAccountId, subField, subValue, effectiveMonth])
+  @@index([employeeId, effectiveMonth])
+  @@map("sub_id_mappings")
+}
+
+model CardBinding {
+  id             String       @id @default(uuid()) @db.Uuid
+  provider       Provider
+  cardId         String       @map("card_id") @db.VarChar(128)
+  effectiveMonth DateTime     @map("effective_month") @db.Date
+  employeeId     String       @map("employee_id") @db.Uuid
+  status         CommonStatus @default(active)
+  createdBy      String?      @map("created_by") @db.Uuid
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  employee       Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([provider, cardId, effectiveMonth])
+  @@index([employeeId, effectiveMonth])
+  @@map("card_bindings")
+}
+
+model IncomeRecord {
+  id                 String            @id @default(uuid()) @db.Uuid
+  settlementMonth    DateTime          @map("settlement_month") @db.Date
+  affiliateAccountId String?           @map("affiliate_account_id") @db.Uuid
+  employeeId         String?           @map("employee_id") @db.Uuid
+  source             String            @db.VarChar(64)
+  externalRecordId   String?           @map("external_record_id") @db.VarChar(128)
+  subField           String?           @map("sub_field") @db.VarChar(64)
+  subValue           String?           @map("sub_value") @db.VarChar(255)
+  incomeUsd          Decimal           @map("income_usd") @db.Decimal(18, 6)
+  rawData            Json?             @map("raw_data")
+  status             CommonStatus      @default(draft)
+  importedBy         String?           @map("imported_by") @db.Uuid
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  affiliateAccount   AffiliateAccount? @relation(fields: [affiliateAccountId], references: [id])
+  employee           Employee?         @relation(fields: [employeeId], references: [id])
+
+  @@unique([source, externalRecordId])
+  @@index([settlementMonth, employeeId])
+  @@map("income_records")
+}
+
+model CardSpendEvent {
+  id                String       @id @default(uuid()) @db.Uuid
+  /// settlement_month is derived from transaction_at in GMT+8 and must not be derived from settled_at.
+  settlementMonth   DateTime     @map("settlement_month") @db.Date
+  provider          Provider
+  cardId            String       @map("card_id") @db.VarChar(128)
+  employeeId        String?      @map("employee_id") @db.Uuid
+  externalEventId   String?      @map("external_event_id") @db.VarChar(128)
+  transactionAt     DateTime     @map("transaction_at")
+  amount            Decimal?     @db.Decimal(18, 6)
+  currency          String?      @db.VarChar(16)
+  spendUsd          Decimal      @map("spend_usd") @db.Decimal(18, 6)
+  settledAt         DateTime?    @map("settled_at")
+  sourceStatus      String?      @map("source_status") @db.VarChar(64)
+  sourceUpdatedAt   DateTime?    @map("source_updated_at")
+  rawData           Json?        @map("raw_data")
+  status            CommonStatus @default(draft)
+  importedBy        String?      @map("imported_by") @db.Uuid
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+  employee          Employee?    @relation(fields: [employeeId], references: [id])
+
+  @@unique([provider, externalEventId])
+  @@index([settlementMonth, employeeId])
+  @@index([provider, settlementMonth, status])
+  @@index([provider, cardId, settlementMonth])
+  @@index([externalEventId])
+  @@map("card_spend_events")
+}
+
+model ManualCardSpendEntry {
+  id              String       @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime     @map("settlement_month") @db.Date
+  providerName    String       @map("provider_name") @db.VarChar(128)
+  cardIdentifier  String?      @map("card_identifier") @db.VarChar(128)
+  employeeId      String       @map("employee_id") @db.Uuid
+  settledSpendUsd Decimal      @map("settled_spend_usd") @db.Decimal(18, 6)
+  feeRate         Decimal      @map("fee_rate") @db.Decimal(10, 6)
+  actualSpendUsd  Decimal      @map("actual_spend_usd") @db.Decimal(18, 6)
+  reason          String?      @db.Text
+  status          SettlementStatus @default(draft)
+  createdBy       String       @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  employee        Employee     @relation(fields: [employeeId], references: [id])
+
+  @@index([settlementMonth, employeeId])
+  @@map("manual_card_spend_entries")
+}
+
+model MonthlyCardProviderFeeRate {
+  id              String       @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime     @map("settlement_month") @db.Date
+  provider        Provider
+  feeRate         Decimal      @map("fee_rate") @db.Decimal(10, 6)
+  status          CommonStatus @default(active)
+  createdBy       String       @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@unique([settlementMonth, provider])
+  @@map("monthly_card_provider_fee_rates")
+}
+
+model CardProviderCredential {
+  id               String       @id @default(uuid()) @db.Uuid
+  provider         Provider     @unique
+  encryptedPayload String       @map("encrypted_payload") @db.Text
+  maskedPayload    Json?        @map("masked_payload")
+  status           CommonStatus @default(active)
+  createdBy        String?      @map("created_by") @db.Uuid
+  updatedBy        String?      @map("updated_by") @db.Uuid
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  @@map("card_provider_credentials")
+}
+
+model MonthlyExchangeRate {
+  id              String       @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime     @map("settlement_month") @db.Date
+  usdToRmbRate    Decimal      @map("usd_to_rmb_rate") @db.Decimal(18, 8)
+  status          CommonStatus @default(active)
+  createdBy       String       @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@unique([settlementMonth])
+  @@map("monthly_exchange_rates")
+}
+
+model HistoricalNegativeProfit {
+  id              String       @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime     @map("settlement_month") @db.Date
+  employeeId      String       @map("employee_id") @db.Uuid
+  amountUsd       Decimal      @map("amount_usd") @db.Decimal(18, 6)
+  reason          String?      @db.Text
+  status          CommonStatus @default(active)
+  createdBy       String       @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  employee        Employee     @relation(fields: [employeeId], references: [id])
+
+  @@index([settlementMonth, employeeId])
+  @@map("historical_negative_profits")
+}
+
+model MonthlyPerformanceGroup {
+  id              String                            @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime                          @map("settlement_month") @db.Date
+  name            String                            @db.VarChar(128)
+  salaryMode      SalaryMode                        @map("salary_mode")
+  status          CommonStatus                      @default(active)
+  createdBy       String                            @map("created_by") @db.Uuid
+  createdAt       DateTime                          @default(now()) @map("created_at")
+  updatedAt       DateTime                          @updatedAt @map("updated_at")
+  members         MonthlyPerformanceGroupMember[]
+
+  @@unique([settlementMonth, name])
+  @@map("monthly_performance_groups")
+}
+
+model MonthlyPerformanceGroupMember {
+  id              String                  @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime                @map("settlement_month") @db.Date
+  groupId         String                  @map("group_id") @db.Uuid
+  employeeId      String                  @map("employee_id") @db.Uuid
+  allocationRatio Decimal                 @map("allocation_ratio") @db.Decimal(10, 6)
+  createdAt       DateTime                @default(now()) @map("created_at")
+  group           MonthlyPerformanceGroup @relation(fields: [groupId], references: [id])
+  employee        Employee                @relation(fields: [employeeId], references: [id])
+
+  @@unique([settlementMonth, employeeId])
+  @@unique([groupId, employeeId])
+  @@map("monthly_performance_group_members")
+}
+
+model SalaryItemConfig {
+  id          String         @id @default(uuid()) @db.Uuid
+  code        String         @unique @db.VarChar(64)
+  name        String         @db.VarChar(128)
+  itemType    SalaryItemType @map("item_type")
+  status      CommonStatus   @default(active)
+  description String?        @db.Text
+  createdBy   String         @map("created_by") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  manualItems MonthlySalaryManualItem[]
+
+  @@map("salary_item_configs")
+}
+
+model MonthlySalaryManualItem {
+  id              String           @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime         @map("settlement_month") @db.Date
+  employeeId      String           @map("employee_id") @db.Uuid
+  configId        String           @map("config_id") @db.Uuid
+  amountRmb       Decimal          @map("amount_rmb") @db.Decimal(18, 2)
+  remark          String?          @db.Text
+  status          CommonStatus     @default(active)
+  createdBy       String           @map("created_by") @db.Uuid
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  employee        Employee         @relation(fields: [employeeId], references: [id])
+  config          SalaryItemConfig @relation(fields: [configId], references: [id])
+
+  @@index([settlementMonth, employeeId])
+  @@map("monthly_salary_manual_items")
+}
+
+model MonthlySettlement {
+  id              String                    @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime                  @unique @map("settlement_month") @db.Date
+  status          SettlementStatus          @default(draft)
+  generatedAt     DateTime?                 @map("generated_at")
+  generatedBy     String?                   @map("generated_by") @db.Uuid
+  confirmedAt     DateTime?                 @map("confirmed_at")
+  confirmedBy     String?                   @map("confirmed_by") @db.Uuid
+  lockedAt        DateTime?                 @map("locked_at")
+  lockedBy        String?                   @map("locked_by") @db.Uuid
+  lockReason      String?                   @map("lock_reason") @db.Text
+  createdAt       DateTime                  @default(now()) @map("created_at")
+  updatedAt       DateTime                  @updatedAt @map("updated_at")
+  details         MonthlySettlementDetail[]
+
+  @@map("monthly_settlements")
+}
+
+model MonthlySettlementDetail {
+  id                  String             @id @default(uuid()) @db.Uuid
+  settlementId        String             @map("settlement_id") @db.Uuid
+  employeeId          String             @map("employee_id") @db.Uuid
+  settlementMonth     DateTime           @map("settlement_month") @db.Date
+  attendanceStatus    AttendanceStatus?  @map("attendance_status")
+  incomeUsd           Decimal            @default(0) @map("income_usd") @db.Decimal(18, 6)
+  cardSpendUsd        Decimal            @default(0) @map("card_spend_usd") @db.Decimal(18, 6)
+  grossProfitUsd      Decimal            @default(0) @map("gross_profit_usd") @db.Decimal(18, 6)
+  grossProfitRmb      Decimal            @default(0) @map("gross_profit_rmb") @db.Decimal(18, 2)
+  commissionRmb       Decimal            @default(0) @map("commission_rmb") @db.Decimal(18, 2)
+  manualAdditionRmb   Decimal            @default(0) @map("manual_addition_rmb") @db.Decimal(18, 2)
+  manualDeductionRmb  Decimal            @default(0) @map("manual_deduction_rmb") @db.Decimal(18, 2)
+  finalSalaryRmb      Decimal            @default(0) @map("final_salary_rmb") @db.Decimal(18, 2)
+  snapshot            Json               @default("{}")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+  settlement          MonthlySettlement  @relation(fields: [settlementId], references: [id])
+  employee            Employee           @relation(fields: [employeeId], references: [id])
+
+  @@unique([settlementId, employeeId])
+  @@index([settlementMonth, employeeId])
+  @@map("monthly_settlement_details")
+}
+
+model AuditLog {
+  id              String       @id @default(uuid()) @db.Uuid
+  actorUserId     String?      @map("actor_user_id") @db.Uuid
+  actorRole       String?      @map("actor_role") @db.VarChar(64)
+  action          String       @db.VarChar(128)
+  objectType      String       @map("object_type") @db.VarChar(128)
+  objectId        String?      @map("object_id") @db.VarChar(128)
+  settlementMonth DateTime?    @map("settlement_month") @db.Date
+  beforeData      Json?        @map("before_data")
+  afterData       Json?        @map("after_data")
+  changedFields   String[]     @default([]) @map("changed_fields")
+  requestPayload  Json?        @map("request_payload")
+  result          AuditResult
+  failureReason   String?      @map("failure_reason") @db.Text
+  errorMessage    String?      @map("error_message") @db.Text
+  ipAddress       String?      @map("ip_address") @db.VarChar(64)
+  userAgent       String?      @map("user_agent") @db.Text
+  createdAt       DateTime     @default(now()) @map("created_at")
+  actor           AdminUser?   @relation(fields: [actorUserId], references: [id])
+
+  @@index([actorUserId, createdAt])
+  @@index([objectType, objectId])
+  @@index([settlementMonth])
+  @@map("audit_logs")
+}
+
+model Alert {
+  id              String        @id @default(uuid()) @db.Uuid
+  fingerprint     String        @unique @db.VarChar(255)
+  severity        AlertSeverity
+  status          AlertStatus
+  source          String        @db.VarChar(64)
+  category        String        @db.VarChar(64)
+  title           String        @db.VarChar(255)
+  safeMessage     String        @map("safe_message") @db.Text
+  safeDetails     Json?         @map("safe_details")
+  firstSeenAt     DateTime      @map("first_seen_at")
+  lastSeenAt      DateTime      @map("last_seen_at")
+  resolvedAt      DateTime?     @map("resolved_at")
+  acknowledgedAt  DateTime?     @map("acknowledged_at")
+  acknowledgedBy  String?       @map("acknowledged_by") @db.Uuid
+  silencedUntil   DateTime?     @map("silenced_until")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  notifications   Notification[]
+
+  @@index([status, severity])
+  @@index([source, category])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+model Notification {
+  id          String        @id @default(uuid()) @db.Uuid
+  recipientId String        @map("recipient_id") @db.Uuid
+  alertId     String?       @map("alert_id") @db.Uuid
+  type        String        @db.VarChar(64)
+  severity    AlertSeverity
+  title       String        @db.VarChar(255)
+  safeMessage String        @map("safe_message") @db.Text
+  safeDetails Json?         @map("safe_details")
+  readAt      DateTime?     @map("read_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  recipient   AdminUser     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  alert       Alert?        @relation(fields: [alertId], references: [id], onDelete: SetNull)
+
+  @@index([recipientId, readAt, createdAt])
+  @@index([alertId])
+  @@map("notifications")
+}
+
+model SyncTask {
+  id                 String             @id @default(uuid()) @db.Uuid
+  sourceType         SyncTaskSourceType @map("source_type")
+  taskType           SyncTaskType       @map("task_type")
+  platform           SyncTaskPlatform
+  affiliateAccountId String?            @map("affiliate_account_id") @db.Uuid
+  provider           Provider?
+  settlementMonth    DateTime           @map("settlement_month") @db.Date
+  status             SyncTaskStatus     @default(not_implemented)
+  successCount       Int                @default(0) @map("success_count")
+  failedCount        Int                @default(0) @map("failed_count")
+  message            String?            @db.Text
+  errorMessage       String?            @map("error_message") @db.Text
+  requestedBy        String?            @map("requested_by") @db.Uuid
+  triggerType        SyncTaskTriggerType @default(manual) @map("trigger_type")
+  planningKey        String?            @unique @map("planning_key") @db.VarChar(255)
+  attemptCount       Int                @default(0) @map("attempt_count")
+  nextAttemptAt      DateTime?          @map("next_attempt_at")
+  leaseOwner         String?            @map("lease_owner") @db.VarChar(64)
+  leaseExpiresAt     DateTime?          @map("lease_expires_at")
+  lastAttemptAt      DateTime?          @map("last_attempt_at")
+  lastErrorCategory  SyncExecutionErrorCategory? @map("last_error_category")
+  startedAt          DateTime?          @map("started_at")
+  finishedAt         DateTime?          @map("finished_at")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+  requestPayload     Json?              @map("request_payload")
+  resultPayload      Json?              @map("result_payload")
+  affiliateAccount   AffiliateAccount?  @relation(fields: [affiliateAccountId], references: [id])
+  unmatchedEvents    SyncUnmatchedEvent[]
+
+  @@index([settlementMonth, taskType])
+  @@index([platform, status])
+  @@index([affiliateAccountId])
+  @@index([triggerType, status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
+  @@map("sync_tasks")
+}
+
+model SyncPlanningRun {
+  id                 String                @id @default(uuid()) @db.Uuid
+  settlementMonth    DateTime              @unique @map("settlement_month") @db.Date
+  status             SyncPlanningRunStatus
+  lastAttemptAt      DateTime              @map("last_attempt_at")
+  lastSuccessAt      DateTime?             @map("last_success_at")
+  attemptCount       Int                   @default(1) @map("attempt_count")
+  createdCount       Int                   @default(0) @map("created_count")
+  existingCount      Int                   @default(0) @map("existing_count")
+  blockedCount       Int                   @default(0) @map("blocked_count")
+  blockerCodes       String[]              @default([]) @map("blocker_codes")
+  failureCode        String?               @map("failure_code") @db.VarChar(64)
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  @@map("sync_planning_runs")
+}
+
+model SyncUnmatchedEvent {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  settlementMonth    DateTime                 @map("settlement_month") @db.Date
+  sourceType         SyncTaskSourceType       @map("source_type")
+  taskType           SyncTaskType             @map("task_type")
+  platform           SyncTaskPlatform?
+  provider           Provider?
+  affiliateAccountId String?                  @map("affiliate_account_id") @db.Uuid
+  syncTaskId         String?                  @map("sync_task_id") @db.Uuid
+  thirdPartyEventId  String?                  @map("third_party_event_id") @db.VarChar(128)
+  reasonCode         String                   @map("reason_code") @db.VarChar(64)
+  reasonMessage      String?                  @map("reason_message") @db.Text
+  subField           String?                  @map("sub_field") @db.VarChar(64)
+  subValue           String?                  @map("sub_value") @db.VarChar(255)
+  cardId             String?                  @map("card_id") @db.VarChar(128)
+  cardLast4          String?                  @map("card_last4") @db.VarChar(16)
+  cardEmail          String?                  @map("card_email") @db.VarChar(255)
+  amountUsd          Decimal?                 @map("amount_usd") @db.Decimal(18, 6)
+  currency           String?                  @db.VarChar(16)
+  occurredAt         DateTime?                @map("occurred_at")
+  rawSafeData        Json?                    @map("raw_safe_data")
+  status             SyncUnmatchedEventStatus @default(open)
+  resolvedEmployeeId String?                  @map("resolved_employee_id") @db.Uuid
+  resolutionNote     String?                  @map("resolution_note") @db.Text
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  updatedAt          DateTime                 @updatedAt @map("updated_at")
+  resolvedAt         DateTime?                @map("resolved_at")
+  resolvedBy         String?                  @map("resolved_by") @db.Uuid
+  affiliateAccount   AffiliateAccount?        @relation(fields: [affiliateAccountId], references: [id])
+  syncTask           SyncTask?                @relation(fields: [syncTaskId], references: [id])
+  resolvedEmployee   Employee?                @relation("ResolvedSyncUnmatchedEventEmployee", fields: [resolvedEmployeeId], references: [id])
+
+  @@index([settlementMonth, sourceType, status])
+  @@index([syncTaskId])
+  @@index([affiliateAccountId])
+  @@index([provider])
+  @@index([thirdPartyEventId])
+  @@unique([sourceType, taskType, thirdPartyEventId])
+  @@map("sync_unmatched_events")
+}
+
+model AdminUser {
+  id             String          @id @default(uuid()) @db.Uuid
+  username       String          @unique @db.VarChar(64)
+  passwordHash   String          @map("password_hash") @db.VarChar(255)
+  displayName    String          @map("display_name") @db.VarChar(128)
+  email          String?         @unique @db.VarChar(255)
+  employeeId     String?         @map("employee_id") @db.Uuid
+  status         CommonStatus    @default(active)
+  lastLoginAt    DateTime?       @map("last_login_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  employee       Employee?       @relation(fields: [employeeId], references: [id])
+  roles          AdminUserRole[]
+  auditLogs      AuditLog[]
+  sessions       AdminSession[]
+  notifications  Notification[]
+
+  @@map("admin_users")
+}
+
+model AdminSession {
+  id          String    @id @default(uuid()) @db.Uuid
+  adminUserId String    @map("admin_user_id") @db.Uuid
+  tokenHash   String    @unique @map("token_hash") @db.Char(64)
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  ipAddress   String?   @map("ip_address") @db.VarChar(64)
+  userAgent   String?   @map("user_agent") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@map("admin_sessions")
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique @db.VarChar(64)
+  name        String           @db.VarChar(128)
+  description String?          @db.Text
+  status      CommonStatus     @default(active)
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  users       AdminUserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique @db.VarChar(128)
+  name        String           @db.VarChar(128)
+  description String?          @db.Text
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model AdminUserRole {
+  adminUserId String    @map("admin_user_id") @db.Uuid
+  roleId      String    @map("role_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id])
+  role        Role      @relation(fields: [roleId], references: [id])
+
+  @@id([adminUserId, roleId])
+  @@map("admin_user_roles")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at")
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}

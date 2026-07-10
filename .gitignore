@@ -1,0 +1,30 @@
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.cache/
+.vite/
+.next/
+
+.env
+.env.*
+!.env.example
+
+tmp/
+
+*.log
+*.dump
+*.backup
+*.bak
+
+.DS_Store
+Thumbs.db
+
+# Local Codex workspace state is machine-specific.
+.codex/
+
+# Local release evidence and permission E2E logs are generated artifacts.
+# The formal release evidence must come from CI for the exact candidate commit.
+tmp/release-evidence/
+tmp/e2e-permissions-*/

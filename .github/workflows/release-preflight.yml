@@ -1,0 +1,51 @@
+name: release-preflight
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  release-preflight:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      API_CREDENTIAL_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+      SYNC_PLANNER_ENABLED: 'false'
+      SYNC_AUTO_EXECUTION_ENABLED: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Enable pnpm
+        shell: powershell
+        run: corepack enable pnpm
+
+      - name: Prepare local environment
+        shell: powershell
+        run: |
+          Copy-Item .env.example .env -Force
+
+      - name: Start database
+        shell: powershell
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm db:up
+          pnpm db:wait
+
+      - name: Release preflight
+        shell: powershell
+        run: pnpm release:preflight
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: tmp/release-evidence
