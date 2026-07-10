@@ -11,10 +11,11 @@ if ([string]::IsNullOrWhiteSpace($EvidencePath) -and -not [string]::IsNullOrWhit
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $envFile = Join-Path $root '.env'
 $runId = 'e2e-permissions-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
-$logDir = Join-Path $root "tmp\$runId"
+$logDir = Join-Path (Join-Path $root 'tmp') $runId
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $outputLines = @()
 $exitCode = 1
+$runningOnWindows = $PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows
 
 function Write-E2EEvidence {
   param([int]$Code, [object[]]$Lines)
@@ -101,13 +102,43 @@ function Stop-StartedProcess {
   param([System.Diagnostics.Process]$Process)
   if ($null -eq $Process -or $Process.HasExited) { return }
   try {
-    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Process.Id)" -ErrorAction SilentlyContinue)
-    foreach ($child in $children) {
-      Stop-StartedProcess (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+      $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Process.Id)" -ErrorAction SilentlyContinue)
+      foreach ($child in $children) {
+        Stop-StartedProcess (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+      }
+      Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+      return
     }
-    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+
+    $Process.Kill($true)
+    $Process.WaitForExit(5000) | Out-Null
   } catch {
+    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Start-E2EProcess {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList,
+    [string]$WorkingDirectory,
+    [string]$StandardOutputPath,
+    [string]$StandardErrorPath
+  )
+
+  $parameters = @{
+    FilePath = $FilePath
+    ArgumentList = $ArgumentList
+    WorkingDirectory = $WorkingDirectory
+    PassThru = $true
+    RedirectStandardOutput = $StandardOutputPath
+    RedirectStandardError = $StandardErrorPath
+  }
+  if ($runningOnWindows) {
+    $parameters.WindowStyle = 'Hidden'
+  }
+  Start-Process @parameters
 }
 
 Import-DotEnv $envFile
@@ -134,10 +165,10 @@ try {
   $webOut = Join-Path $logDir 'web.out.log'
   $webErr = Join-Path $logDir 'web.err.log'
 
-  $apiProcess = Start-Process -FilePath 'pnpm' -ArgumentList @('--filter', '@salary/api', 'run', 'dev') -WorkingDirectory $root -NoNewWindow:$false -WindowStyle Hidden -PassThru -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
+  $apiProcess = Start-E2EProcess -FilePath 'pnpm' -ArgumentList @('--filter', '@salary/api', 'run', 'dev') -WorkingDirectory $root -StandardOutputPath $apiOut -StandardErrorPath $apiErr
   Wait-HttpOk "http://127.0.0.1:$($env:API_PORT)/health/ready" 90 $apiProcess
 
-  $webProcess = Start-Process -FilePath 'pnpm' -ArgumentList @('--filter', '@salary/web', 'exec', 'vite', '--host', '127.0.0.1', '--port', $env:WEB_PORT) -WorkingDirectory $root -NoNewWindow:$false -WindowStyle Hidden -PassThru -RedirectStandardOutput $webOut -RedirectStandardError $webErr
+  $webProcess = Start-E2EProcess -FilePath 'pnpm' -ArgumentList @('--filter', '@salary/web', 'exec', 'vite', '--host', '127.0.0.1', '--port', $env:WEB_PORT) -WorkingDirectory $root -StandardOutputPath $webOut -StandardErrorPath $webErr
   Wait-HttpOk "http://127.0.0.1:$($env:WEB_PORT)" 90 $webProcess
 
   $env:E2E_API_URL = "http://127.0.0.1:$($env:API_PORT)"

@@ -6,7 +6,7 @@ on:
 
 jobs:
   release-preflight:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CI: 'true'
@@ -29,20 +29,26 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Add PowerShell compatibility command
+        shell: bash
+        run: |
+          sudo ln -sf "$(command -v pwsh)" /usr/local/bin/powershell
+          powershell --version
+
       - name: Prepare local environment
-        shell: powershell
+        shell: pwsh
         run: |
           Copy-Item .env.example .env -Force
 
       - name: Start database
-        shell: powershell
+        shell: pwsh
         run: |
           pnpm install --frozen-lockfile
           pnpm db:up
           pnpm db:wait
 
       - name: Release preflight
-        shell: powershell
+        shell: pwsh
         run: pnpm release:preflight
 
       - name: Upload release evidence

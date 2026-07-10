@@ -171,17 +171,33 @@ $configuredPorts = [ordered]@{
 }
 foreach ($service in $configuredPorts.Keys) {
   $port = $configuredPorts[$service]
-  $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
-  if ($listeners.Count -eq 0) {
-    Add-Check "$service port $port" $true 'available' $false
+  $netTcpCommand = Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue
+  if ($netTcpCommand) {
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+    if ($listeners.Count -eq 0) {
+      Add-Check "$service port $port" $true 'available' $false
+      continue
+    }
+
+    $processNames = @($listeners | ForEach-Object {
+      (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    } | Where-Object { $_ } | Sort-Object -Unique)
+    $details = if ($processNames.Count) { 'listening: ' + ($processNames -join ', ') } else { 'listening' }
+    Add-Check "$service port $port" $true $details $false
     continue
   }
 
-  $processNames = @($listeners | ForEach-Object {
-    (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-  } | Where-Object { $_ } | Sort-Object -Unique)
-  $details = if ($processNames.Count) { 'listening: ' + ($processNames -join ', ') } else { 'listening' }
-  Add-Check "$service port $port" $true $details $false
+  $client = [System.Net.Sockets.TcpClient]::new()
+  $listening = $false
+  try {
+    $connectTask = $client.ConnectAsync('127.0.0.1', $port)
+    $listening = $connectTask.Wait(500) -and $client.Connected
+  } catch {
+    $listening = $false
+  } finally {
+    $client.Dispose()
+  }
+  Add-Check "$service port $port" $true $(if ($listening) { 'listening' } else { 'available' }) $false
 }
 
 Add-Check '.env' $envExists $(if ($envExists) { 'present' } else { 'missing' })
