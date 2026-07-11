@@ -10,6 +10,7 @@ jobs:
     timeout-minutes: 45
     env:
       CI: 'true'
+      TZ: Asia/Shanghai
       API_CREDENTIAL_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
       SYNC_PLANNER_ENABLED: 'false'
       SYNC_AUTO_EXECUTION_ENABLED: 'false'
