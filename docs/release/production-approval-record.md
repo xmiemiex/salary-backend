@@ -4,6 +4,22 @@ This record controls admission of the frozen release candidate into a production
 
 Task 72 preserves `rc-20260712-1` unchanged but marks it superseded / not approved because its artifact violated the hard audit-export contract. The corrective target is a fresh CI-green commit and annotated `rc-20260712-2`. The corrected CI-only fixture must produce a real, non-empty export with `exportedCount > 0`, `fixtureOnly=true`, and `productionEvidence=false`; it remains synthetic test evidence and does not replace the required real production audit-export smoke.
 
+## Task 72 Corrective RC Result
+
+| Field | Verified result |
+| --- | --- |
+| Current candidate | Annotated `rc-20260712-2`, pushed without force |
+| Tag target / CI commit | `9f8f8f576dde54355983b96525335e94c55c8b32` |
+| GitHub Actions run | `release-preflight #10`, run ID `29185992419`, success |
+| Artifact | `release-evidence`, artifact ID `8258047308`, automatically downloaded and inspected |
+| Artifact ZIP SHA-256 | `fda07abc0c6d9ad174b58b570e388849ad6786d2dfcab846aae586571c5e15e5` |
+| Audit export smoke | `status=pass`, `exportedCount=1`, `csvBytes=528` |
+| Fixture boundary | `fixtureOnly=true`, `productionEvidence=false` |
+| Release gate | `37 pass / 0 warning / 0 fail` |
+| Artifact contract | **Pass for CI-only evidence** |
+
+The corrective RC may return to Task 71 for human approval processing. It is not a production release. Production approval remains No-Go until all human approvals and every real production evidence item below—including a real production audit export smoke—are complete.
+
 ## 1. Release Candidate Identity
 
 | Field | Recorded value | Verification status |

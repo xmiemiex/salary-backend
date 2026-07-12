@@ -2,20 +2,20 @@
 
 ## Candidate Identity
 
-`rc-20260712-1` remains immutable but is superseded and not approved: its successful CI artifact reported `audit-export-smoke.json` with `status=pass` and `exportedCount=0`, violating the mandatory non-empty export contract. Task 72 prepares a new commit and `rc-20260712-2`; the new candidate must not be frozen until a fresh CI run for that exact commit is green and its newly uploaded artifact passes the complete contract.
+`rc-20260712-1` remains immutable but is superseded and not approved: its successful CI artifact reported `audit-export-smoke.json` with `status=pass` and `exportedCount=0`, violating the mandatory non-empty export contract. Task 72 corrected the CI-only fixture and smoke contract, verified a fresh artifact for the exact new commit, and froze `rc-20260712-2`.
 
 | Field | Value |
 | --- | --- |
-| RC tag | `rc-20260712-2` pending fresh CI-green evidence |
-| CI-green tagged commit | `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` |
+| RC tag | `rc-20260712-2` |
+| CI-green tagged commit | `9f8f8f576dde54355983b96525335e94c55c8b32` |
 | Branch | `main` |
 | Remote | `origin` (`https://github.com/xmiemiex/salary-backend.git`) |
 | CI workflow | `.github/workflows/release-preflight.yml` |
-| CI status | `release-preflight` green / user-confirmed |
-| Release gate | `37 pass / 0 warning / 0 fail` / user-confirmed |
-| CI artifact inspection | Not automatically downloaded or locally inspected; the GitHub connector has no repository access and GitHub CLI is unavailable |
+| CI status | `release-preflight #10` success; run ID `29185992419` |
+| Release gate | `37 pass / 0 warning / 0 fail` / automatically inspected |
+| CI artifact inspection | Automatically downloaded and inspected; artifact ID `8258047308`, ZIP SHA-256 `fda07abc0c6d9ad174b58b570e388849ad6786d2dfcab846aae586571c5e15e5` |
 | Previous tag status | `rc-20260712-1` retained unchanged; superseded / not approved |
-| New tag status | `rc-20260712-2` not yet created; must resolve to the new CI-green commit |
+| New tag status | Annotated `rc-20260712-2` created and pushed; resolves to `9f8f8f576dde54355983b96525335e94c55c8b32` |
 
 Before the tag was created, the repository was clean and local `HEAD`, `origin/main`, the user-confirmed CI-green commit, and the annotated tag target were identical:
 
@@ -27,7 +27,7 @@ No local release artifact is accepted as CI evidence.
 
 ## CI Evidence Boundary
 
-The successful `release-preflight` run and `37/0/0` release-gate result for commit `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` are recorded as user-confirmed. The private Actions artifact could not be automatically downloaded or inspected from this workspace. Artifact contents therefore remain subject to human verification in GitHub Actions before production approval; the successful upload step was user-confirmed from the run screenshot.
+`release-preflight #10` completed successfully for exact commit `9f8f8f576dde54355983b96525335e94c55c8b32`. Its newly uploaded artifact was automatically downloaded and inspected: audit export smoke is `status=pass`, `exportedCount=1`, `csvBytes=528`, `fixtureOnly=true`, and `productionEvidence=false`; the release gate remains `37/0/0`. This proves the CI contract only and is not production evidence.
 
 The CI workflow uses an explicit synthetic fixture in an ephemeral CI database:
 
@@ -95,9 +95,8 @@ All criteria are mandatory for the final tagged commit:
 ## Next Steps
 
 1. Do not approve `rc-20260712-1`; retain it unchanged as the rejected historical candidate.
-2. Run fresh CI for the Task 72 commit and verify the newly uploaded artifact, including the hard `exportedCount > 0` threshold and `fixtureOnly=true`, `productionEvidence=false` markers.
-3. Only after that exact commit and artifact pass, create and push annotated tag `rc-20260712-2` without force.
-4. Collect real production audit-export and all other production release evidence; CI fixture evidence is never production evidence.
-5. Execute deployment according to `production-runbook.md` only after human approval.
+2. Use `rc-20260712-2` as the current frozen candidate and return to Task 71 for human approval.
+3. Collect real production audit-export and all other production release evidence; CI fixture evidence is never production evidence.
+4. Execute deployment according to `production-runbook.md` only after human approval.
 
 This post-freeze status record is maintained on `main`; it does not move, replace, or retag the immutable RC target.
