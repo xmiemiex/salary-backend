@@ -4,27 +4,27 @@
 
 | Field | Value |
 | --- | --- |
-| Planned RC tag | `rc-20260712-1` |
-| CI-green code commit | `ee06c4f48bd6f3af1d28359759ecfc508b55a9b7` |
+| RC tag | `rc-20260712-1` |
+| CI-green tagged commit | `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` |
 | Branch | `main` |
 | Remote | `origin` (`https://github.com/xmiemiex/salary-backend.git`) |
 | CI workflow | `.github/workflows/release-preflight.yml` |
 | CI status | `release-preflight` green / user-confirmed |
 | Release gate | `37 pass / 0 warning / 0 fail` / user-confirmed |
 | CI artifact inspection | Not automatically downloaded or locally inspected; the GitHub connector has no repository access and GitHub CLI is unavailable |
-| Tag status | Not created; strict freeze procedure requires CI to pass again on the documentation commit |
+| Tag status | Created and pushed; annotated tag resolves to `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` |
 
-The repository was clean before this document update. At that point, local `HEAD`, `origin/main`, and the user-confirmed CI-green commit were identical:
+Before the tag was created, the repository was clean and local `HEAD`, `origin/main`, the user-confirmed CI-green commit, and the annotated tag target were identical:
 
 ```text
-ee06c4f48bd6f3af1d28359759ecfc508b55a9b7
+1a51632f719d53c15c1d7e56f5184ffb7689c9fa
 ```
 
 No local release artifact is accepted as CI evidence.
 
 ## CI Evidence Boundary
 
-The successful `release-preflight` run and `37/0/0` release-gate result for commit `ee06c4f48bd6f3af1d28359759ecfc508b55a9b7` are recorded as user-confirmed. The private Actions artifact could not be automatically downloaded or inspected from this workspace. Artifact contents and upload completion therefore remain subject to human verification in GitHub Actions before production approval.
+The successful `release-preflight` run and `37/0/0` release-gate result for commit `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` are recorded as user-confirmed. The private Actions artifact could not be automatically downloaded or inspected from this workspace. Artifact contents therefore remain subject to human verification in GitHub Actions before production approval; the successful upload step was user-confirmed from the run screenshot.
 
 The CI workflow uses an explicit synthetic fixture in an ephemeral CI database:
 
@@ -70,7 +70,7 @@ The existing green commit remains the verified code baseline. This document-only
 | Decision | Status |
 | --- | --- |
 | RC freeze readiness | **Go** |
-| Create `rc-20260712-1` now | **No-Go: wait for CI on the documentation commit** |
+| RC `rc-20260712-1` frozen | **Go** |
 | Production release | **No-Go until human approval and production evidence are complete** |
 
 ## CI Artifact Acceptance Criteria
@@ -91,9 +91,9 @@ All criteria are mandatory for the final tagged commit:
 
 ## Next Steps
 
-1. Trigger or observe `release-preflight` on the new documentation commit.
-2. Verify the run commit and artifact contents against the acceptance criteria above.
-3. After explicit confirmation of tag name `rc-20260712-1` and the new CI-green target commit, create and push the annotated tag.
-4. Proceed to human release approval.
-5. Collect production release evidence and production backup/restore evidence.
-6. Execute deployment according to `production-runbook.md` only after approval.
+1. Proceed to human release approval for frozen tag `rc-20260712-1`.
+2. Verify the uploaded CI artifact contents against the acceptance criteria above; the successful upload step and commit binding were user-confirmed from GitHub Actions screenshots, but the artifact was not downloaded in this workspace.
+3. Collect production release evidence and production backup/restore evidence.
+4. Execute deployment according to `production-runbook.md` only after approval.
+
+This post-freeze status record is maintained on `main`; it does not move, replace, or retag the immutable RC target.
