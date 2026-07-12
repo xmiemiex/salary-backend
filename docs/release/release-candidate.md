@@ -2,9 +2,11 @@
 
 ## Candidate Identity
 
+`rc-20260712-1` remains immutable but is superseded and not approved: its successful CI artifact reported `audit-export-smoke.json` with `status=pass` and `exportedCount=0`, violating the mandatory non-empty export contract. Task 72 prepares a new commit and `rc-20260712-2`; the new candidate must not be frozen until a fresh CI run for that exact commit is green and its newly uploaded artifact passes the complete contract.
+
 | Field | Value |
 | --- | --- |
-| RC tag | `rc-20260712-1` |
+| RC tag | `rc-20260712-2` pending fresh CI-green evidence |
 | CI-green tagged commit | `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` |
 | Branch | `main` |
 | Remote | `origin` (`https://github.com/xmiemiex/salary-backend.git`) |
@@ -12,7 +14,8 @@
 | CI status | `release-preflight` green / user-confirmed |
 | Release gate | `37 pass / 0 warning / 0 fail` / user-confirmed |
 | CI artifact inspection | Not automatically downloaded or locally inspected; the GitHub connector has no repository access and GitHub CLI is unavailable |
-| Tag status | Created and pushed; annotated tag resolves to `1a51632f719d53c15c1d7e56f5184ffb7689c9fa` |
+| Previous tag status | `rc-20260712-1` retained unchanged; superseded / not approved |
+| New tag status | `rc-20260712-2` not yet created; must resolve to the new CI-green commit |
 
 Before the tag was created, the repository was clean and local `HEAD`, `origin/main`, the user-confirmed CI-green commit, and the annotated tag target were identical:
 
@@ -91,9 +94,10 @@ All criteria are mandatory for the final tagged commit:
 
 ## Next Steps
 
-1. Proceed to human release approval for frozen tag `rc-20260712-1`.
-2. Verify the uploaded CI artifact contents against the acceptance criteria above; the successful upload step and commit binding were user-confirmed from GitHub Actions screenshots, but the artifact was not downloaded in this workspace.
-3. Collect production release evidence and production backup/restore evidence.
-4. Execute deployment according to `production-runbook.md` only after approval.
+1. Do not approve `rc-20260712-1`; retain it unchanged as the rejected historical candidate.
+2. Run fresh CI for the Task 72 commit and verify the newly uploaded artifact, including the hard `exportedCount > 0` threshold and `fixtureOnly=true`, `productionEvidence=false` markers.
+3. Only after that exact commit and artifact pass, create and push annotated tag `rc-20260712-2` without force.
+4. Collect real production audit-export and all other production release evidence; CI fixture evidence is never production evidence.
+5. Execute deployment according to `production-runbook.md` only after human approval.
 
 This post-freeze status record is maintained on `main`; it does not move, replace, or retag the immutable RC target.

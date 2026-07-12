@@ -19,6 +19,7 @@ const adminUsername = 'ci_release_fixture_admin';
 const adminEmail = 'ci-release-fixture@example.invalid';
 const backupKey = 'ci-release-fixture-full-backup';
 const drillKey = 'ci-release-fixture-restore-drill';
+const auditFixtureId = '00000000-0000-4000-8000-000000000072';
 
 function assertCiOnly(): void {
   if (process.env.CI !== 'true') throw new Error('CI=true is required.');
@@ -146,6 +147,39 @@ async function main(): Promise<void> {
       completedAt: now,
       validationSummary: { fixtureOnly: true, gatePathExercised: true },
       safeMetadata: fixtureMetadata,
+    },
+  });
+
+  await prisma.auditLog.upsert({
+    where: { id: auditFixtureId },
+    update: {
+      actorUserId: admin.id,
+      actorRole: 'release_preflight',
+      action: 'ci_release_fixture',
+      objectType: 'ci_release_fixture',
+      objectId: fixtureVersion,
+      afterData: { fixtureOnly: true, productionEvidence: false },
+      changedFields: [],
+      requestPayload: { source: fixtureSource, fixtureOnly: true, productionEvidence: false },
+      result: 'success',
+      ipAddress: '127.0.0.1',
+      userAgent: 'github-actions-ci-release-fixture',
+      createdAt: now,
+    },
+    create: {
+      id: auditFixtureId,
+      actorUserId: admin.id,
+      actorRole: 'release_preflight',
+      action: 'ci_release_fixture',
+      objectType: 'ci_release_fixture',
+      objectId: fixtureVersion,
+      afterData: { fixtureOnly: true, productionEvidence: false },
+      changedFields: [],
+      requestPayload: { source: fixtureSource, fixtureOnly: true, productionEvidence: false },
+      result: 'success',
+      ipAddress: '127.0.0.1',
+      userAgent: 'github-actions-ci-release-fixture',
+      createdAt: now,
     },
   });
 

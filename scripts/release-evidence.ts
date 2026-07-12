@@ -106,9 +106,16 @@ async function runAuditExportSmoke(outputPath: string): Promise<CommandEvidence>
       userAgent: 'release-preflight',
     });
     const csvBytes = Buffer.byteLength(result.csv, 'utf8');
-    const header = result.csv.split(/\r?\n/, 1)[0]?.replace(/^\uFEFF/, '') ?? '';
+    const csvRows = result.csv.split(/\r?\n/);
+    const header = csvRows[0]?.replace(/^\uFEFF/, '') ?? '';
     const columns = header.split(',').map((column) => column.replace(/^"|"$/g, ''));
-    const valid = csvBytes > 0
+    const fixtureContext = readJson(resolve(evidenceDir, 'ci-fixture-context.json'));
+    const fixtureOnly = fixtureContext?.fixtureOnly === true;
+    const productionEvidence = fixtureContext?.productionEvidence === true;
+    const valid = result.exportedCount > 0
+      && csvRows.length > 1
+      && csvRows.slice(1).some((row) => row.trim().length > 0)
+      && csvBytes > Buffer.byteLength(`\uFEFF${header}`, 'utf8')
       && ['id', 'createdAt', 'action', 'objectType', 'result'].every((column) => columns.includes(column));
     const evidence: CommandEvidence = {
       schemaVersion: 1,
@@ -124,6 +131,8 @@ async function runAuditExportSmoke(outputPath: string): Promise<CommandEvidence>
         csvBytes,
         rangeMinutes: 60,
         auditAction: 'audit_logs.exported',
+        fixtureOnly,
+        productionEvidence,
       },
     };
     writeJson(outputPath, evidence);
@@ -216,7 +225,12 @@ function writeReleaseReport(): CommandEvidence {
   const releaseGate = runCommand(pnpm, ['run', 'release:check', '--', '--json']);
   const releaseGateJson = extractJson(releaseGate.stdout);
   if (releaseGateJson) writeJson(resolve(evidenceDir, 'release-gate.json'), releaseGateJson);
-  const status: EvidenceStatus = releaseEvidence?.status === 'pass' && releaseGate.status === 0 ? 'pass' : 'fail';
+  const auditContractPassed = audit?.status === 'pass'
+    && typeof audit?.summary?.exportedCount === 'number'
+    && audit.summary.exportedCount > 0
+    && typeof audit?.summary?.csvBytes === 'number'
+    && audit.summary.csvBytes > 0;
+  const status: EvidenceStatus = releaseEvidence?.status === 'pass' && auditContractPassed && releaseGate.status === 0 ? 'pass' : 'fail';
   const warnings = Array.isArray(releaseGateJson?.checks)
     ? releaseGateJson.checks.filter((item: any) => item.status === 'warning').map((item: any) => item.code)
     : [];
