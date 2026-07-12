@@ -46,6 +46,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm --filter @salary/shared build
+          pnpm prisma:generate
           pnpm db:up
           pnpm db:wait
           pnpm db:migrate
