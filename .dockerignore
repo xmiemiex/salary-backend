@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+node_modules
+**/node_modules
+**/dist
+tmp
+.pnpm-store
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.log
+*.dump
+*.backup
+*.bak
