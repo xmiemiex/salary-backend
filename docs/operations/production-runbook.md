@@ -1,6 +1,9 @@
 # 生产只读监控运行手册
 
-本手册用于任务85及其后续只读生产复核。它不授权部署、重启、切流、migration、业务数据写入、账号/权限修改、告警变更、备份手动触发、恢复操作或 RC tag 变更。
+本手册用于任务85及其后续生产复核。除按
+[备份与恢复 SOP](backup-and-restore-sop.md) 执行已安装的日常健康检查和另行批准的隔离
+恢复外，它不授权部署、重启、切流、migration、业务数据写入、账号/权限修改、告警变更、
+备份手动触发或 RC tag 变更。
 
 当前生产状态：**Full Go stable with accepted backup risk**。最终 release gate：**`37 pass / 0 warning / 0 fail`**，exit=`0`。无异机备份风险已阶段性接受但仍未解决。
 
@@ -62,7 +65,36 @@ T+24 若仅因任务84真实 403 evidence 超过24小时而出现 `E2E_PERMISSIO
 6. 周期性抽检生产审计导出，仅保留脱敏计数与受控 evidence。
 7. 固化依赖升级和安全补丁节奏。
 8. 如后续需要业务数据导入/初始化，先设计幂等、审计、回滚和审批流程。
-9. 任务89确认物理 backup record 自动同步仍为 Open。当前每日文件是未加密 `.sql.gz`，不能伪装
-   `encrypted=true`；如实记录会触发现有 `backup.not_encrypted` critical。实施 recorder
-   前必须另行决定并授权真实文件级加密，或批准并论证 backup health 政策变更。不得通过
-   降低门禁、关闭检查或伪造 Evidence 收口。
+9. 任务89的物理 backup record 不同步已由任务90真实修复并关闭。后续若 recorder 失败、
+   最新加密 record 超龄、认证解密失败或 backup gate 失败，立即重新打开 RISK-DP-002，
+   不得降低门禁或伪造 Evidence。
+10. 本机 encryption key 丢失风险记录为 RISK-DP-003；当前只有 root-only 权限、指纹检查和
+    恢复演练缓解，尚未完成异机密钥托管。
+
+## Task90 日常操作
+
+每日只读健康检查：
+
+```bash
+sudo /usr/local/sbin/check-local-backup-health
+```
+
+预期 `TASK88_BACKUP_HEALTH_STATUS=pass`、warning/failure codes=`none`。健康检查验证
+ciphertext sidecar、GCM 认证解密、gzip、权限、age、service/timer、retention 和磁盘。
+
+Evidence 自动同步发生在每日备份 service 内。若物理密文已成功但 recorder 失败，先保留
+密文并处理根因，再按同一绝对路径重放：
+
+```bash
+sudo /usr/local/sbin/record-backup-evidence \
+  /opt/salary-settlement-admin/backups/postgres-full-<UTC>.sql.gz.enc
+```
+
+成功重放应返回 `created` 或已有完全一致记录的 `no_change`；conflict 必须升级，不得覆盖。
+月度恢复使用 `/usr/local/sbin/restore-encrypted-backup`，严格条件和记录字段见 SOP 与模板。
+
+任务90生产基线：最新密文 `postgres-full-20260727T131031Z.sql.gz.enc`，BackupRecord/
+RestoreDrillRecord 均匹配；release gate exit=0、`34/3/0`，备份相关门禁全部 Pass。
+三个 warning 为 `E2E_PERMISSIONS_RECENT_RUN`、`ENV_CHECK_AVAILABLE`、
+`MIGRATIONS_UP_TO_DATE`，不得写成全绿，也不影响本次备份修复真实性。最终 API/Web
+restart=`0/0`，active critical alerts=0。

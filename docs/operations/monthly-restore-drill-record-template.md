@@ -24,7 +24,12 @@
 | Expected SHA-256 |  |
 | Actual SHA-256 |  |
 | Checksum source |  |
+| Encryption format/version |  |
+| Key path/owner/group/mode（不得记录 key） |  |
+| Compression/encryption order |  |
+| Checksum target | ciphertext / 待确认 |
 | Checksum result | Pass / Warning / Fail / 未执行 |
+| Authenticated decrypt result | Pass / Warning / Fail / 未执行 |
 | Compression integrity result | Pass / Warning / Fail / 未执行 |
 
 ## 隔离参数
@@ -80,3 +85,22 @@
 | Follow-up due date |  |
 | 审核结论 |  |
 | 审核时间和时区 |  |
+
+## 任务90已完成演练记录（非模板默认值）
+
+| 字段 | 任务90实际值 |
+| --- | --- |
+| Drill ID / record ID | `task90-restore-20260727T131032Z` / `71f06ac2-bcea-44af-a182-339a38df0556` |
+| 执行时间 | `2026-07-27T13:10:32Z`；duration=4s |
+| Source backup | `postgres-full-20260727T131031Z.sql.gz.enc`；18,087 bytes |
+| SHA-256 | `8b5020ad2d7f95f238e4f6010f47d6605e58d829928019dbfaeb46338048b146`；ciphertext sidecar match |
+| 加密/压缩 | `aes-256-gcm-v1`；gzip-before-encryption；认证解密 Pass；gzip Pass |
+| Key | `/etc/salary-settlement-admin/backup-file-encryption.key`；`root:root`、`0600`；未记录 key |
+| Isolation | 唯一 container + volume；PostgreSQL 16；`network=none`；host port=none |
+| 生产接触 | production database contacted=`no`；destructive to primary=`false`；生产 `.env` 未传入 |
+| 非敏感验证 | server=`160014`；database=2；role=2；schema=2；table=33；finished migration=17 |
+| 业务数据输出 | `no` |
+| Cleanup | container/volume/临时日志均清理；独立复核无 `task90.restore=true` 资源残留 |
+| 生产后检 | Nginx/Docker/PostgreSQL active；failed units=0；API/Web healthy、restart=`0/0`；全部入口 Pass |
+| Evidence | BackupRecord/RestoreDrillRecord 及各一条成功审计均经独立只读查询匹配 |
+| Result | **Pass** |

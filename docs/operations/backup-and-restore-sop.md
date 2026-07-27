@@ -18,7 +18,8 @@
 
 ## 2. 已验证的生产实现
 
-2026-07-27 只读复核得到以下事实：
+任务90于 `2026-07-27T13:10:29Z–13:10:39Z` 完成生产接入，实施提交为
+`ed856f5eb2450c1160d63cf5532452f9f55d99fa`。systemd unit 和 timer 未修改。
 
 | 项目 | 实际值 |
 | --- | --- |
@@ -28,8 +29,13 @@
 | 调度 | 每日 `02:15 UTC`，`RandomizedDelaySec=15m`，`Persistent=true` |
 | 本地时区换算 | Asia/Shanghai 每日 `10:15` 起，最多随机延后 15 分钟 |
 | 备份目录 | `/opt/salary-settlement-admin/backups` |
-| 每日文件格式 | `postgres-full-<UTC timestamp>.sql.gz` |
-| Checksum | 同名 `.sha256` sidecar；用 `sha256sum -c` 校验 |
+| 每日文件格式 | `postgres-full-<UTC timestamp>.sql.gz.enc` |
+| 压缩/加密顺序 | `pg_dumpall` → gzip → AES-256-GCM 流式加密；不在磁盘生成新明文 dump |
+| 加密格式 | `aes-256-gcm-v1`；16-byte versioned header、12-byte random IV、16-byte authentication tag；header 作为 AAD |
+| 密钥 | `/etc/salary-settlement-admin/backup-file-encryption.key`，`root:root`、`0600`；只记录指纹，不记录 key |
+| Checksum | 同名 `.sha256` sidecar；SHA-256 对象为最终 ciphertext |
+| Evidence recorder | `/usr/local/sbin/record-backup-evidence`；成功物理备份后同步 `BackupRecord` |
+| Evidence 幂等键 | `backupKey` = 密文 backup basename；完全相同重放为 `no_change`，同键字段冲突为失败 |
 | 目录权限 | `root:postgres`、`0750` |
 | 备份文件权限 | `root:postgres`、`0640` |
 | Checksum 权限 | `root:postgres`、`0640` |
@@ -63,17 +69,29 @@ oneshot service 执行完成后显示 `inactive (dead)` 是正常状态。成功
 
 应用数据库中的最近 backup record 没有随每日物理备份更新，任务88检查时 `BACKUP_WITHIN_72H=fail`；但物理 timer、journal、文件、生成时 checksum 和 gzip 完整性均证明当日备份成功。这是**监控记录同步 warning**，不能伪装为物理备份失败，也不能反过来把物理文件当作数据库记录已更新。修复数据库记录属于生产数据写入，须另行授权，本任务未执行。
 
+### 2.2 任务90生产证据快照
+
+| 项目 | 结果 |
+| --- | --- |
+| 新备份 | `postgres-full-20260727T131031Z.sql.gz.enc`；18,087 bytes；`root:postgres`、`0640` |
+| 密文 SHA-256 | `8b5020ad2d7f95f238e4f6010f47d6605e58d829928019dbfaeb46338048b146`；sidecar match |
+| 文件真实性 | GCM 认证解密 Pass；解密流 `gzip -t` Pass；加密开销 44 bytes；同时间戳明文文件不存在 |
+| BackupRecord | ID `4c99b322-073e-47c3-8537-0dd055ca5b05`；字段匹配；再次同步=`no_change` |
+| RestoreDrillRecord | ID `71f06ac2-bcea-44af-a182-339a38df0556`；status=`succeeded` |
+| Backup health | 独立复核=`pass`；warning/failure codes=`none` |
+| 容量 | 文件系统使用率 4%；备份目录 169,423 bytes；按本次密文大小估算 30 日新增量 542,610 bytes |
+
 ## 3. 每日只读检查
 
 推荐入口：
 
 ```bash
-sudo bash /home/salaryops/task88-check-local-backup-health.sh
+sudo /usr/local/sbin/check-local-backup-health
 ```
 
-执行前由受控运维工作站把仓库中的 `deploy/scripts/check-local-backup-health.sh` 上传到上述唯一临时路径；执行后删除远端临时副本。不得安装为 systemd unit 或启用新 timer。
-
-脚本自动从 service 的 `ReadWritePaths=` 获取备份目录，不要求操作员手工推导。它只读取 systemd、备份元数据、sidecar、gzip 和磁盘状态，不创建或删除备份、不修改权限、不重启服务。
+脚本读取 systemd、备份元数据、ciphertext sidecar、认证解密后的 gzip 流和磁盘状态，
+不创建或删除备份、不修改权限、不重启服务。密钥只从 root-only 文件读取，不得把 key
+放入命令行、环境变量、日志、聊天或 Git。
 
 成功输出：
 
@@ -92,7 +110,7 @@ warning 输出仍为 exit 0，但必须处理 `TASK88_BACKUP_HEALTH_WARNING_CODE
 | 每日计划周期 | 超过一个计划周期未生成时立即调查 | 第二个周期仍未恢复或明确失败 |
 | 磁盘使用率 | `>=80%` | `>=90%` |
 | checksum | 不适用 | sidecar 缺失且无生成时可信 hash、或不匹配 |
-| gzip 完整性 | 不适用 | `gzip -t` 非零 |
+| 加密与 gzip 完整性 | 不适用 | GCM 认证失败，或认证解密流的 `gzip -t` 非零 |
 | 权限 | 不适用 | world-readable、world-writable、非必要 group-writable |
 
 release gate 的独立标准仍是最近 72 小时内存在成功 full backup；不得用 72 小时取代日常 36/48 小时阈值。
@@ -109,7 +127,7 @@ sudo systemctl show salary-postgres-backup.timer \
 sudo systemctl show salary-postgres-backup.service \
   -p Type -p Result -p ExecMainStatus -p ActiveEnterTimestamp -p InactiveEnterTimestamp
 sudo journalctl -u salary-postgres-backup.service -n 20 --no-pager
-sudo bash /home/salaryops/task88-check-local-backup-health.sh
+sudo /usr/local/sbin/check-local-backup-health
 ```
 
 健康脚本按上一节的临时上传、执行、删除方式使用。不得读取生产 `.env` 原文。
@@ -122,7 +140,7 @@ sudo bash /home/salaryops/task88-check-local-backup-health.sh
 - 找不到可信计划运行记录；
 - 最新备份缺失、为空、超过 48 小时；
 - checksum 不可验证或不匹配；
-- gzip 完整性失败；
+- GCM 认证解密或 gzip 完整性失败；
 - 权限过宽；
 - retention 无法从可信 root-owned 执行脚本确定；
 - 磁盘使用率达到 90%。
@@ -154,71 +172,84 @@ sudo bash /home/salaryops/task88-check-local-backup-health.sh
 
 ### 5.4 数据库 backup record 未同步
 
-物理备份检查与应用数据库记录是两条证据链。物理备份通过但 record 超龄时：
+任务89记录的不同步问题已由任务90解决。每日脚本只在 ciphertext 已落盘、sidecar
+匹配、认证解密和 gzip 验证通过后调用 recorder。recorder 在应用容器内使用 Prisma
+事务写入一条真实的 `succeeded/full/encrypted=true` 记录及对应审计：
 
-- 记录为 monitoring-record synchronization warning；
-- 不把数据库记录写成已更新；
-- 不在本 SOP 检查中写生产数据库；
-- 由 application owner 与 Operations owner 另行修复记录接入。
-
-任务89于 `2026-07-27T11:40:38Z` 只读核验后停止实施。每日脚本当前生成未加密的
-`postgres-full-<UTC timestamp>.sql.gz`，而应用 `BackupHealthService` 会把最新成功
-full record 的 `encrypted=false` 判为 `backup.not_encrypted` critical。当前唯一
-backup record 是任务81的加密 full backup，已超出72小时。为每日文件如实补录
-`encrypted=false` 虽能更新72小时 age，但不能满足 backup health 非 critical；
-写成 `encrypted=true` 属于伪造，降低 health 规则或改造/新生成加密备份均不在任务89
-授权边界内。因此任务89没有写入 backup record、没有安装 recorder、没有修改每日备份
-脚本或 unit。后续修复必须先由 product/data/application/operations owner 明确选择：
-
-1. 授权把每日备份改为真实文件级加密，并对新的真实加密 full backup 建立 record；或
-2. 另行批准并论证 backup health 对本机未加密备份的政策变更。
-
-不得用 `encrypted=true` 伪装现有 `.sql.gz`，也不得仅为清除门禁而降低检查。
+- `backupKey` 使用密文 basename 作为数据库唯一幂等键；
+- 同键且所有物理元数据一致时返回 `no_change`，不增加记录或审计；
+- 同键但大小、hash、时间、加密别名等不一致时返回 conflict，backup service 失败；
+- Evidence 写入失败不删除已完成的密文备份；修复原因后对同一密文运行
+  `sudo /usr/local/sbin/record-backup-evidence <absolute-backup-path>` 重放；
+- 不得把旧 `.sql.gz` 补写成 `encrypted=true`，也不得降低 health 检查。
 
 ## 6. 月度隔离恢复演练
 
 每月执行一次，并使用 [月度恢复演练记录模板](monthly-restore-drill-record-template.md)。开始前必须确认生产服务健康、failed units=0、API/Web restart count 未增加、三个公网入口正常、active critical alerts=0。
 
-既有可信证据：`2026-07-20T13:00:20Z` 演练从 `postgres-full-20260720T120133Z.sql.gz` 恢复到隔离 PostgreSQL 16 容器；`network=none`、无 host port、未接触或修改生产 PostgreSQL；验证 server version `160014`、两个非模板数据库和一个非系统源角色；容器退出、恢复进程清零、临时脚本删除。受限原始报告位于 `/opt/salary-settlement-admin/backups/restore-drills/restore-drill-20260720T130020Z.log`。任务88复核沿用该证据，没有执行新演练。
+最新可信证据：任务90于 `2026-07-27T13:10:32Z` 使用
+`postgres-full-20260727T131031Z.sql.gz.enc` 完成真实演练，Drill ID
+`task90-restore-20260727T131032Z`。PostgreSQL 版本 `160014`，非模板数据库=2、
+非系统源角色=2、业务 schema=2、表=33、完成迁移=17；耗时4秒，容器和 volume
+均已清理。Evidence record ID=`71f06ac2-bcea-44af-a182-339a38df0556`。
 
 ### 6.1 强制隔离条件
 
-- 资源名必须以 `task88-restore-` 加 UTC 时间戳开头；
-- 临时目录必须解析到 `/var/tmp/task88-restore-*`；
+- 资源名必须以 `task90-restore-` 加 UTC 时间戳开头；
 - 复用服务器已存在的 `postgres:16` 镜像；镜像缺失时停止，禁止自动 pull；
-- 源备份只读挂载；
+- 密文源文件不挂载到容器；宿主机认证解密和 gzip 解压后只通过 stdin 流入隔离数据库；
 - `--network none`；
 - 不使用 `-p` 或 `--publish`，host port bindings 必须为空；
 - 不传生产 `.env`、`DATABASE_URL`、生产数据库名、生产容器名或生产 volume；
-- 目标数据库固定为 `task88_restore`；
+- 使用唯一临时 Docker volume；隔离集群以专用 `task90_bootstrap` 超级用户初始化，
+  避免 `pg_dumpall` 中源 `postgres` role 与目标 bootstrap role 冲突；
 - 只做版本、schema、migration 数量、表数量等非敏感验证；
-- cleanup 只删除本次经过精确名称核验的临时容器、volume 和目录。
+- cleanup 只删除本次经过精确名称和 `task90.restore=true`/drill label 核验的临时
+  container、volume 和 `/run` 临时错误日志。
 
 ### 6.2 执行流程
 
-1. 运行每日健康检查，确认最新备份 checksum 和 gzip 均通过。
+1. 运行每日健康检查，确认最新 ciphertext checksum、GCM 认证解密和 gzip 均通过。
 2. `docker image inspect postgres:16`；不存在则停止。
-3. 生成唯一 drill ID、容器名、volume 名和 `/var/tmp/task88-restore-*` 目录；逐项校验前缀和绝对路径。
+3. 生成唯一 drill ID、容器名和 volume 名；逐项校验前缀与 label。
 4. 记录生产 API/Web restart count 和公网 health 基线。
 5. 启动临时 PostgreSQL 16：
    - `--network none`
    - 无 port publish
    - 唯一临时 volume
-   - 源备份 bind mount 为 `readonly`
-   - 非生产目标数据库 `task88_restore`
+   - 专用 bootstrap role
+   - 不传生产连接参数
 6. 用 `pg_isready` 等待临时数据库 ready。
-7. 在宿主机只读解压源备份，并通过 stdin 恢复到临时容器；`psql` 必须使用 `ON_ERROR_STOP=1`。
+7. 在宿主机把认证解密流直接交给 `gzip -dc`，再通过 stdin 恢复到临时容器；
+   `psql -X` 必须使用 `ON_ERROR_STOP=1`，不得生成长期明文文件。
 8. 只记录：
    - PostgreSQL server version；
    - public schema 表数量；
    - migration 表是否存在及已应用记录数量；
    - restore exit code 和耗时。
 9. 不查询或输出任何业务行。
-10. 精确停止并删除临时容器和 volume；校验目录绝对路径后删除临时目录。
+10. 按精确名称和 label 停止并删除临时 container、volume 和临时错误日志。
 11. 确认临时资源均不存在。
 12. 再次确认生产 Nginx/Docker/PostgreSQL active、failed units=0、API/Web restart count 与公网 health 未变化。
 
 任一隔离条件不能证明时，不执行恢复。任一 restore、验证或 cleanup 失败时，结果为 Fail，不得写成 Pass。
+
+### 6.3 解密与恢复入口
+
+只允许 root 在受控变更或月度演练中执行：
+
+```bash
+sudo /usr/local/sbin/restore-encrypted-backup \
+  /opt/salary-settlement-admin/backups/postgres-full-<UTC>.sql.gz.enc
+```
+
+工具先验证 basename、owner/group/mode、ciphertext sidecar、key 权限及镜像，再执行认证
+解密、gzip 校验和隔离恢复。不得把 `--output` 指向磁盘明文文件，不得把解密流送往生产
+PostgreSQL。成功后同步幂等 `RestoreDrillRecord`；失败时不写成功 Evidence，并保留源密文。
+
+密钥丢失、损坏或被错误替换会令现有密文备份无法恢复。当前缓解仅为 root-only 文件、
+每次操作前权限/用途/指纹检查、认证解密和真实恢复演练；这不等于已完成异机密钥托管。
+不得擅自轮换或删除该 key。任何 key 备份或异机密钥管理均须另行设计、授权和验证。
 
 ## 7. 证据与保留
 

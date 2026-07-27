@@ -180,3 +180,24 @@ T+1/T+6/T+12 没有已激活自动任务，现明确取消。仅生成 T+24 的�
 自动化 wrapper 在全部检查通过后因 `grep` 的“零匹配返回 1”与 `set -e/pipefail` 冲突而写出 `CORE_COMPLETE=fail`。这是收尾脚本退出码缺陷，不是生产异常；生产权威结果、账号清理和观察均已在该缺陷触发前通过。后续技术债是将零匹配显式归一为成功。
 
 最终状态：**Full Go stable with accepted backup risk**。不建议回滚。未解决风险仍为无异机备份；该风险已接受且不是当前上线阻断项。进入正式长期运营前须单独复核，是否实施异机备份须另行决策和授权。
+
+## 任务90备份接入后检（2026-07-27）
+
+任务90最终生产执行于 `2026-07-27T13:10:39Z` 成功结束，并在
+`2026-07-27T13:13:23Z` 完成独立只读复核。它没有重新部署、重启、切流或迁移。
+
+| 检查 | 结果 |
+| --- | --- |
+| 新加密备份 | Pass；`postgres-full-20260727T131031Z.sql.gz.enc`；ciphertext checksum、GCM 认证解密、gzip 均通过；无同时间戳明文 |
+| Evidence | Pass；BackupRecord/RestoreDrillRecord 字段匹配；对应成功审计各1条；backup recorder 重放=`no_change` |
+| 隔离恢复 | Pass；PostgreSQL 16、network none、无端口、未接触生产 DB；2 DB / 2 role / 2 schema / 33 table / 17 migration；资源清理完成 |
+| systemd | Pass；timer enabled/active；service Result=success、exit=0；failed units=0 |
+| 服务/容器/入口 | Pass；Nginx/Docker/PostgreSQL active；API/Web healthy、restart=`0/0`；本机与公网 health 入口通过 |
+| 告警 | Pass；active critical alerts=0 |
+| Backup health | Pass；warning/failure codes=none；最新密文 age=172s |
+| Release gate | exit=0；`34 pass / 3 warning / 0 fail`；backup 72h/health Pass；warnings=`E2E_PERMISSIONS_RECENT_RUN,ENV_CHECK_AVAILABLE,MIGRATIONS_UP_TO_DATE` |
+| 临时资源 | Pass；无 task90 restore container/volume；诊断和独立复核临时脚本/日志已删除 |
+
+本次 release gate 不是全绿，三个 warning 必须继续按原 gate 语义记录；但没有 fail，且两个
+备份门禁均 Pass。RISK-DP-002 已关闭；RISK-DP-001 仍为 Accepted / unresolved /
+non-blocking。此前失败尝试均触发旧备份入口自动回滚；最终执行没有回滚。

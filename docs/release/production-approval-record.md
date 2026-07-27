@@ -1115,3 +1115,44 @@ backup health 规则不可同时满足。用户只在一个可见 SSH 窗口输�
 真实文件级加密并在新的真实 full backup 后接入 recorder，或批准并论证 health 政策变更。
 在此之前不得补录虚假 `encrypted=true`，也不得降低或关闭检查。本节只记录执行事实，不作
 产品验收结论。
+
+## 26. 任务90：每日真实文件级加密、Evidence 自动同步与隔离恢复（2026-07-27）
+
+任务90实现提交为 `ed856f5eb2450c1160d63cf5532452f9f55d99fa`，生产执行窗口为
+`2026-07-27T13:10:29Z–13:10:39Z`。本次是备份运维接入，不是应用发布：未部署或重启
+API/Web，未 reload/restart Nginx，未重启 PostgreSQL，未执行 migration 或 schema 变更，
+未写业务数据，未修改 RC tag，systemd unit 未改且未 daemon-reload。用户只在可见 SSH
+窗口输入 sudo 密码；密码和 encryption key 未进入聊天、命令参数、日志、文档或 Git。
+
+| 证据项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| Git/RC | **Pass** | `main` 实现提交如上；`rc-20260712-2^{commit}`=`9f8f8f576dde54355983b96525335e94c55c8b32`；任务80未跟踪目录未修改/未提交 |
+| 加密设计 | **Pass** | `aes-256-gcm-v1`；versioned header + 每文件随机12-byte IV + 16-byte tag；header 为 AAD；gzip 后流式加密 |
+| Key | **Pass** | 首次受控安装尝试生成，最终执行复用；`/etc/salary-settlement-admin/backup-file-encryption.key`；`root:root 0600`；指纹=`21a4f3bcc4e041cb`；未记录 key |
+| 生产文件/回滚 | **Pass** | 安装 crypto、recorder/helper、restore、health 和 daily backup 六个文件；修改前入口备份在 `/root/task90-rollback-20260727T131029Z`；最终无需回滚 |
+| 新 full backup | **Pass** | `postgres-full-20260727T131031Z.sql.gz.enc`；18,087 bytes；`root:postgres 0640`；加密开销44 bytes；同时间戳明文不存在 |
+| Ciphertext checksum | **Pass** | `8b5020ad2d7f95f238e4f6010f47d6605e58d829928019dbfaeb46338048b146`；sidecar match |
+| 恢复前真实性 | **Pass** | GCM authentication Pass；解密流 gzip integrity Pass |
+| Backup Evidence | **Pass** | BackupRecord ID=`4c99b322-073e-47c3-8537-0dd055ca5b05`；真实 succeeded/full/encrypted 字段匹配；count `2→3`；重放=`no_change`；成功审计恰好1条 |
+| 隔离恢复 | **Pass** | Drill=`task90-restore-20260727T131032Z`；PostgreSQL `160014`；唯一 container/volume；network none；host port none；未接触生产 DB；duration=4s |
+| 非敏感恢复验证 | **Pass** | database=2、role=2、schema=2、table=33、finished migration=17；未查询或输出业务行 |
+| Restore Evidence/cleanup | **Pass** | RestoreDrillRecord ID=`71f06ac2-bcea-44af-a182-339a38df0556`；成功审计恰好1条；container/volume/临时日志清理完成，独立复核无残留 |
+| Backup health | **Pass** | timer enabled/active；service Result=success、exit=0；latest age=172s；checksum/authenticated decrypt/gzip Pass；warning/failure codes=none |
+| Release gate | **Warning / exit 0** | `34 pass / 3 warning / 0 fail`；required fail=none；`BACKUP_WITHIN_72H=pass`；`BACKUP_HEALTH_GATE=pass`；health=`ok` |
+| Gate warnings | **Recorded** | `E2E_PERMISSIONS_RECENT_RUN,ENV_CHECK_AVAILABLE,MIGRATIONS_UP_TO_DATE`；与备份修复无关，但不得写成全绿 |
+| 生产后检 | **Pass** | Nginx/Docker/PostgreSQL active；failed units=0；API/Web healthy、restart=`0/0`；Admin/API live/API ready Pass；active critical alerts=0 |
+| 容量/retention | **Pass** | filesystem used=4%；backup directory=169,423 bytes；本次密文估算30日新增=542,610 bytes；retention=30天 |
+| 最终回滚 | **Not performed** | 最终 `13:10` 执行成功，保留新脚本、key、密文和真实 Evidence |
+
+在最终成功前发生过受控失败与自动回滚，均如实保留：首次因官方 `postgres:16` 镜像缺失
+在写入前停止；其后依次暴露安装布局、systemd `ProtectSystem=strict` 写路径、已回滚 service
+历史状态门禁问题；`13:00` 尝试完成密文和 BackupRecord 后，因默认 bootstrap role 与
+`pg_dumpall` 源 role 冲突导致隔离恢复失败并回滚旧备份入口。根因修复为隔离目标使用专用
+bootstrap role，最终真实恢复通过。失败尝试均未回滚或删除已生成 key/密文/Evidence，
+没有把失败 drill 写成成功。
+
+风险结论：RISK-DP-002 满足“每日真实加密、Evidence 自动同步、最新记录真实、幂等、
+backup health、backup gate、隔离恢复”全部关闭条件，改为 **Resolved / Closed**。
+RISK-DP-001 继续为 **Accepted / unresolved / non-blocking**，没有配置异机备份。
+新增 RISK-DP-003 记录本机 key 丢失风险，状态 **Open / Mitigated / non-blocking**。
+本节记录执行事实，不作产品验收结论。
