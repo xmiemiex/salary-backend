@@ -94,6 +94,11 @@ fail() {
   exit 1
 }
 
+previous_task90_summary=''
+if [[ -f "$result_file" && ! -L "$result_file" &&
+  "$(stat -c '%U:%G:%a' "$result_file")" == 'salaryops:salaryops:600' ]]; then
+  previous_task90_summary="$(<"$result_file")"
+fi
 install -o salaryops -g salaryops -m 0600 /dev/null "$result_file"
 record "TASK90_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 record "TASK90_IMPLEMENTATION_COMMIT=$required_commit"
@@ -122,6 +127,7 @@ done
 for unit in nginx docker postgresql; do
   systemctl is-active --quiet "$unit" || fail "service_not_active_${unit}"
 done
+stale_backup_failure_reset=0
 mapfile -t failed_units < <(
   systemctl list-units --state=failed --no-legend --plain |
     awk 'NF { print $1 }'
@@ -139,6 +145,7 @@ if [[ "${#failed_units[@]}" -eq 1 && "${failed_units[0]}" == 'salary-postgres-ba
   cmp -s "$backup_script" "$latest_previous_rollback_script" ||
     fail stale_backup_failure_script_mismatch
   systemctl reset-failed salary-postgres-backup.service
+  stale_backup_failure_reset=1
   record 'TASK90_STALE_BACKUP_FAILED_STATE_RESET=performed'
 elif [[ "${#failed_units[@]}" -ne 0 ]]; then
   fail failed_units_present
@@ -149,10 +156,34 @@ fi
   fail failed_units_present_after_reset
 systemctl is-enabled --quiet salary-postgres-backup.timer || fail backup_timer_not_enabled
 systemctl is-active --quiet salary-postgres-backup.timer || fail backup_timer_not_active
-[[ "$(systemctl show salary-postgres-backup.service -p Result --value)" == 'success' ]] ||
-  fail previous_backup_result_not_success
-[[ "$(systemctl show salary-postgres-backup.service -p ExecMainStatus --value)" == '0' ]] ||
-  fail previous_backup_exit_nonzero
+previous_service_result="$(systemctl show salary-postgres-backup.service -p Result --value)"
+previous_service_exit="$(systemctl show salary-postgres-backup.service -p ExecMainStatus --value)"
+if [[ "$previous_service_result" == 'success' && "$previous_service_exit" == '0' ]]; then
+  record 'TASK90_PREVIOUS_SERVICE_RESULT=success'
+elif [[ "$stale_backup_failure_reset" -eq 1 ]]; then
+  [[ "$(systemctl is-active salary-postgres-backup.service || true)" == 'inactive' ]] ||
+    fail reset_backup_service_not_inactive
+  record 'TASK90_PREVIOUS_SERVICE_RESULT=known_task90_rollback_failure'
+elif grep -qx 'TASK90_STALE_BACKUP_FAILED_STATE_RESET=performed' <<<"$previous_task90_summary" &&
+  grep -qx 'TASK90_ROLLOUT_ERROR=previous_backup_exit_nonzero' <<<"$previous_task90_summary"; then
+  latest_previous_rollback_script="$(
+    find /root -mindepth 2 -maxdepth 2 -type f \
+      -path '/root/task90-rollback-*/salary-postgres-backup' \
+      -printf '%T@ %p\n' |
+      sort -nr |
+      head -n 1 |
+      cut -d' ' -f2-
+  )"
+  [[ -n "$latest_previous_rollback_script" ]] ||
+    fail previous_reset_without_rollback_copy
+  cmp -s "$backup_script" "$latest_previous_rollback_script" ||
+    fail previous_reset_script_mismatch
+  [[ "$(systemctl is-active salary-postgres-backup.service || true)" == 'inactive' ]] ||
+    fail previous_reset_service_not_inactive
+  record 'TASK90_PREVIOUS_SERVICE_RESULT=known_task90_rollback_failure_after_reset'
+else
+  fail previous_backup_result_or_exit_invalid
+fi
 [[ "$(systemctl is-active salary-postgres-backup.service || true)" == 'inactive' ]] ||
   fail backup_service_already_active
 ! pgrep -x pg_dump >/dev/null 2>&1 || fail pg_dump_already_running
