@@ -225,16 +225,22 @@ install -o root -g root -m 0750 "$staging_dir/check-local-backup-health.sh" "$he
 install -o root -g root -m 0750 "$staging_dir/salary-postgres-backup" "$backup_script"
 rollback_needed=1
 
+record 'TASK90_INSTALL_VALIDATION_STAGE=syntax'
 node --check "$crypto_tool"
 node --check "$database_helper"
 bash -n "$backup_script"
 bash -n "$recorder"
 bash -n "$restore_tool"
 bash -n "$health_tool"
+record 'TASK90_INSTALL_VALIDATION_STAGE=backup_self_test'
 "$backup_script" --self-test
+record 'TASK90_INSTALL_VALIDATION_STAGE=recorder_self_test'
 "$recorder" --self-test
+record 'TASK90_INSTALL_VALIDATION_STAGE=restore_self_test'
 "$restore_tool" --self-test
+record 'TASK90_INSTALL_VALIDATION_STAGE=health_self_test'
 "$health_tool" --self-test
+record 'TASK90_INSTALL_VALIDATION_STAGE=pass'
 
 install -d -o root -g root -m 0700 "$key_dir"
 key_disposition='reused'

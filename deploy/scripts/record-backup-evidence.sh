@@ -43,7 +43,7 @@ self_test() {
   ! backup_name_is_valid '../postgres-full-20260727T120000Z.sql.gz.enc'
   ! backup_name_is_valid 'postgres-full-20260727T120000Z.sql.gz.enc.sha256'
 
-  local fixture script_dir fixture_key fixture_name fixture_backup
+  local fixture script_dir self_test_crypto fixture_key fixture_name fixture_backup
   fixture="$(mktemp -d)"
   case "$(realpath -e "$fixture")" in
     /tmp/* | /var/tmp/*) ;;
@@ -51,13 +51,18 @@ self_test() {
   esac
   trap 'rm -rf -- "$fixture"' RETURN
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  self_test_crypto="$crypto_tool"
+  if [[ ! -f "$self_test_crypto" ]]; then
+    self_test_crypto="$script_dir/backup-file-crypto.mjs"
+  fi
+  [[ -f "$self_test_crypto" && ! -L "$self_test_crypto" ]]
   fixture_key="$fixture/key"
   fixture_name='postgres-full-20260727T120000Z.sql.gz.enc'
   fixture_backup="$fixture/$fixture_name"
-  node "$script_dir/backup-file-crypto.mjs" generate-key --key-file "$fixture_key" >/dev/null
+  node "$self_test_crypto" generate-key --key-file "$fixture_key" >/dev/null
   printf 'recorder fixture\n' |
     gzip -c |
-    node "$script_dir/backup-file-crypto.mjs" encrypt \
+    node "$self_test_crypto" encrypt \
       --key-file "$fixture_key" --input - --output "$fixture_backup"
   (cd "$fixture" && sha256sum "$fixture_name" >"${fixture_name}.sha256")
   sidecar_matches "$fixture" "$fixture_backup" "$fixture_name"
