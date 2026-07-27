@@ -12,7 +12,8 @@ retention_days=30
 minimum_free_bytes=$((5 * 1024 * 1024 * 1024))
 warning_disk_percent=80
 critical_disk_percent=90
-lock_file='/run/salary-postgres-backup.lock'
+lock_dir="${backup_dir}/.locks"
+lock_file="${lock_dir}/salary-postgres-backup.lock"
 
 temporary_backup=''
 temporary_sidecar=''
@@ -94,18 +95,25 @@ fi
   exit 1
 }
 
-exec 9>"$lock_file"
-flock -n 9 || {
-  echo 'BACKUP_ERROR=backup_already_running' >&2
-  exit 1
-}
-
 [[ -d "$backup_dir" && ! -L "$backup_dir" ]] || {
   echo 'BACKUP_ERROR=backup_directory_invalid' >&2
   exit 1
 }
 [[ "$(stat -c '%U:%G:%a' "$backup_dir")" == 'root:postgres:750' ]] || {
   echo 'BACKUP_ERROR=backup_directory_permissions_invalid' >&2
+  exit 1
+}
+
+install -d -o root -g postgres -m 0750 "$lock_dir" || {
+  echo 'BACKUP_ERROR=lock_directory_unavailable' >&2
+  exit 1
+}
+if ! exec 9>"$lock_file"; then
+  echo 'BACKUP_ERROR=lock_file_unavailable' >&2
+  exit 1
+fi
+flock -n 9 || {
+  echo 'BACKUP_ERROR=backup_already_running' >&2
   exit 1
 }
 
