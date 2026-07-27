@@ -155,7 +155,20 @@ curl -fsS -o /dev/null http://127.0.0.1:8080/healthz || fail web_health_not_200
 curl -fsS -o /dev/null https://admin-salary.lovemiemie.com/ || fail public_admin_not_200
 curl -fsS -o /dev/null https://api-salary.lovemiemie.com/health/live || fail public_api_live_not_200
 curl -fsS -o /dev/null https://api-salary.lovemiemie.com/health/ready || fail public_api_ready_not_200
-docker image inspect postgres:16 >/dev/null 2>&1 || fail postgres16_image_missing
+postgres_image_disposition='reused'
+if ! docker image inspect postgres:16 >/dev/null 2>&1; then
+  docker pull docker.io/library/postgres:16
+  postgres_image_disposition='pulled'
+fi
+docker image inspect postgres:16 >/dev/null 2>&1 || fail postgres16_image_unavailable
+postgres_image_id="$(docker image inspect postgres:16 --format '{{.Id}}')"
+postgres_image_digest="$(docker image inspect postgres:16 --format '{{index .RepoDigests 0}}')"
+[[ "$postgres_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail postgres16_image_id_invalid
+[[ "$postgres_image_digest" == 'postgres@sha256:'* || "$postgres_image_digest" == 'docker.io/library/postgres@sha256:'* ]] ||
+  fail postgres16_image_digest_invalid
+record "TASK90_POSTGRES16_IMAGE_DISPOSITION=$postgres_image_disposition"
+record "TASK90_POSTGRES16_IMAGE_ID=$postgres_image_id"
+record "TASK90_POSTGRES16_IMAGE_DIGEST=$postgres_image_digest"
 
 read -r disk_available disk_used_percent < <(
   df -PB1 "$backup_dir" | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }'
