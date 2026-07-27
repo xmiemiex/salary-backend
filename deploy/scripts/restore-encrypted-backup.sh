@@ -10,6 +10,8 @@ crypto_tool='/usr/local/libexec/salary-settlement-admin/backup-file-crypto.mjs'
 database_helper='/usr/local/libexec/salary-settlement-admin/record-backup-evidence-db.cjs'
 api_container='salary-settlement-admin-api-1'
 postgres_image='postgres:16'
+bootstrap_role='task90_bootstrap'
+bootstrap_database='postgres'
 
 container_name=''
 volume_name=''
@@ -62,6 +64,8 @@ if [[ "${1:-}" == '--self-test' ]]; then
   [[ "$#" -eq 1 ]]
   [[ 'task90-restore-20260727T120000Z-container' =~ ^task90-restore-[0-9]{8}T[0-9]{6}Z-container$ ]]
   [[ 'task90-restore-20260727T120000Z-volume' =~ ^task90-restore-[0-9]{8}T[0-9]{6}Z-volume$ ]]
+  [[ "$bootstrap_role" =~ ^[a-z][a-z0-9_]{0,62}$ ]]
+  [[ "$bootstrap_database" =~ ^[a-z][a-z0-9_]{0,62}$ ]]
   echo 'RESTORE_ENCRYPTED_BACKUP_SELF_TEST=pass'
   exit 0
 fi
@@ -111,6 +115,8 @@ docker run -d \
   --label task90.restore=true \
   --label "task90.drill=$drill_id" \
   --mount "type=volume,src=$volume_name,dst=/var/lib/postgresql/data" \
+  -e "POSTGRES_USER=$bootstrap_role" \
+  -e "POSTGRES_DB=$bootstrap_database" \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   "$postgres_image" >/dev/null
 container_created=1
@@ -122,7 +128,8 @@ port_bindings="$(docker inspect "$container_name" --format '{{json .HostConfig.P
 
 ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$container_name" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  if docker exec "$container_name" pg_isready \
+    -U "$bootstrap_role" -d "$bootstrap_database" >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -131,22 +138,37 @@ done
 [[ "$ready" -eq 1 ]] || fail isolated_postgres_not_ready
 
 set +e
-node "$crypto_tool" decrypt --key-file "$key_file" --input "$backup_path" --output - |
-  gzip -dc |
-  docker exec -i "$container_name" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres \
+{
+  printf '\\set VERBOSITY sqlstate\n'
+  node "$crypto_tool" decrypt --key-file "$key_file" --input "$backup_path" --output - |
+    gzip -dc
+} |
+  docker exec -i "$container_name" psql -X -q -v ON_ERROR_STOP=1 \
+    -U "$bootstrap_role" -d "$bootstrap_database" \
     >"$restore_log" 2>&1
 restore_exit=$?
 set -e
-[[ "$restore_exit" -eq 0 ]] || fail isolated_restore_failed
+if [[ "$restore_exit" -ne 0 ]]; then
+  restore_sqlstate_codes="$(
+    sed -nE 's/^ERROR:[[:space:]]+([0-9A-Z]{5})$/\1/p' "$restore_log" |
+      sort -u |
+      paste -sd, -
+  )"
+  echo "RESTORE_DRILL_SQLSTATE_CODES=${restore_sqlstate_codes:-unavailable}"
+  fail isolated_restore_failed
+fi
 rm -f -- "$restore_log"
 restore_log=''
 
-server_version="$(docker exec "$container_name" psql -X -Aqt -U postgres -d postgres -c 'SHOW server_version_num')"
+server_version="$(docker exec "$container_name" psql -X -Aqt \
+  -U "$bootstrap_role" -d "$bootstrap_database" -c 'SHOW server_version_num')"
 [[ "$server_version" =~ ^16[0-9]+$ ]] || fail restored_version_invalid
-database_count="$(docker exec "$container_name" psql -X -Aqt -U postgres -d postgres -c \
+database_count="$(docker exec "$container_name" psql -X -Aqt \
+  -U "$bootstrap_role" -d "$bootstrap_database" -c \
   "SELECT count(*) FROM pg_database WHERE NOT datistemplate")"
-role_count="$(docker exec "$container_name" psql -X -Aqt -U postgres -d postgres -c \
-  "SELECT count(*) FROM pg_roles WHERE rolname !~ '^pg_'")"
+role_count="$(docker exec "$container_name" psql -X -Aqt \
+  -U "$bootstrap_role" -d "$bootstrap_database" -c \
+  "SELECT count(*) FROM pg_roles WHERE rolname !~ '^pg_' AND rolname <> '$bootstrap_role'")"
 [[ "$database_count" =~ ^[0-9]+$ && "$role_count" =~ ^[0-9]+$ ]] || fail restored_counts_invalid
 
 schema_count=0
@@ -154,14 +176,18 @@ table_count=0
 migration_count=0
 while IFS= read -r database_name; do
   [[ -n "$database_name" ]] || continue
-  database_schema_count="$(docker exec "$container_name" psql -X -Aqt -U postgres -d "$database_name" -c \
+  database_schema_count="$(docker exec "$container_name" psql -X -Aqt \
+    -U "$bootstrap_role" -d "$database_name" -c \
     "SELECT count(*) FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema'")"
-  database_table_count="$(docker exec "$container_name" psql -X -Aqt -U postgres -d "$database_name" -c \
+  database_table_count="$(docker exec "$container_name" psql -X -Aqt \
+    -U "$bootstrap_role" -d "$database_name" -c \
     "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'")"
-  migration_table="$(docker exec "$container_name" psql -X -Aqt -U postgres -d "$database_name" -c \
+  migration_table="$(docker exec "$container_name" psql -X -Aqt \
+    -U "$bootstrap_role" -d "$database_name" -c \
     "SELECT COALESCE(to_regclass('public._prisma_migrations')::text, '')")"
   if [[ -n "$migration_table" ]]; then
-    database_migration_count="$(docker exec "$container_name" psql -X -Aqt -U postgres -d "$database_name" -c \
+    database_migration_count="$(docker exec "$container_name" psql -X -Aqt \
+      -U "$bootstrap_role" -d "$database_name" -c \
       "SELECT count(*) FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL")"
   else
     database_migration_count=0
@@ -172,7 +198,8 @@ while IFS= read -r database_name; do
   table_count=$((table_count + database_table_count))
   migration_count=$((migration_count + database_migration_count))
 done < <(
-  docker exec "$container_name" psql -X -Aqt -U postgres -d postgres -c \
+  docker exec "$container_name" psql -X -Aqt \
+    -U "$bootstrap_role" -d "$bootstrap_database" -c \
     "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
 )
 

@@ -416,8 +416,19 @@ record "TASK90_DISK_AVAILABLE_BYTES_AFTER=$disk_available_after"
 record "TASK90_PROJECTED_30_DAY_ENCRYPTED_BYTES=$projected_30_day_bytes"
 record 'TASK90_RETENTION_DAYS=30'
 
-restore_output="$("$restore_tool" "$new_backup")"
+set +e
+restore_output="$("$restore_tool" "$new_backup" 2>&1)"
+restore_exit=$?
+set -e
 printf '%s\n' "$restore_output"
+record "TASK90_RESTORE_TOOL_EXIT=$restore_exit"
+if [[ "$restore_exit" -ne 0 ]]; then
+  restore_error="$(sed -n 's/^RESTORE_DRILL_ERROR=//p' <<<"$restore_output" | tail -n 1)"
+  restore_sqlstates="$(sed -n 's/^RESTORE_DRILL_SQLSTATE_CODES=//p' <<<"$restore_output" | tail -n 1)"
+  record "TASK90_RESTORE_ERROR=${restore_error:-unavailable}"
+  record "TASK90_RESTORE_SQLSTATE_CODES=${restore_sqlstates:-none}"
+  fail restore_drill_failed
+fi
 grep -qx 'RESTORE_DRILL_STATUS=success' <<<"$restore_output" || fail restore_drill_failed
 for field in \
   RESTORE_DRILL_ID \
