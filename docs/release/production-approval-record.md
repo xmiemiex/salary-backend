@@ -1088,3 +1088,30 @@ T+24 复核已完成，但并非全部通过。任务85收口时的历史决定�
 | 无异机备份 | **Accepted / unresolved / non-blocking** | 当前不实施 DigitalOcean Spaces、S3、对象存储、远端同步或其他异机备份；进入正式长期运营前单独复核 |
 
 新增长期 SOP、月度演练空白模板、生产风险台账和严格只读健康检查脚本。任务88只记录执行事实，不作产品验收结论。
+
+## 25. 任务89：物理备份 Evidence 与应用 backup record 自动同步（Blocked，2026-07-27）
+
+任务89完成了仓库与生产只读诊断，但在任何生产写入和实现提交前发现真实性要求与现有
+backup health 规则不可同时满足。用户只在一个可见 SSH 窗口输入一次 sudo 密码；密码
+未进入聊天、命令参数、文件、日志或 Git。发现用临时脚本与副本已清理。
+
+| 检查项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| Git/RC 基线 | **Pass** | `main`；开始时 `HEAD=origin/main=f177924fe8472cb3a1860106fe8d77847896a4db`；`rc-20260712-2^{commit}=9f8f8f576dde54355983b96525335e94c55c8b32`；任务80未跟踪目录未修改 |
+| release gate 数据源 | **Confirmed** | `BackupRecord` / `backup_records`；`status=succeeded`、`backupType=full`；按 `completedAt` 降序，72小时 age 使用 `completedAt`，缺失时回退 `startedAt` |
+| 现有唯一键 | **Confirmed** | `backupKey` 为数据库唯一字段，可作为物理 basename 幂等键；无需 schema/migration |
+| 最新物理备份 | **Pass / unchanged** | `postgres-full-20260727T021616Z.sql.gz`；mtime=`2026-07-27T02:16:17Z`；17,742 bytes；root:postgres `0640`；sidecar match；gzip 通过 |
+| Timer/service | **Pass** | timer enabled/active；service Result=success、exit=0；retention=30天 |
+| 应用 backup record | **Stale** | 共1条；任务81加密 full record；completedAt=`2026-07-23T15:19:11Z`；检查时 age=92h；checksum present、`encrypted=true` |
+| 当前 backup health | **Critical** | 只读等价计算为 `backup.success_too_old` |
+| 阻断事实 | **Confirmed** | 每日脚本生成未加密 `.sql.gz`。如实新 record 必须为 `encrypted=false`，现有 `BackupHealthService` 会产生 `backup.not_encrypted` critical；写 `true` 是伪造，降低规则被任务硬边界禁止 |
+| 生产修改 | **Not performed** | recorder/backup script/systemd unit/retention 均未改；backup record、业务表、restore drill evidence 均未写 |
+| 服务与数据动作 | **Not performed** | 无 API/Web 部署；无 API/Web/Nginx/PostgreSQL 重启；无 Nginx 切流；无 migration；无异机备份配置 |
+| release gate | **Not run after write** | 没有发生生产写入，故未伪造“修复后”门禁；72小时检查仍预期 fail，backup health 仍 critical |
+| 回滚 | **Not required** | 实施未开始；无生产变更需要回滚 |
+| 风险状态 | **Unchanged** | `RISK-DP-002` 保持 Open；`RISK-DP-001` 保持 Accepted |
+
+后续需要 product/data/application/operations owner 明确选择并另行授权：把每日流程改为
+真实文件级加密并在新的真实 full backup 后接入 recorder，或批准并论证 health 政策变更。
+在此之前不得补录虚假 `encrypted=true`，也不得降低或关闭检查。本节只记录执行事实，不作
+产品验收结论。

@@ -59,4 +59,6 @@ T+24 的1440分钟窗口已完成；任务86随后以真实 production 401/403�
 
 任务88于 `2026-07-27T10:58:25Z` 复核：timer enabled/active；最近 service success/exit 0；最新本机备份为 `postgres-full-20260727T021616Z.sql.gz`、17,742 bytes，生成时 sidecar checksum match，gzip 完整性通过，目录/文件权限满足最小权限，磁盘使用率 4%，实际 retention 为30天。应用数据库中的 backup record 没有随每日物理备份更新，形成 monitoring-record synchronization warning；任务88未写生产数据库。
 
+任务89于 `2026-07-27T11:40:38Z` 使用一次可见 SSH sudo 会话完成只读定位。最新物理备份事实与任务88一致；应用库只有1条任务81加密 full record，完成于 `2026-07-23T15:19:11Z`，只读检查时 age=92h，backup health 因超龄为 critical。每日脚本实际生成未加密 `.sql.gz`；若如实写入 `encrypted=false`，现有 health 会改为 `backup.not_encrypted` critical，无法满足任务89硬性目标。任务89因此在生产写入前停止：未安装 recorder，未修改 backup script/unit/retention，未执行 daemon-reload，未重启服务，未运行 migration，未写业务数据或 backup record，未运行完整 release gate，未发生回滚。交互会话和临时副本已清理。`RISK-DP-002` 保持 Open；`RISK-DP-001` 保持 Accepted。
+
 任务86 wrapper 的唯一已知技术债是敏感扫描零匹配时 `grep` 返回 1 与 `set -e/pipefail` 冲突，导致非生产性的最终退出码错误；生产 gate、观察和清理结果不受影响。

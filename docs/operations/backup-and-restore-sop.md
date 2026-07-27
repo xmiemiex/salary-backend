@@ -161,6 +161,20 @@ sudo bash /home/salaryops/task88-check-local-backup-health.sh
 - 不在本 SOP 检查中写生产数据库；
 - 由 application owner 与 Operations owner 另行修复记录接入。
 
+任务89于 `2026-07-27T11:40:38Z` 只读核验后停止实施。每日脚本当前生成未加密的
+`postgres-full-<UTC timestamp>.sql.gz`，而应用 `BackupHealthService` 会把最新成功
+full record 的 `encrypted=false` 判为 `backup.not_encrypted` critical。当前唯一
+backup record 是任务81的加密 full backup，已超出72小时。为每日文件如实补录
+`encrypted=false` 虽能更新72小时 age，但不能满足 backup health 非 critical；
+写成 `encrypted=true` 属于伪造，降低 health 规则或改造/新生成加密备份均不在任务89
+授权边界内。因此任务89没有写入 backup record、没有安装 recorder、没有修改每日备份
+脚本或 unit。后续修复必须先由 product/data/application/operations owner 明确选择：
+
+1. 授权把每日备份改为真实文件级加密，并对新的真实加密 full backup 建立 record；或
+2. 另行批准并论证 backup health 对本机未加密备份的政策变更。
+
+不得用 `encrypted=true` 伪装现有 `.sql.gz`，也不得仅为清除门禁而降低检查。
+
 ## 6. 月度隔离恢复演练
 
 每月执行一次，并使用 [月度恢复演练记录模板](monthly-restore-drill-record-template.md)。开始前必须确认生产服务健康、failed units=0、API/Web restart count 未增加、三个公网入口正常、active critical alerts=0。

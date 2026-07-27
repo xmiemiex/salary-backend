@@ -62,3 +62,7 @@ T+24 若仅因任务84真实 403 evidence 超过24小时而出现 `E2E_PERMISSIO
 6. 周期性抽检生产审计导出，仅保留脱敏计数与受控 evidence。
 7. 固化依赖升级和安全补丁节奏。
 8. 如后续需要业务数据导入/初始化，先设计幂等、审计、回滚和审批流程。
+9. 任务89确认物理 backup record 自动同步仍为 Open。当前每日文件是未加密 `.sql.gz`，不能伪装
+   `encrypted=true`；如实记录会触发现有 `backup.not_encrypted` critical。实施 recorder
+   前必须另行决定并授权真实文件级加密，或批准并论证 backup health 政策变更。不得通过
+   降低门禁、关闭检查或伪造 Evidence 收口。

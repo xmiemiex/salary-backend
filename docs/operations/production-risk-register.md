@@ -29,5 +29,7 @@
 | 当前缓解 | 每日使用物理只读检查脚本；两条证据链分开记录，不互相伪装 |
 | 未实施措施 | 自动把每日 timer 结果写入应用 backup record |
 | 当前是否阻断运行 | 否；物理备份可用性已独立验证 |
-| 当前是否需要生产写入修复 | 是，须另行授权；任务88未执行 |
+| 当前是否需要生产写入修复 | 是；任务89已获 record 写入授权，但因真实性与现有 health 规则冲突而未执行 |
+| 任务89结果 | **Blocked / no production write**：每日 `.sql.gz` 未加密；如实记录 `encrypted=false` 会触发 `backup.not_encrypted` critical，伪造 `true` 或降低检查均被禁止 |
+| 后续决策 | 在“每日真实文件级加密”与“另行批准 backup health 政策变更”之间明确选择；在此之前保持 Open |
 | 建议责任人 | Application owner + Operations owner |
