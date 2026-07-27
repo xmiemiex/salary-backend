@@ -9,6 +9,8 @@ warning_age_seconds=$((36 * 60 * 60))
 critical_age_seconds=$((48 * 60 * 60))
 warning_disk_percent=80
 critical_disk_percent=90
+crypto_tool='/usr/local/libexec/salary-settlement-admin/backup-file-crypto.mjs'
+key_file='/etc/salary-settlement-admin/backup-file-encryption.key'
 
 failures=()
 warnings=()
@@ -48,10 +50,13 @@ self_test() {
     sha256sum -c --status backup.sql.gz.sha256
   )
   gzip -t "$fixture/backup.sql.gz"
-  if [[ "$(uname -s)" != MINGW* ]]; then
-    chmod 0640 "$fixture/backup.sql.gz" "$fixture/backup.sql.gz.sha256"
-    [[ "$(stat -c '%a' "$fixture/backup.sql.gz")" == '640' ]]
-  fi
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) ;;
+    *)
+      chmod 0640 "$fixture/backup.sql.gz" "$fixture/backup.sql.gz.sha256"
+      [[ "$(stat -c '%a' "$fixture/backup.sql.gz")" == '640' ]]
+      ;;
+  esac
   mode_has_bit 640 0040
   ! mode_has_bit 640 0004
   rm -rf -- "$fixture"
@@ -227,6 +232,30 @@ else
   fi
 
   case "$latest_name" in
+    *.sql.gz.enc)
+      if [[ ! -f "$crypto_tool" || -L "$crypto_tool" ]]; then
+        echo 'TASK88_BACKUP_ENCRYPTION_FORMAT=unverifiable'
+        echo 'TASK88_BACKUP_INTEGRITY_RESULT=crypto_tool_missing'
+        fail crypto_tool_missing
+      elif [[ ! -f "$key_file" || -L "$key_file" ]]; then
+        echo 'TASK88_BACKUP_ENCRYPTION_FORMAT=unverifiable'
+        echo 'TASK88_BACKUP_INTEGRITY_RESULT=key_file_missing'
+        fail key_file_missing
+      elif [[ "$(stat -c '%U:%G:%a' "$key_file")" != 'root:root:600' ]]; then
+        echo 'TASK88_BACKUP_ENCRYPTION_FORMAT=unverifiable'
+        echo 'TASK88_BACKUP_INTEGRITY_RESULT=key_permissions_invalid'
+        fail key_permissions_invalid
+      elif node "$crypto_tool" inspect --key-file "$key_file" --input "$latest" >/dev/null 2>&1 &&
+        node "$crypto_tool" decrypt --key-file "$key_file" --input "$latest" --output - 2>/dev/null |
+          gzip -t 2>/dev/null; then
+        echo 'TASK88_BACKUP_ENCRYPTION_FORMAT=aes-256-gcm-v1'
+        echo 'TASK88_BACKUP_INTEGRITY_RESULT=pass_authenticated_decrypt_gzip'
+      else
+        echo 'TASK88_BACKUP_ENCRYPTION_FORMAT=aes-256-gcm-v1'
+        echo 'TASK88_BACKUP_INTEGRITY_RESULT=fail_authenticated_decrypt_gzip'
+        fail encrypted_backup_integrity_failed
+      fi
+      ;;
     *.sql.gz)
       if gzip -t "$latest" 2>/dev/null; then
         echo 'TASK88_BACKUP_INTEGRITY_RESULT=pass_gzip'

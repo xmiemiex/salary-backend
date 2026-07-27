@@ -1,1 +1,4 @@
-deploy/scripts/check-local-backup-health.sh text eol=lf
+deploy/scripts/*.sh text eol=lf
+deploy/scripts/salary-postgres-backup text eol=lf
+deploy/scripts/*.mjs text eol=lf
+deploy/scripts/*.cjs text eol=lf

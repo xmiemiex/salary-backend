@@ -14,3 +14,10 @@ tmp
 *.dump
 *.backup
 *.bak
+postgres-full-*.sql
+postgres-full-*.sql.gz
+postgres-full-*.sql.gz.sha256
+postgres-full-*.sql.gz.enc
+postgres-full-*.sql.gz.enc.sha256
+backup-file-encryption.key
+backup-file-encryption.key.meta

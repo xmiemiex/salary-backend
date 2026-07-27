@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export LC_ALL=C
+umask 027
+
+backup_dir='/opt/salary-settlement-admin/backups'
+key_file='/etc/salary-settlement-admin/backup-file-encryption.key'
+crypto_tool='/usr/local/libexec/salary-settlement-admin/backup-file-crypto.mjs'
+evidence_recorder='/usr/local/sbin/record-backup-evidence'
+retention_days=30
+minimum_free_bytes=$((5 * 1024 * 1024 * 1024))
+warning_disk_percent=80
+critical_disk_percent=90
+lock_file='/run/salary-postgres-backup.lock'
+
+temporary_backup=''
+temporary_sidecar=''
+backup_finalized=0
+
+cleanup() {
+  local exit_code=$?
+  if [[ -n "$temporary_backup" && -e "$temporary_backup" ]]; then
+    rm -f -- "$temporary_backup"
+  fi
+  if [[ -n "$temporary_sidecar" && -e "$temporary_sidecar" ]]; then
+    rm -f -- "$temporary_sidecar"
+  fi
+  if [[ "$exit_code" -ne 0 ]]; then
+    if [[ "$backup_finalized" -eq 1 ]]; then
+      echo 'PHYSICAL_BACKUP_STATUS=success'
+    else
+      echo 'PHYSICAL_BACKUP_STATUS=failed'
+    fi
+    echo 'BACKUP_STATUS=failed'
+  fi
+  exit "$exit_code"
+}
+trap cleanup EXIT
+
+delete_expired_backups() {
+  local target_dir="$1"
+  local retention="$2"
+  [[ "$target_dir" == /* && "$target_dir" != '/' ]] || return 1
+  [[ "$retention" =~ ^[0-9]+$ && "$retention" -ge 1 ]] || return 1
+  find "$target_dir" -maxdepth 1 -type f -mtime "+$retention" \
+    \( -name 'postgres-full-????????T??????Z.sql.gz' \
+       -o -name 'postgres-full-????????T??????Z.sql.gz.sha256' \
+       -o -name 'postgres-full-????????T??????Z.sql.gz.enc' \
+       -o -name 'postgres-full-????????T??????Z.sql.gz.enc.sha256' \) \
+    -delete
+}
+
+self_test() {
+  local fixture
+  fixture="$(mktemp -d)"
+  case "$(realpath -e "$fixture")" in
+    /tmp/* | /var/tmp/*) ;;
+    *) echo 'SALARY_POSTGRES_BACKUP_SELF_TEST=fail reason=unsafe_temp_path'; return 1 ;;
+  esac
+  trap 'rm -rf -- "$fixture"' RETURN
+  local names=(
+    postgres-full-20260601T000000Z.sql.gz
+    postgres-full-20260601T000000Z.sql.gz.sha256
+    postgres-full-20260601T000000Z.sql.gz.enc
+    postgres-full-20260601T000000Z.sql.gz.enc.sha256
+  )
+  local name
+  for name in "${names[@]}"; do
+    : >"$fixture/$name"
+    touch -d '32 days ago' "$fixture/$name"
+  done
+  : >"$fixture/postgres-full-20260727T120000Z.sql.gz.enc"
+  : >"$fixture/unrelated-file"
+  touch -d '32 days ago' "$fixture/unrelated-file"
+  delete_expired_backups "$fixture" "$retention_days"
+  for name in "${names[@]}"; do
+    [[ ! -e "$fixture/$name" ]]
+  done
+  [[ -e "$fixture/postgres-full-20260727T120000Z.sql.gz.enc" ]]
+  [[ -e "$fixture/unrelated-file" ]]
+  echo 'SALARY_POSTGRES_BACKUP_SELF_TEST=pass'
+}
+
+if [[ "${1:-}" == '--self-test' ]]; then
+  [[ "$#" -eq 1 ]]
+  self_test
+  exit 0
+fi
+
+[[ "$#" -eq 0 ]]
+[[ "$EUID" -eq 0 ]] || {
+  echo 'BACKUP_ERROR=requires_root' >&2
+  exit 1
+}
+
+exec 9>"$lock_file"
+flock -n 9 || {
+  echo 'BACKUP_ERROR=backup_already_running' >&2
+  exit 1
+}
+
+[[ -d "$backup_dir" && ! -L "$backup_dir" ]] || {
+  echo 'BACKUP_ERROR=backup_directory_invalid' >&2
+  exit 1
+}
+[[ "$(stat -c '%U:%G:%a' "$backup_dir")" == 'root:postgres:750' ]] || {
+  echo 'BACKUP_ERROR=backup_directory_permissions_invalid' >&2
+  exit 1
+}
+
+read -r filesystem_size filesystem_used filesystem_available filesystem_percent < <(
+  df -PB1 "$backup_dir" | awk 'NR == 2 { gsub(/%/, "", $5); print $2, $3, $4, $5 }'
+)
+[[ "$filesystem_available" =~ ^[0-9]+$ && "$filesystem_percent" =~ ^[0-9]+$ ]] || {
+  echo 'BACKUP_ERROR=disk_status_unavailable' >&2
+  exit 1
+}
+echo "BACKUP_FILESYSTEM_USED_PERCENT=$filesystem_percent"
+echo "BACKUP_FILESYSTEM_AVAILABLE_BYTES=$filesystem_available"
+if (( filesystem_percent >= critical_disk_percent )); then
+  echo 'BACKUP_ERROR=disk_usage_critical' >&2
+  exit 1
+fi
+if (( filesystem_available < minimum_free_bytes )); then
+  echo 'BACKUP_ERROR=insufficient_free_space' >&2
+  exit 1
+fi
+if (( filesystem_percent >= warning_disk_percent )); then
+  echo 'BACKUP_DISK_STATUS=warning'
+else
+  echo 'BACKUP_DISK_STATUS=ok'
+fi
+
+[[ ! -L "$key_file" && -f "$key_file" ]] || {
+  echo 'BACKUP_ERROR=key_file_invalid' >&2
+  exit 1
+}
+[[ "$(stat -c '%U:%G:%a' "$key_file")" == 'root:root:600' ]] || {
+  echo 'BACKUP_ERROR=key_file_permissions_invalid' >&2
+  exit 1
+}
+[[ ! -L "$crypto_tool" && -f "$crypto_tool" ]] || {
+  echo 'BACKUP_ERROR=crypto_tool_invalid' >&2
+  exit 1
+}
+[[ ! -L "$evidence_recorder" && -x "$evidence_recorder" ]] || {
+  echo 'BACKUP_ERROR=evidence_recorder_invalid' >&2
+  exit 1
+}
+
+node "$crypto_tool" self-test --key-file "$key_file"
+
+started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_name="postgres-full-${stamp}.sql.gz.enc"
+backup_path="${backup_dir}/${backup_name}"
+sidecar_path="${backup_path}.sha256"
+[[ ! -e "$backup_path" && ! -e "$sidecar_path" ]] || {
+  echo 'BACKUP_ERROR=backup_name_collision' >&2
+  exit 1
+}
+
+temporary_backup="$(mktemp --tmpdir="$backup_dir" ".${backup_name}.XXXXXXXX.tmp")"
+rm -f -- "$temporary_backup"
+
+runuser -u postgres -- pg_dumpall |
+  gzip -c |
+  node "$crypto_tool" encrypt --key-file "$key_file" --input - --output "$temporary_backup"
+
+node "$crypto_tool" inspect --key-file "$key_file" --input "$temporary_backup"
+node "$crypto_tool" decrypt --key-file "$key_file" --input "$temporary_backup" --output - |
+  gzip -t
+
+chown root:postgres "$temporary_backup"
+chmod 0640 "$temporary_backup"
+mv -- "$temporary_backup" "$backup_path"
+temporary_backup=''
+backup_finalized=1
+
+temporary_sidecar="$(mktemp --tmpdir="$backup_dir" ".${backup_name}.sha256.XXXXXXXX.tmp")"
+(
+  cd "$backup_dir"
+  sha256sum "$backup_name"
+) >"$temporary_sidecar"
+chown root:postgres "$temporary_sidecar"
+chmod 0640 "$temporary_sidecar"
+mv -- "$temporary_sidecar" "$sidecar_path"
+temporary_sidecar=''
+
+(cd "$backup_dir" && sha256sum -c --status "$(basename -- "$sidecar_path")")
+backup_hash="$(sha256sum "$backup_path" | awk '{print $1}')"
+backup_size="$(stat -c '%s' "$backup_path")"
+
+echo 'PHYSICAL_BACKUP_STATUS=success'
+echo 'ENCRYPTION_STATUS=success'
+echo 'CHECKSUM_STATUS=success'
+echo 'DECRYPT_VERIFY_STATUS=success'
+echo 'GZIP_VERIFY_STATUS=success'
+echo "BACKUP_BASENAME=$backup_name"
+echo "BACKUP_SIZE_BYTES=$backup_size"
+echo "BACKUP_SHA256=$backup_hash"
+echo "BACKUP_STARTED_AT=$started_at"
+echo "BACKUP_COMPLETED_AT=$(date -u -r "$backup_path" +%Y-%m-%dT%H:%M:%SZ)"
+
+set +e
+evidence_output="$("$evidence_recorder" "$backup_path" 2>&1)"
+evidence_exit=$?
+set -e
+printf '%s\n' "$evidence_output"
+if [[ "$evidence_exit" -ne 0 ]]; then
+  echo 'EVIDENCE_SYNC_STATUS=failed'
+  exit 1
+fi
+evidence_status="$(sed -nE 's/^EVIDENCE_SYNC_STATUS=(created|no_change)$/\1/p' <<<"$evidence_output" | tail -n 1)"
+[[ "$evidence_status" == 'created' || "$evidence_status" == 'no_change' ]] || {
+  echo 'EVIDENCE_SYNC_STATUS=failed'
+  exit 1
+}
+
+delete_expired_backups "$backup_dir" "$retention_days"
+echo 'RETENTION_STATUS=success'
+echo "BACKUP_RETENTION_DAYS=$retention_days"
+echo "EVIDENCE_SYNC_STATUS=$evidence_status"
+echo 'BACKUP_STATUS=success'
