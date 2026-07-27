@@ -122,8 +122,31 @@ done
 for unit in nginx docker postgresql; do
   systemctl is-active --quiet "$unit" || fail "service_not_active_${unit}"
 done
-[[ "$(systemctl list-units --state=failed --no-legend | wc -l)" -eq 0 ]] ||
+mapfile -t failed_units < <(
+  systemctl list-units --state=failed --no-legend --plain |
+    awk 'NF { print $1 }'
+)
+if [[ "${#failed_units[@]}" -eq 1 && "${failed_units[0]}" == 'salary-postgres-backup.service' ]]; then
+  latest_previous_rollback_script="$(
+    find /root -mindepth 2 -maxdepth 2 -type f \
+      -path '/root/task90-rollback-*/salary-postgres-backup' \
+      -printf '%T@ %p\n' |
+      sort -nr |
+      head -n 1 |
+      cut -d' ' -f2-
+  )"
+  [[ -n "$latest_previous_rollback_script" ]] || fail stale_backup_failure_without_rollback_copy
+  cmp -s "$backup_script" "$latest_previous_rollback_script" ||
+    fail stale_backup_failure_script_mismatch
+  systemctl reset-failed salary-postgres-backup.service
+  record 'TASK90_STALE_BACKUP_FAILED_STATE_RESET=performed'
+elif [[ "${#failed_units[@]}" -ne 0 ]]; then
   fail failed_units_present
+else
+  record 'TASK90_STALE_BACKUP_FAILED_STATE_RESET=not_required'
+fi
+[[ "$(systemctl list-units --state=failed --no-legend | wc -l)" -eq 0 ]] ||
+  fail failed_units_present_after_reset
 systemctl is-enabled --quiet salary-postgres-backup.timer || fail backup_timer_not_enabled
 systemctl is-active --quiet salary-postgres-backup.timer || fail backup_timer_not_active
 [[ "$(systemctl show salary-postgres-backup.service -p Result --value)" == 'success' ]] ||
