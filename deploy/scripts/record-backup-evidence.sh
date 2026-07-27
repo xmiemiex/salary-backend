@@ -52,7 +52,7 @@ self_test() {
   trap 'rm -rf -- "$fixture"' RETURN
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   self_test_crypto="$crypto_tool"
-  if [[ ! -f "$self_test_crypto" ]]; then
+  if [[ ! -r "$self_test_crypto" ]]; then
     self_test_crypto="$script_dir/backup-file-crypto.mjs"
   fi
   [[ -f "$self_test_crypto" && ! -L "$self_test_crypto" ]]
