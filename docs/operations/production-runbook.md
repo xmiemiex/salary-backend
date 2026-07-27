@@ -4,6 +4,8 @@
 
 当前生产状态：**Full Go stable with accepted backup risk**。最终 release gate：**`37 pass / 0 warning / 0 fail`**，exit=`0`。无异机备份风险已阶段性接受但仍未解决。
 
+本机备份的长期日常检查、失败处理和月度隔离恢复演练以 [PostgreSQL 本机备份与隔离恢复演练 SOP](backup-and-restore-sop.md) 为准；风险状态以 [生产风险台账](production-risk-register.md) 为准。
+
 ## 任务85历史检查点
 
 任务85不再执行 T+1/T+6/T+12，也不补跑，只保留 T+24 最终复核。
@@ -52,10 +54,10 @@ T+24 若仅因任务84真实 403 evidence 超过24小时而出现 `E2E_PERMISSIO
 
 ## 长期技术债
 
-1. 配置并验证 DigitalOcean Spaces 或其他对象存储异机备份。
+1. 进入正式长期运营前单独复核无异机备份风险；是否建设异机备份须另行决策和授权，当前不实施、不采购、不配置。
 2. 建立正式、受控、可审计的低权测试账号策略。
 3. 建立长期监控告警 SOP，包括升级、值班、确认、恢复和复盘。
-4. 定期执行隔离 restore drill，保留90天内证据。
+4. 每月执行隔离 restore drill，并保留至少90天内的可信证据。
 5. 定期清理/归档 release gate evidence，避免超龄证据被误用。
 6. 周期性抽检生产审计导出，仅保留脱敏计数与受控 evidence。
 7. 固化依赖升级和安全补丁节奏。

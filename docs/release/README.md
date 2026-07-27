@@ -11,6 +11,8 @@ This directory contains the human approval and production operations documents f
 
 Earlier No-Go, Conditional Go, Full Go, and Full Go Regression statements in the approval and monitoring records are chronological history. The Task 86 stable closeout is authoritative.
 
+Task 88 adds the current local-backup SOP, monthly isolated-restore template, risk register, and physical backup verification. Historical statements that off-host backup blocked an earlier stage remain history; the current risk state is **Accepted** and non-blocking.
+
 ## GitHub Actions Fixture Boundary
 
 The `release-preflight` GitHub Actions workflow uses synthetic, explicitly marked fixtures in an ephemeral CI database so that the code path and release-gate chain can be exercised from a clean checkout. Every such artifact includes `ci-fixture-context.json` and `CI-FIXTURE-NOTICE.md` with `fixtureOnly: true` and `productionEvidence: false`.
@@ -30,10 +32,13 @@ CI fixture artifacts are not evidence of a production backup, production restore
 
 | Document | Use case |
 | --- | --- |
-| [Production Approval Record](production-approval-record.md) | Chronological Tasks 74–86 approval evidence and authoritative stable closeout. |
+| [Production Approval Record](production-approval-record.md) | Chronological Tasks 74–88 approval and operations evidence; Task 86 remains the authoritative stable release closeout. |
 | [Post-Go Monitoring Report](post-go-monitoring-report.md) | T+24 observations, historical regression, and Task 86 stable closeout. |
 | [Production Handoff](../operations/production-handoff.md) | Current production state, ownership, evidence references, and technical debt. |
 | [Read-Only Production Runbook](../operations/production-runbook.md) | Monitoring boundaries, acceptance checks, incident handling, and recurring controls. |
+| [Backup and Restore SOP](../operations/backup-and-restore-sop.md) | Daily physical backup checks, thresholds, failure handling, and monthly isolated restore drills. |
+| [Monthly Restore Drill Template](../operations/monthly-restore-drill-record-template.md) | Blank evidence template for recurring restore drills. |
+| [Production Risk Register](../operations/production-risk-register.md) | Current accepted off-host risk and open backup-record synchronization warning. |
 | [Release Candidate](release-candidate.md) | Frozen commit/tag identity, CI run and artifact binding, and artifact acceptance criteria. |
 | [Release Approval Pack](release-approval-pack.md) | Human approval package built from release evidence and release gate outputs. |
 | [Production Runbook](production-runbook.md) | Production execution procedure with environment, commands, success standards, and failure handling. |
@@ -42,7 +47,7 @@ CI fixture artifacts are not evidence of a production backup, production restore
 
 ## Follow-up Technical Debt
 
-1. Configure and verify off-host backups.
+1. Reassess the accepted off-host-backup risk before formal long-term operations; implementation requires a separate decision and authorization.
 2. Run regular isolated restore drills and retain current evidence.
 3. Run and archive the release gate on a recurring cadence.
 4. Establish the long-term operations alerting and escalation SOP.

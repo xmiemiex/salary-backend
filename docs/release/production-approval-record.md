@@ -1070,3 +1070,21 @@ T+24 复核已完成，但并非全部通过。任务85收口时的历史决定�
 最终自动化在全部生产检查完成后出现一个非生产收尾缺陷：敏感扫描使用 `grep` 配合 `set -e/pipefail`，零匹配时 `grep` 返回 1，导致 wrapper 最终 `CORE_COMPLETE` 标记为 fail。该退出状态恰由零匹配触发；它发生在 `37/0/0`、账号/session 清理、5分钟观察和最终数据库汇总全部通过之后，不代表生产失败。后续脚本应将“零匹配”规范化为成功退出。
 
 任务86最终决定：**Full Go stable with accepted backup risk**。不建议回滚。无异机备份风险仍被接受但未解决；当前同机加密 full backup 与隔离 restore drill 不能覆盖 Droplet 整机、同机存储或区域性故障。
+
+## 24. 任务88：本机备份长期化与隔离恢复 SOP（2026-07-27）
+
+任务88通过 Tailscale 和现有 SSH key 自动连接生产。用户只在一个可见 SSH 窗口输入一次 sudo 密码；密码未进入聊天、命令参数、日志、文档或 Git。本次未部署、未重启、未切流、未执行 migration、未修改生产业务数据、未修改 timer/service/retention，也未配置异机备份。
+
+| 检查项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| 生产预检 | **Pass** | Nginx/Docker/PostgreSQL active；failed units=0；API/Web running、healthy、restart=0；Admin/API live/API ready HTTP 200、TLS verify=0；active critical alerts=0 |
+| Timer/service | **Pass** | `salary-postgres-backup.timer` enabled/active；最近触发 `2026-07-27 02:16:16 UTC`；`salary-postgres-backup.service` 为 oneshot，Result=success、exit=0；下次 `2026-07-28 02:22:14 UTC` |
+| 最新物理备份 | **Pass** | `postgres-full-20260727T021616Z.sql.gz`；`2026-07-27 02:16:17 UTC`；17,742 bytes；检查时约8小时42分 |
+| Checksum/完整性 | **Pass** | 生成时同名 `.sha256` sidecar；`sha256sum -c` match；`gzip -t` 通过 |
+| 权限/retention | **Pass** | 目录 `root:postgres 0750`；备份和 sidecar `root:postgres 0640`；world-readable/world-writable/group-writable 均为0；实际 retention=30天 |
+| 容量 | **Pass** | 根文件系统使用率4%；备份目录13个数据文件、133,485 bytes；当前容量支持既有 retention |
+| 隔离恢复证据 | **Pass / existing evidence reviewed** | 复核 `2026-07-20T13:00:20Z` 既有演练：PostgreSQL 16、`network=none`、无 host port、未接触生产库、非敏感版本/数据库/角色计数验证完成、临时容器和脚本清理完成；任务88未执行新演练 |
+| 应用 backup record | **Warning** | 数据库记录没有随每日物理 timer 更新，当前只读汇总为 `BACKUP_WITHIN_72H=fail`；物理备份事实独立通过。修复需要生产写入授权，任务88未执行 |
+| 无异机备份 | **Accepted / unresolved / non-blocking** | 当前不实施 DigitalOcean Spaces、S3、对象存储、远端同步或其他异机备份；进入正式长期运营前单独复核 |
+
+新增长期 SOP、月度演练空白模板、生产风险台账和严格只读健康检查脚本。任务88只记录执行事实，不作产品验收结论。

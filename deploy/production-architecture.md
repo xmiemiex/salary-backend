@@ -17,7 +17,7 @@ Cloudflare
 - PostgreSQL must listen only on the minimum host/Docker bridge addresses needed by the API container, with a narrow `pg_hba.conf` rule for the application role. Validate the exact bridge subnet before the release task; never bind PostgreSQL broadly to the public interface.
 - Release artifacts live under `/opt/salary-settlement-admin/releases/<release-id>`; mutable configuration lives at `/opt/salary-settlement-admin/shared/.env`. The populated file is server-only, permission-restricted, and never committed or baked into an image.
 - The Web API base URL is a non-secret Vite build input. Because it is embedded in static JavaScript, any change requires rebuilding the Web image.
-- Local daily backup and an empty-baseline restore drill exist, but no off-host backup exists. Loss of the Droplet remains a release-blocking risk.
+- Local daily backup and an isolated empty-baseline restore drill exist, but no off-host backup exists. Loss of the Droplet can make both production data and local backups unrecoverable. The business owner has accepted this risk for the current stage; it is unresolved but is not a current release blocker. Reassess it separately before formal long-term operations.
 
 ## Image and runtime design
 
