@@ -1156,3 +1156,41 @@ backup health、backup gate、隔离恢复”全部关闭条件，改为 **Resol
 RISK-DP-001 继续为 **Accepted / unresolved / non-blocking**，没有配置异机备份。
 新增 RISK-DP-003 记录本机 key 丢失风险，状态 **Open / Mitigated / non-blocking**。
 本节记录执行事实，不作产品验收结论。
+
+## 27. 任务91：生产 Release Gate 三项 Warning 真实性复核与全绿回归（2026-07-28）
+
+任务91起始 Git 基线为 `main`，
+`HEAD=origin/main=7d72530d8fa80768319ae6a3248e5b907b80a5e6`；
+`rc-20260712-2^{commit}=9f8f8f576dde54355983b96525335e94c55c8b32`。既有 task80
+未跟踪目录未读取、修改或提交。标准生产入口确认为
+`sudo /home/salaryops/production-release-gate.sh`。
+
+| 证据项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| 修复前标准 Gate | **Warning / exit 0** | generatedAt=`2026-07-28T13:42:25.916Z`；`34 pass / 3 warning / 0 fail`；required fail=none；required warning=`E2E_PERMISSIONS_RECENT_RUN,ENV_CHECK_AVAILABLE,MIGRATIONS_UP_TO_DATE` |
+| `ENV_CHECK_AVAILABLE` 根因 | **Confirmed** | 标准 Gate 和任务90临时容器均漏挂载 release Evidence；最近 env Evidence finishedAt=`2026-07-25T13:34:19Z`，执行时也已超过24小时 |
+| `MIGRATIONS_UP_TO_DATE` 根因 | **Confirmed** | Gate 能读取最新已应用 migration，但容器缺 Evidence，无法证明 pending/drift；最近 migration Evidence 同样已过期 |
+| `E2E_PERMISSIONS_RECENT_RUN` 根因 | **Confirmed** | 标准容器缺 Evidence，且最近真实 production E2E finishedAt=`2026-07-25T16:37:15Z`，当前真实超龄；不是仅靠补挂载即可清除 |
+| 标准入口修复 | **Pass** | 每次运行真实刷新 23 项脱敏 env Evidence；用 RC migration 文件与生产 `_prisma_migrations` 做只读名称、完成状态和 checksum 比较；统一 Evidence 目录只读挂入 Gate；保存完整脱敏 JSON |
+| env check | **Pass** | final finishedAt=`2026-07-28T14:09:06.029Z`；checked=`23`；invalid=`0`；无环境值或 secret 输出 |
+| migration 只读核对 | **Pass** | expected/applied=`17/17`；pending=`0`；unexpected/incomplete/checksum mismatch=`0`；drift=`false`；最新 migration=`20260709011000_align_backup_recovery_uuid_defaults`；未运行 migration |
+| 权限 E2E | **Pass** | `2026-07-28T14:07:45Z–14:07:59Z`；未认证 401、super_admin 37 项权限链与 Gate read、真实低权登录和 `/me`、Gate run 403、管理员接口 403、logout-all 均通过 |
+| 账号/session 清理 | **Pass** | 只复用既有 disabled 账号和唯一 `salary.view_self` 角色；未创建账号/角色、未 PATCH 角色；最终账号 disabled，active admin/super_admin/low-priv=`1/1/0`，active session=`0` |
+| 最终标准 Gate | **Pass / exit 0** | generatedAt=`2026-07-28T14:09:08.370Z`；`37 pass / 0 warning / 0 fail`；required/recommended fail/warning code=none |
+| 备份与恢复 | **Pass** | latest full backup succeeded/full/encrypted，age=`11h`；backup 72h Pass；backup health Pass；restore drill succeeded，age=`1d` |
+| timer/service | **Pass** | timer enabled/active；service Result=success、ExecMainStatus=`0` |
+| 服务与入口 | **Pass** | Nginx/Docker/PostgreSQL active；failed units=0；API/Web running、healthy、restart=`0/0`；Admin/API live/API ready HTTP 200、TLS verify=0；PostgreSQL public listeners=0 |
+| 生产变更边界 | **Pass** | 仅安装已提交 Gate/Evidence 辅助脚本；未部署 API/Web、未重启服务、未切流、未执行 migration、未修改 schema/业务数据/RC tag |
+| 敏感信息与残留 | **Pass** | production Evidence secret field match=`0`、secret literal match=`0`；`/run` task91 临时残留=`0`；上传临时文件=`0` |
+| 本地门禁 | **Pass** | frozen install、Prisma validate/generate、运维定向测试16项、Gate 定向测试8项、全量 API 367项与 Web 测试、typecheck、build、env check、diff check 均通过 |
+| 实现 Git | **Pass** | `95dcf88`、`d7d6e46` 已推送 `main`；最终证据提交另见本节提交历史 |
+
+首次安装后的 Gate 为 `35/2/0`：migration 已 Pass，但 env 采集容器因非 root UID
+无法写入 root-only `/run` 临时目录，脚本如实保留 warning 并返回 Evidence collection
+失败。补丁仅为一次性脱敏采集容器指定 `--user 0:0`；没有改变 Gate 规则或生产应用。
+补丁后 E2E 前 Gate 为 `36/1/0`，唯一 warning 是真实过期的
+`E2E_PERMISSIONS_RECENT_RUN`；真实权限 smoke 后最终恢复 `37/0/0`。
+
+独立后检窗口为 `2026-07-28T14:13:40Z–14:13:42Z`。没有发生回滚。
+无异机备份风险 `RISK-DP-001` 继续保持 Accepted / unresolved / non-blocking；
+RISK-DP-003 继续保持 Open / Mitigated / non-blocking。

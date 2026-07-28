@@ -27,6 +27,12 @@
 - 任务85 evidence 根目录：`/opt/salary-settlement-admin/evidence/task85-post-go`
 - 任务86最终 evidence：`/opt/salary-settlement-admin/evidence/task86-20260725T163700Z`
 - 任务86脱敏状态日志：`/home/salaryops/task86-status.log`
+- 标准生产 Release Gate：`/home/salaryops/production-release-gate.sh`
+- 当前 Gate Evidence：`/opt/salary-settlement-admin/evidence/release-gate-current`
+- 最新完整脱敏 Gate JSON：`/home/salaryops/release-gate-latest.json`
+- 真实权限 smoke：`/home/salaryops/production-permissions-smoke.sh`
+- 任务91权限 Evidence：`/opt/salary-settlement-admin/evidence/task91-permissions-20260728T140745Z`
+- 任务91独立后检：`/home/salaryops/task91-postcheck.env`
 
 远端脚本只读取服务、容器、日志、数据库脱敏计数、release gate、env/migration evidence、备份 timer/元数据和资源状态，并写入脱敏 evidence。脚本不含凭据，不部署、不重启、不切流、不执行 migration deploy、不修改业务数据/账号/权限/告警/RC tag，也不启用 systemd timer。
 
@@ -88,3 +94,30 @@ restart，没有 PostgreSQL restart，没有 migration/schema 或业务数据修
 保留密文，修复后对同一绝对路径运行 recorder；不得新造或伪造记录。RISK-DP-002 已关闭；
 RISK-DP-001 仍为 Accepted / unresolved / non-blocking，RISK-DP-003 为 Open /
 Mitigated / non-blocking。
+
+## 任务91交接补充（2026-07-28）
+
+任务91修复了任务90 Gate 入口漏挂载 Evidence 的问题，并把 env/migration Evidence
+刷新固化进唯一标准入口。修复前标准 Gate generatedAt=`2026-07-28T13:42:25.916Z`，
+为 `34 pass / 3 warning / 0 fail`。三项 warning 的共同事实是标准容器没有挂载
+Evidence；同时最近任务86 Evidence 完成于 `2026-07-25`，在任务91执行时也已真实超过
+24 小时，不能继续复用。
+
+实现提交为 `95dcf88` 和 `d7d6e46`。生产只安装 Gate/Evidence 辅助脚本，没有部署
+API/Web、重启服务、切流、执行 migration、修改 schema 或业务数据。env Evidence
+第一次采集因 API 镜像非 root 用户无法写 root-only 临时目录而安全保留 warning；
+补丁改为仅让一次性脱敏采集容器以 root 写入受限 `/run` 目录，随后 env 23/23 Pass。
+
+最终真实权限 smoke 在 `2026-07-28T14:07:45Z–14:07:59Z` 完成：未认证 401、
+super_admin 37 项权限链、低权登录和 `/me`、release gate run 403、管理员接口 403、
+logout-all 均 Pass；既有低权账号最终 disabled，active admin/super_admin/low-priv
+恢复 `1/1/0`，active session=`0`。
+
+最终标准 Gate generatedAt=`2026-07-28T14:09:08.370Z`：
+`37 pass / 0 warning / 0 fail`，所有 required/recommended fail/warning code 为 none；
+env=`23/23`，migration expected/applied=`17/17`、pending=`0`、drift=`false`，
+E2E=`7/7`。独立后检结束于 `2026-07-28T14:13:42Z`：Nginx/Docker/PostgreSQL active，
+API/Web running/healthy/restart=`0/0`，公网三入口 HTTP 200/TLS verify 0，
+backup timer enabled/active、service Result=success/exit=0、backup health Pass，
+最新 full backup encrypted 且 age=`11h`，restore drill age=`1d`，critical alerts=`0`，
+敏感字段/字面量匹配=`0/0`，`/run` 临时残留=`0`。

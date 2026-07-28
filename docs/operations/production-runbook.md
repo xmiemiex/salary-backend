@@ -98,3 +98,36 @@ RestoreDrillRecord 均匹配；release gate exit=0、`34/3/0`，备份相关门�
 三个 warning 为 `E2E_PERMISSIONS_RECENT_RUN`、`ENV_CHECK_AVAILABLE`、
 `MIGRATIONS_UP_TO_DATE`，不得写成全绿，也不影响本次备份修复真实性。最终 API/Web
 restart=`0/0`，active critical alerts=0。
+
+## Task91 Release Gate 标准入口
+
+生产唯一标准入口为：
+
+```bash
+sudo /home/salaryops/production-release-gate.sh
+```
+
+该入口固定使用已部署 RC `rc-20260712-2-9f8f8f57` 和生产 `.env`，但不输出 `.env`
+原文。每次运行先执行 23 项脱敏 production env check，再用 RC 的
+`prisma/migrations` 与生产 `_prisma_migrations` 做只读名称、完成状态和 checksum
+比较；两份新 Evidence 与既有真实权限 E2E Evidence 统一放在
+`/opt/salary-settlement-admin/evidence/release-gate-current`，Gate 只读挂载该目录。
+完整脱敏 Gate JSON 归档在受限的 `release-gate-runs` 目录，并复制到
+`/home/salaryops/release-gate-latest.json` 供运维复核。
+
+权限 Evidence 超过 24 小时时不得复制旧时间戳或用数据库计数替代。经明确授权后运行：
+
+```bash
+sudo /home/salaryops/production-permissions-smoke.sh
+```
+
+该脚本只复用既有 disabled 的 `task84_permission_smoke` 和唯一
+`salary.view_self` 最小角色，不创建账号或角色，不修改角色。它验证未认证 401、
+super_admin 权限链、真实低权登录与 `/me`、release gate run 403、管理员接口 403 和
+logout-all，最后恢复账号 disabled、撤销临时 session，并写入新的真实 production
+Evidence。super_admin 凭据只允许在可见 SSH 会话交互输入。
+
+任务91最终生产 Gate generatedAt=`2026-07-28T14:09:08.370Z`：
+`37 pass / 0 warning / 0 fail`，required/recommended fail/warning code 均为 none。
+env check=`23/23`；migration=`17/17`、pending=`0`、drift=`false`；权限 smoke=`7/7`。
+最新加密 full backup age=`11h`，backup health Pass，restore drill age=`1d`。
