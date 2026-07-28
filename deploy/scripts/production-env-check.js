@@ -1,6 +1,10 @@
 'use strict';
 
+const { writeFileSync } = require('node:fs');
+
 const results = [];
+const startedAt = new Date();
+const evidenceOutput = process.argv[2] || null;
 
 function check(name, predicate) {
   let passed = false;
@@ -79,8 +83,32 @@ for (const result of results) {
 }
 
 const failed = results.filter((result) => !result.passed).map((result) => result.name);
-console.log(`ENV_CHECK_SUMMARY status=${failed.length === 0 ? 'pass' : 'fail'} checked=${results.length} failed=${failed.length}`);
+const status = failed.length === 0 ? 'pass' : 'fail';
+console.log(`ENV_CHECK_SUMMARY status=${status} checked=${results.length} failed=${failed.length}`);
 if (failed.length > 0) {
   console.log(`ENV_CHECK_FAILED_NAMES=${failed.join(',')}`);
+}
+
+if (evidenceOutput) {
+  const evidence = {
+    schemaVersion: 1,
+    type: 'env-check',
+    command: 'production redacted environment check',
+    startedAt: startedAt.toISOString(),
+    finishedAt: new Date().toISOString(),
+    status,
+    environment: 'production',
+    checkedVariables: results.length,
+    invalid: failed,
+    missing: [],
+    checks: results.map((result) => ({
+      name: result.name,
+      status: result.passed ? 'pass' : 'fail',
+    })),
+  };
+  writeFileSync(evidenceOutput, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o640 });
+}
+
+if (failed.length > 0) {
   process.exit(1);
 }

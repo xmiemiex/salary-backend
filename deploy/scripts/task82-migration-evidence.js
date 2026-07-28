@@ -7,7 +7,7 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 const root = '/app';
-const output = '/app/tmp/release-evidence/migration-status.json';
+const output = process.argv[2] || '/app/tmp/release-evidence/migration-status.json';
 
 async function main() {
   const startedAt = new Date();
