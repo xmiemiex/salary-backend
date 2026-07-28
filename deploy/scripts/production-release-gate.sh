@@ -41,6 +41,7 @@ trap cleanup EXIT
 
 evidence_collection_exit=0
 docker run --rm \
+  --user 0:0 \
   --env-file "$prod_env" \
   --mount "type=bind,src=$env_helper,dst=/tmp/production-env-check.js,readonly" \
   --mount "type=bind,src=$collection_dir,dst=/app/tmp/release-evidence" \

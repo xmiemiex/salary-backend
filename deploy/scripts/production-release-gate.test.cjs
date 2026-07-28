@@ -87,6 +87,7 @@ test('standard gate refreshes read-only evidence and mounts it into the gate', (
   assert.match(script, /release-gate-current/);
   assert.match(script, /production-env-check\.js/);
   assert.match(script, /production-migration-evidence\.js/);
+  assert.match(script, /docker run --rm \\\n  --user 0:0 \\\n  --env-file "\$prod_env"/);
   assert.match(script, /src=\$evidence_dir,dst=\/app\/tmp\/release-evidence,readonly/);
   assert.match(script, /src=\$release_dir\/prisma,dst=\/app\/prisma,readonly/);
   assert.doesNotMatch(script, /prisma migrate deploy/);
