@@ -1,0 +1,19 @@
+[Unit]
+Description=Salary PostgreSQL backup independent watchdog
+After=docker.service postgresql.service
+OnFailure=salary-postgres-backup-watchdog-failure.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/salary-postgres-backup-watchdog
+User=root
+Group=root
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/salary-settlement-admin/backups
+ReadWritePaths=/run/lock
+NoNewPrivileges=true

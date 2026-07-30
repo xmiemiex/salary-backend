@@ -1,0 +1,13 @@
+[Unit]
+Description=Report Salary PostgreSQL backup watchdog failure
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/salary-postgres-backup-watchdog --report-failure service_failed
+User=root
+Group=root
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true

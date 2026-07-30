@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export LC_ALL=C
+umask 077
+
+timer_unit='salary-postgres-backup.timer'
+service_unit='salary-postgres-backup.service'
+backup_dir='/opt/salary-settlement-admin/backups'
+health_tool='/usr/local/sbin/check-local-backup-health'
+database_helper='/usr/local/libexec/salary-settlement-admin/backup-watchdog-db.cjs'
+api_container='salary-settlement-admin-api-1'
+lock_file='/run/lock/salary-postgres-backup-watchdog.lock'
+report_failure_enabled=0
+
+fail() {
+  echo "TASK93_WATCHDOG_STATUS=failed"
+  echo "TASK93_WATCHDOG_ERROR=$1" >&2
+  exit 1
+}
+
+bool_text() {
+  if "$@" >/dev/null 2>&1; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+run_database_helper() {
+  local command="$1"
+  shift
+  docker exec -i "$api_container" node - "$command" "$@" <"$database_helper"
+}
+
+report_failure() {
+  local reason="${1:-collector_failed}"
+  trap - ERR
+  set +e
+  run_database_helper report-failure "$reason"
+  local report_exit=$?
+  set -e
+  if [[ "$report_exit" -ne 0 ]]; then
+    echo 'TASK93_WATCHDOG_FAILURE_ALERT=unavailable' >&2
+  else
+    echo 'TASK93_WATCHDOG_FAILURE_ALERT=reported'
+  fi
+}
+
+on_error() {
+  local exit_code=$?
+  trap - ERR
+  if [[ "$report_failure_enabled" -eq 1 ]]; then
+    report_failure collector_failed
+  fi
+  echo "TASK93_WATCHDOG_STATUS=failed"
+  echo "TASK93_WATCHDOG_EXIT=$exit_code"
+  exit "$exit_code"
+}
+trap on_error ERR
+
+self_test() {
+  local helper="$database_helper"
+  if [[ ! -r "$helper" ]]; then
+    helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup-watchdog-db.cjs"
+  fi
+  [[ -f "$helper" && ! -L "$helper" ]] || fail database_helper_invalid
+  node "$helper" self-test
+  echo 'TASK93_BACKUP_WATCHDOG_SELF_TEST=pass'
+}
+
+if [[ "${1:-}" == '--self-test' ]]; then
+  [[ "$#" -eq 1 ]] || fail invalid_arguments
+  self_test
+  exit 0
+fi
+
+if [[ "$EUID" -ne 0 ]]; then
+  fail requires_root
+fi
+[[ -f "$database_helper" && ! -L "$database_helper" ]] || fail database_helper_invalid
+[[ -S /var/run/docker.sock ]] || fail docker_socket_missing
+
+case "${1:-}" in
+  --baseline)
+    [[ "$#" -eq 1 ]] || fail invalid_arguments
+    run_database_helper baseline
+    exit 0
+    ;;
+  --synthetic-activate)
+    [[ "$#" -eq 1 ]] || fail invalid_arguments
+    run_database_helper synthetic activate
+    exit 0
+    ;;
+  --synthetic-resolve)
+    [[ "$#" -eq 1 ]] || fail invalid_arguments
+    run_database_helper synthetic resolve
+    exit 0
+    ;;
+  --report-failure)
+    [[ "$#" -eq 2 ]] || fail invalid_arguments
+    report_failure "$2"
+    exit 0
+    ;;
+  '' | --dry-run)
+    [[ "$#" -le 1 ]] || fail invalid_arguments
+    ;;
+  *)
+    fail invalid_arguments
+    ;;
+esac
+
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  echo 'TASK93_WATCHDOG_STATUS=skipped'
+  echo 'TASK93_WATCHDOG_REASON=already_running'
+  exit 0
+fi
+
+if [[ "${1:-}" != '--dry-run' ]]; then
+  report_failure_enabled=1
+fi
+
+checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+timer_exists="$(bool_text systemctl cat "$timer_unit" --no-pager)"
+service_exists="$(bool_text systemctl cat "$service_unit" --no-pager)"
+timer_enabled="$(systemctl is-enabled "$timer_unit" 2>/dev/null || true)"
+timer_active="$(systemctl is-active "$timer_unit" 2>/dev/null || true)"
+timer_last_trigger="$(systemctl show "$timer_unit" -p LastTriggerUSec --value 2>/dev/null || true)"
+timer_last_trigger_epoch='none'
+if [[ -n "$timer_last_trigger" && "$timer_last_trigger" != 'n/a' ]]; then
+  timer_last_trigger_epoch="$(date -d "$timer_last_trigger" +%s 2>/dev/null || echo none)"
+fi
+service_result="$(systemctl show "$service_unit" -p Result --value 2>/dev/null || true)"
+service_exit="$(systemctl show "$service_unit" -p ExecMainStatus --value 2>/dev/null || true)"
+: "${timer_enabled:=unknown}"
+: "${timer_active:=unknown}"
+: "${service_result:=unknown}"
+: "${service_exit:=unknown}"
+
+latest="$(
+  find "$backup_dir" -maxdepth 1 -type f -name 'postgres-full-*.sql.gz.enc' \
+    -printf '%T@ %p\n' |
+    sort -nr |
+    head -n 1 |
+    cut -d' ' -f2-
+)"
+backup_exists='false'
+backup_key='none'
+backup_mtime_epoch='none'
+backup_size_bytes='none'
+checksum_present='false'
+checksum_valid='false'
+checksum_sha256='none'
+if [[ -n "$latest" && -f "$latest" && ! -L "$latest" ]]; then
+  backup_exists='true'
+  backup_key="$(basename -- "$latest")"
+  [[ "$backup_key" =~ ^postgres-full-[0-9]{8}T[0-9]{6}Z\.sql\.gz\.enc$ ]] || fail backup_name_invalid
+  backup_mtime_epoch="$(stat -c '%Y' "$latest")"
+  backup_size_bytes="$(stat -c '%s' "$latest")"
+  checksum_sha256="$(sha256sum "$latest" | awk '{print $1}')"
+  sidecar="${latest}.sha256"
+  if [[ -f "$sidecar" && ! -L "$sidecar" ]]; then
+    checksum_present='true'
+    if (cd "$backup_dir" && sha256sum -c --status "$(basename -- "$sidecar")") 2>/dev/null; then
+      checksum_valid='true'
+    fi
+  fi
+fi
+
+set +e
+health_output="$("$health_tool" 2>&1)"
+health_exit=$?
+set -e
+health_status="$(sed -n 's/^TASK88_BACKUP_HEALTH_STATUS=//p' <<<"$health_output" | tail -n 1)"
+health_failure_codes="$(sed -n 's/^TASK88_BACKUP_HEALTH_FAILURE_CODES=//p' <<<"$health_output" | tail -n 1)"
+[[ "$health_status" == 'pass' || "$health_status" == 'warning' || "$health_status" == 'fail' ]] ||
+  fail health_output_invalid
+[[ -n "$health_failure_codes" ]] || health_failure_codes='none'
+if [[ "$health_exit" -ne 0 && "$health_status" != 'fail' ]]; then
+  fail health_exit_inconsistent
+fi
+
+read -r disk_available_bytes disk_used_percent < <(
+  df -PB1 "$backup_dir" |
+    awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }'
+)
+[[ "$disk_available_bytes" =~ ^[0-9]+$ ]] || fail disk_available_invalid
+[[ "$disk_used_percent" =~ ^[0-9]+$ ]] || fail disk_percent_invalid
+
+snapshot="$(
+  node "$database_helper" encode-snapshot \
+    "$checked_at" \
+    "$timer_exists" "$timer_enabled" "$timer_active" "$timer_last_trigger_epoch" \
+    "$service_exists" "$service_result" "$service_exit" \
+    "$backup_exists" "$backup_key" "$backup_mtime_epoch" "$backup_size_bytes" \
+    "$checksum_present" "$checksum_valid" "$checksum_sha256" \
+    "$health_status" "$disk_used_percent" "$disk_available_bytes" "$health_failure_codes"
+)"
+
+if [[ "${1:-}" == '--dry-run' ]]; then
+  run_database_helper dry-run "$snapshot"
+  echo 'TASK93_WATCHDOG_STATUS=dry_run_complete'
+else
+  run_database_helper reconcile "$snapshot"
+  report_failure_enabled=0
+  echo 'TASK93_WATCHDOG_STATUS=success'
+fi
+echo "TASK93_WATCHDOG_CHECKED_AT=$checked_at"
+echo "TASK93_WATCHDOG_TIMER_ENABLED=$timer_enabled"
+echo "TASK93_WATCHDOG_TIMER_ACTIVE=$timer_active"
+echo "TASK93_WATCHDOG_SERVICE_RESULT=$service_result"
+echo "TASK93_WATCHDOG_SERVICE_EXIT=$service_exit"
+echo "TASK93_WATCHDOG_BACKUP_KEY=$backup_key"
+echo "TASK93_WATCHDOG_HEALTH_STATUS=$health_status"
+echo "TASK93_WATCHDOG_DISK_USED_PERCENT=$disk_used_percent"
+echo "TASK93_WATCHDOG_DISK_AVAILABLE_BYTES=$disk_available_bytes"
