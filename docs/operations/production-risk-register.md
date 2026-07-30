@@ -39,11 +39,13 @@
 
 | 字段 | 记录 |
 | --- | --- |
-| 状态 | **Open / Mitigated / non-blocking** |
+| 状态 | **Open / Mitigated / non-blocking（active key 单文件子风险已 Resolved）** |
 | 风险类型 | 密钥可用性与数据可恢复性 |
 | 影响 | `/etc/salary-settlement-admin/backup-file-encryption.key` 丢失、损坏或被错误替换后，现有本机密文备份无法恢复 |
-| 当前缓解 | key 为 `root:root 0600`；用途 metadata 与非敏感指纹检查；每次备份进行 crypto self-test；每日认证解密+gzip 检查；任务90真实隔离恢复 Pass |
-| 未实施措施 | 异机密钥托管、HSM/KMS、经过验证的密钥恢复副本与轮换流程 |
+| 当前缓解 | active key 为 `root:root 0600`；独立同机 recovery copy 目录 `0700`、key/metadata `0600`；非 symlink/hardlink；逐字节一致；watchdog 持续检查并用 recovery key 认证解密最新备份；Task94 非破坏性真实演练 Pass；完整人工恢复 SOP |
+| 已解决子风险 | 同一 Droplet 内 active key 单文件误删、单文件损坏或权限异常：**Resolved（任务94，2026-07-30）** |
+| 剩余风险 | active 与 recovery 同盘同时损坏：Accepted / non-blocking；Droplet 整机丢失继续由 RISK-DP-001 Accepted；本机副本不构成异机容灾 |
+| 未实施措施 | 异机密钥托管、HSM/KMS、异机备份和正式 key rotation 流程 |
 | 当前是否阻断运行 | 否；当前 key 与最新备份已通过独立恢复验证 |
 | 禁止事项 | 不得在聊天、Git、日志或命令行记录 key；不得擅自删除、覆盖或轮换 |
 | 后续复核 | 与 RISK-DP-001 的异机备份/长期运营设计一并单独评估和授权 |
@@ -60,3 +62,14 @@
   输出、替换或轮换 encryption key；Task93 没有新增异机 key 托管或 key 恢复能力。
 - 新增 watchdog 自身失败由 `BACKUP_WATCHDOG_FAILED` critical 和独立 OnFailure
   service 检测。watchdog 与每日备份无依赖关系，其失败不会阻塞原备份。
+
+## Task94 风险复核（2026-07-30）
+
+- RISK-DP-001 继续为 **Accepted / unresolved / non-blocking**。本任务没有购买或配置
+  DigitalOcean Spaces、S3、对象存储、远端/异机备份；同机 recovery copy 不能解决
+  Droplet 整机丢失。
+- RISK-DP-003 的“active key 单文件误删、损坏或权限异常”子风险满足全部关闭条件：
+  root-only recovery copy 存在、逐字节一致、watchdog 持续检查、最新真实备份认证
+  解密和 gzip 演练通过、恢复 SOP 完整、敏感扫描通过，因此该子风险为 **Resolved**。
+- RISK-DP-003 不整体关闭：active/recovery 同盘同时损坏仍为 **Accepted /
+  non-blocking**，异机 key 托管与整机容灾仍未实施。

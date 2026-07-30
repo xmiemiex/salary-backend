@@ -121,3 +121,30 @@ API/Web running/healthy/restart=`0/0`，公网三入口 HTTP 200/TLS verify 0，
 backup timer enabled/active、service Result=success/exit=0、backup health Pass，
 最新 full backup encrypted 且 age=`11h`，restore drill age=`1d`，critical alerts=`0`，
 敏感字段/字面量匹配=`0/0`，`/run` 临时残留=`0`。
+
+## 任务94交接补充（2026-07-30）
+
+本机恢复副本已受控接入：
+
+- active key 仍为 `/etc/salary-settlement-admin/backup-file-encryption.key`；每日备份和
+  restore 工具未增加自动 recovery fallback。
+- recovery copy 位于
+  `/var/lib/salary-settlement-admin-key-recovery/backup-file-encryption.key`；
+  目录 `root:root 0700`，key/metadata `root:root 0600`，非 symlink/hardlink。
+- 状态检查：`sudo /usr/local/sbin/backup-key-recovery check
+  --latest-backup-dir /var/backups/salary-settlement-admin`。
+- 非破坏性演练：`sudo /usr/local/sbin/backup-key-recovery drill`。演练不得删除、移动、
+  覆盖或轮换 active key；真实事故恢复按 backup-and-restore SOP 第9节执行。
+- watchdog 每日持续检查 recovery copy 完整性、与 active key 一致性及最新真实密文
+  认证解密；六类 key critical 使用稳定 fingerprint，健康恢复后自动 resolve。
+
+最终生产窗口 `2026-07-30T14:09:53Z–14:10:04Z`，演练
+`task94-key-recovery-20260730T140958Z` 对
+`postgres-full-20260730T022816Z.sql.gz.enc` 完成 authentication/gzip/cleanup；
+active key 未修改。最终 Gate 为 `36 pass / 1 warning / 0 fail`、exit=0，唯一 warning
+为 `E2E_PERMISSIONS_RECENT_RUN`。API/Web restart `0/0`，active critical `0→0`。
+
+root-only 回滚副本保留于 `/root/task94-rollback-20260730T140953Z`。正常值守不得删除
+recovery copy 或回滚副本，不得将 key 或 recovery copy 下载到操作终端。RISK-DP-003
+的 active key 单文件误删/损坏子风险已 Resolved；同盘同时损坏仍为 Accepted /
+non-blocking，异机 key 托管仍未实施。

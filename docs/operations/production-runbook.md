@@ -68,8 +68,9 @@ T+24 若仅因任务84真实 403 evidence 超过24小时而出现 `E2E_PERMISSIO
 9. 任务89的物理 backup record 不同步已由任务90真实修复并关闭。后续若 recorder 失败、
    最新加密 record 超龄、认证解密失败或 backup gate 失败，立即重新打开 RISK-DP-002，
    不得降低门禁或伪造 Evidence。
-10. 本机 encryption key 丢失风险记录为 RISK-DP-003；当前只有 root-only 权限、指纹检查和
-    恢复演练缓解，尚未完成异机密钥托管。
+10. RISK-DP-003 的 active key 单文件误删/损坏子风险已由同机 root-only recovery copy、
+    持续 watchdog 和真实解密演练解决；同盘同时损坏仍为 Accepted/non-blocking，且尚未
+    完成异机密钥托管。
 
 ## Task90 日常操作
 
@@ -169,3 +170,26 @@ service 保持 success/0，API/Web restart 保持 `0/0`。
 `36 pass / 1 warning / 0 fail`，exit=0。唯一 warning 为
 `E2E_PERMISSIONS_RECENT_RUN`；没有运行 permissions smoke，也没有刷新或伪造权限
 Evidence。
+
+## Task94 本机加密 key recovery
+
+标准状态入口：
+
+```bash
+sudo /usr/local/sbin/backup-key-recovery check \
+  /opt/salary-settlement-admin/backups/postgres-full-<UTC>.sql.gz.enc
+sudo /usr/local/sbin/salary-postgres-backup-watchdog --dry-run
+```
+
+预期 active/recovery valid=`true`、match=`true`、recovery decrypt=`pass`。recovery
+目录为 `/var/lib/salary-settlement-admin-key-recovery`，目录 `0700`，key/metadata
+`0600`，全部 `root:root`。salaryops、postgres 用户和应用容器不得直接读取。
+
+真实事故恢复严格按 backup-and-restore SOP 第9节执行。禁止把 recovery 路径写入
+`salary-postgres-backup`、修改每日 key 路径、删除 active key 做测试或将 recovery
+copy 下载到 Windows。健康恢复后运行 watchdog oneshot，并确认六类 key critical
+按稳定 fingerprint resolved。
+
+Task94 于 `2026-07-30T14:09:53Z–14:10:04Z` 最终接入成功；systemd unit 未修改，
+未执行 daemon-reload。恢复演练、synthetic 幂等/恢复和 Gate 均通过，active critical
+`0→0`，API/Web restart `0/0`。

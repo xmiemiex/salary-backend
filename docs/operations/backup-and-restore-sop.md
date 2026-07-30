@@ -247,9 +247,17 @@ sudo /usr/local/sbin/restore-encrypted-backup \
 解密、gzip 校验和隔离恢复。不得把 `--output` 指向磁盘明文文件，不得把解密流送往生产
 PostgreSQL。成功后同步幂等 `RestoreDrillRecord`；失败时不写成功 Evidence，并保留源密文。
 
-密钥丢失、损坏或被错误替换会令现有密文备份无法恢复。当前缓解仅为 root-only 文件、
-每次操作前权限/用途/指纹检查、认证解密和真实恢复演练；这不等于已完成异机密钥托管。
-不得擅自轮换或删除该 key。任何 key 备份或异机密钥管理均须另行设计、授权和验证。
+Task94 已在独立路径
+`/var/lib/salary-settlement-admin-key-recovery/backup-file-encryption.key` 建立同机
+root-only recovery copy：目录 `root:root 0700`，key 与 metadata 均为
+`root:root 0600`。recovery key 是普通文件、非 symlink、非 hardlink，与 active key
+逐字节一致；metadata 只含用途、路径、格式、创建时间、权限要求和截断 key ID，不含
+key 内容。
+
+该副本仅处理同一 Droplet 内 active key 单文件误删、损坏或权限异常。它不是每日备份
+fallback，不参与正常加密路径，不解决同盘整体损坏或 Droplet 整机丢失，也不等于异机
+密钥托管。不得擅自删除、覆盖、轮换 active/recovery key；任何异机密钥管理仍须另行
+设计、授权和验证。
 
 ## 7. 证据与保留
 
@@ -300,6 +308,12 @@ backup health、磁盘和参数化 BackupRecord 查询结果，再通过 API 容
 | `BACKUP_DISK_WARNING` | warning | 文件系统使用率达到 80% |
 | `BACKUP_DISK_CRITICAL` | critical | 文件系统使用率达到 90%，或可用空间低于 5 GiB |
 | `BACKUP_WATCHDOG_FAILED` | critical | watchdog 自身执行失败，由独立 OnFailure service 上报 |
+| `BACKUP_ACTIVE_KEY_MISSING` | critical | active key 缺失 |
+| `BACKUP_ACTIVE_KEY_PERMISSION_INVALID` | critical | active key 类型、owner/group/mode、格式或 metadata 无效 |
+| `BACKUP_KEY_RECOVERY_COPY_MISSING` | critical | 本机 root-only recovery copy 缺失 |
+| `BACKUP_KEY_RECOVERY_PERMISSION_INVALID` | critical | recovery 目录、key 或 metadata 的类型、权限、格式或 link count 无效 |
+| `BACKUP_KEY_RECOVERY_MISMATCH` | critical | active/recovery 字节、独立 inode 或非敏感 metadata 不一致 |
+| `BACKUP_KEY_RECOVERY_DECRYPT_FAILED` | critical | recovery key 无法认证解密并通过最新备份 gzip 完整性验证 |
 
 受控人工验证只允许使用以下入口；不得通过停 timer、破坏备份、删除记录或填满磁盘测试：
 
@@ -311,3 +325,53 @@ sudo systemctl start salary-postgres-backup-watchdog.service
 
 合成告警入口仅用于受控验收，必须先 activate 两次验证幂等，再 resolve，并确认 active
 critical 回到执行前基线。不得把合成告警写成真实事故，也不得删除其审计历史。
+
+## 9. Task94 本机 key 恢复 SOP
+
+### 9.1 自动检查与告警
+
+watchdog 每日以 root-only 进程检查 active/recovery key 的存在、普通文件/非 symlink、
+owner/group/mode、hardlink、格式、metadata、逐字节一致性，并使用 recovery key 对
+最新真实 `.sql.gz.enc` 做流式 GCM 认证解密和 `gzip -t`。输出只包含状态、code、
+basename 和非敏感截断 key ID；不得输出 key、完整 hash、SQL 或解密数据。
+
+六类 key 告警均为 `critical`，真实 source 为 `backup_watchdog`，fingerprint 固定为
+`backup_watchdog:<CODE>`。重复检测只更新同一活动 Alert；根因消失后自动 resolved，
+且不关闭其他 source。fixture/self-test 覆盖 active missing/permission、recovery
+missing/permission、mismatch、decrypt failure 和健康恢复。
+
+### 9.2 真实事故人工恢复
+
+发现 active key 缺失、损坏或权限异常时：
+
+1. 不手工触发 full backup，不修改 timer、retention、备份格式或历史备份。
+2. 保留告警和审计；确认 recovery 目录/key/metadata 为 root-only 普通文件，非
+   symlink/hardlink，并先用 recovery key 对最新真实密文执行认证解密和 `gzip -t`。
+3. 在 `/run/task94-recovery-<UTC>` 建立 `root:root 0700` 临时目录，从 recovery copy
+   原子复制出 `root:root 0600` 临时 key；不得把 key 放入命令参数、环境变量、日志、
+   Evidence、Git、用户目录或 Windows。
+4. 对 active key 目标目录和现存异常文件做只读复核。恢复 active key 必须使用同目录
+   原子写入，写完立即复核普通文件、非 symlink、`root:root 0600`、link count、
+   格式、metadata、与 recovery copy 逐字节一致。
+5. 运行 `sudo /usr/local/sbin/salary-postgres-backup-watchdog --dry-run`，再受控启动
+   watchdog oneshot；确认相关 stable fingerprint resolved、active critical 回到基线。
+6. 删除精确匹配的 `/run/task94-recovery-<UTC>` 临时 key/目录，确认 `/run`、`/tmp`、
+   用户目录和仓库无 key 或明文残留。
+7. 记录脱敏 incident ID、时间、告警 code、backup basename、认证解密/gzip、权限、
+   一致性和 cleanup 结果；不得记录 key 内容或完整 hash。
+
+每日备份脚本只读取
+`/etc/salary-settlement-admin/backup-file-encryption.key`。active key 异常必须继续真实
+失败并告警，禁止自动或静默 fallback 到 recovery copy。
+
+### 9.3 非破坏性演练
+
+```bash
+sudo /usr/local/sbin/backup-key-recovery drill
+```
+
+该入口不删除、移动、覆盖或修改 active key；只在 `/run/task94-*` 创建临时 key，以
+recovery copy 对最新真实密文做流式认证解密和 `gzip -t`，随后清理临时资源。Task94
+生产演练 `task94-key-recovery-20260730T140958Z` 于
+`2026-07-30T14:09:58Z` 完成：backup=`postgres-full-20260730T022816Z.sql.gz.enc`，
+authentication/gzip/cleanup 均 Pass，active key 未修改。

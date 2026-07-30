@@ -1224,3 +1224,38 @@ task80 未跟踪目录仅确认名称，未读取、修改或提交。
 
 RISK-DP-001 保持 Accepted / unresolved / non-blocking；RISK-DP-003 保持
 Open / Mitigated / non-blocking。生产接入没有发生回滚。
+
+## 29. 任务94：本机加密 Key 防误删恢复副本、完整性监控与恢复演练（2026-07-30）
+
+任务起始 Git 基线为 `main`，
+`HEAD=origin/main=ec410f842c50b728e3f279872fdc768d24ec9ce4`；
+`rc-20260712-2^{commit}=9f8f8f576dde54355983b96525335e94c55c8b32`。既有 task80
+未跟踪目录只确认名称，未读取、修改或提交。
+
+| 证据项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| 现状诊断 | **Gap confirmed** | active key 为普通文件、非 symlink、`root:root 0600`；仅有 active key 与 metadata，无独立恢复副本；backup/restore 均只引用 active 路径 |
+| 恢复副本 | **Pass** | `/var/lib/salary-settlement-admin-key-recovery` 为 `root:root 0700`；key/metadata 为 `root:root 0600`；非 symlink、非 hardlink；与 active key 逐字节一致 |
+| Key 标识 | **Pass** | 仅记录截断 key ID `21a4f3bcc4e041cb`；未输出、上传或提交 key 内容 |
+| 持续完整性监控 | **Pass** | watchdog 校验存在性、类型、owner/group/mode、link、metadata、逐字节一致性，并用 recovery key 对最新真实密文执行认证解密 |
+| 告警闭环 | **Pass** | 六类 key critical 使用稳定 fingerprint；最终验收为 reactivated=1、重复 updated=1、resolved=1，Alert ID 保持 `d6741656-7068-4609-9c08-69de733ce734`，active `0→1→1→0` |
+| 恢复演练 | **Pass** | drill=`task94-key-recovery-20260730T140958Z`；最新真实密文=`postgres-full-20260730T022816Z.sql.gz.enc`；GCM authentication、gzip、cleanup 均 Pass；active key modified=no |
+| 原备份链 | **Pass** | timer enabled/active；service success/0；backup health、ciphertext checksum、authenticated decrypt、gzip 均 Pass；未手工生成 full backup |
+| 标准 Gate | **Pass / exit 0** | generatedAt=`2026-07-30T14:10:03.847Z`；`36 pass / 1 warning / 0 fail`；唯一 warning=`E2E_PERMISSIONS_RECENT_RUN` |
+| 服务后检 | **Pass** | Nginx/Docker/PostgreSQL active；API/Web healthy；restart `0/0`；active critical `0→0` |
+| 变更边界 | **Pass** | 未部署/重启 API/Web；未重启 Nginx/PostgreSQL；未 daemon-reload、migration、schema/业务数据/账号权限/RC/retention/历史备份/异机备份变更 |
+| 本地门禁 | **Pass** | frozen install、Prisma validate/generate、crypto/watchdog/DB/Bash fixture/self-test、ShellCheck、全量 API 367 tests 与 Web 测试、typecheck、build、env check、diff check、敏感扫描均通过 |
+| 实现 Git | **Pass** | `eef2e0a9`、`59fdbac8`、`3cd0448e`、`f404e7cc` 已推送 main；最终文档提交另见提交历史 |
+| 最终生产接入 | **Pass** | `2026-07-30T14:09:53Z–14:10:04Z`；rollback=`not performed`；root-only 回滚副本保留于 `/root/task94-rollback-20260730T140953Z` |
+
+最终成功前有三类受控失败并全部自动回滚：Node 临时校验文件缺少 `.cjs` 后缀；零命中
+敏感扫描与 `pipefail` 冲突；已有 resolved synthetic Alert 被稳定 fingerprint 重新激活，
+与脚本最初仅接受 generated 的断言不符。每次失败均未修改 active key，未留下 recovery
+副本或活动 synthetic critical；修复后重新走完整预检、安装、演练、Gate 与后检。首次
+synthetic 创建发生于先前已回滚尝试，最终验收复用同一 Alert 历史，这是稳定去重的预期
+行为，不删除也不伪造审计历史。
+
+风险结论：RISK-DP-003 中“同一 Droplet 内 active key 单文件误删、损坏或权限异常”
+子风险改为 **Resolved**；同盘同时损坏仍为 **Accepted / non-blocking**，因此
+RISK-DP-003 整体保持 **Open / Mitigated / non-blocking**。RISK-DP-001 继续为
+**Accepted / unresolved / non-blocking**；本任务没有实施异机密钥托管或异机备份。

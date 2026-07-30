@@ -335,3 +335,32 @@ healthy，restart count 为 `0/0`。上传 staging 已清理；最终文档提�
 本任务没有运行 production permissions smoke，没有刷新或伪造权限 Evidence；没有部署
 或重启 API/Web/Nginx/PostgreSQL，没有 migration、schema/业务数据、key、备份格式、
 retention、历史备份、RC 标签或异机备份变更。RISK-DP-001 与 RISK-DP-003 状态不变。
+
+## 任务94生产接入后监控与恢复验证（2026-07-30）
+
+生产接入最终窗口为 `2026-07-30T14:09:53Z–14:10:04Z`。接入前后 API/Web restart
+均为 `0/0`，Nginx、Docker、PostgreSQL 保持 active，API/Web 保持 healthy，active
+critical alerts 为 `0→0`。
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| recovery copy | 目录 `root:root 0700`，key/metadata `root:root 0600`；普通文件、非 symlink、非 hardlink；active/recovery byte match |
+| watchdog 当前状态 | active/recovery 均 valid，metadata valid，content match；用 recovery key 对最新真实密文认证解密 Pass；候选异常 0 |
+| synthetic 幂等 | 同一稳定 Alert ID：reactivated=1，随后 updated=1；未创建第二条活动告警 |
+| synthetic 恢复 | resolved=1；active=0；Alert/audit 历史保留 |
+| active key | 演练前后未修改；未删除、移动、覆盖或轮换 |
+| 最新真实密文 | `postgres-full-20260730T022816Z.sql.gz.enc`；checksum、GCM authentication、gzip 均 Pass |
+| 恢复演练 | `task94-key-recovery-20260730T140958Z`；临时 key 仅位于 `/run`；authentication/gzip/cleanup Pass |
+| 原备份服务 | timer enabled/active；service Result=success、ExecMainStatus=0 |
+| 标准 Gate | `2026-07-30T14:10:03.847Z`；exit=0；`36 pass / 1 warning / 0 fail` |
+| 唯一 warning | `E2E_PERMISSIONS_RECENT_RUN`，如实保留；未运行 permissions smoke，未刷新或伪造 Evidence |
+| 临时残留 | 上传 staging 已删除；`/run`/临时演练资源无残留；root-only rollback 按恢复要求保留 |
+
+本任务没有新增无认证 HTTP 接口，没有让日常 backup/restore 自动 fallback 到 recovery
+copy；只有人工事故 SOP 可恢复 active key。未部署或重启 API/Web，未重启
+Nginx/PostgreSQL，未 daemon-reload、migration、修改业务数据、账号权限、retention、
+历史备份或 RC 标签。未配置异机备份或异机密钥托管。
+
+RISK-DP-003 的 active key 单文件误删/损坏子风险已 Resolved；同盘同时损坏仍为
+Accepted / non-blocking，整体仍为 Open / Mitigated / non-blocking。RISK-DP-001
+继续为 Accepted / unresolved / non-blocking。
