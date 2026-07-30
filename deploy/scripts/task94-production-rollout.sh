@@ -374,12 +374,14 @@ web_state_after="$(docker inspect "$web_container" --format '{{if .State.Health}
   fail active_key_changed
 
 secret_match_count="$(
-  grep -IlFf "$active_key" \
-    "$database_helper" \
-    "$watchdog" \
-    "$key_recovery_tool" \
-    "$result_file" \
-    "$staging_dir"/* 2>/dev/null |
+  {
+    grep -IlFf "$active_key" \
+      "$database_helper" \
+      "$watchdog" \
+      "$key_recovery_tool" \
+      "$result_file" \
+      "$staging_dir"/* 2>/dev/null || true
+  } |
     wc -l
 )"
 [[ "$secret_match_count" -eq 0 ]] || fail sensitive_information_detected
