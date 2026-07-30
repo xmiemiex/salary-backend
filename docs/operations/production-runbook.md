@@ -131,3 +131,41 @@ Evidence。super_admin 凭据只允许在可见 SSH 会话交互输入。
 `37 pass / 0 warning / 0 fail`，required/recommended fail/warning code 均为 none。
 env check=`23/23`；migration=`17/17`、pending=`0`、drift=`false`；权限 smoke=`7/7`。
 最新加密 full backup age=`11h`，backup health Pass，restore drill age=`1d`。
+
+## Task93 每日加密备份独立告警闭环
+
+标准状态检查：
+
+```bash
+systemctl is-enabled salary-postgres-backup-watchdog.timer
+systemctl is-active salary-postgres-backup-watchdog.timer
+systemctl show salary-postgres-backup-watchdog.service \
+  -p Result -p ExecMainStatus --no-pager
+systemctl list-timers salary-postgres-backup-watchdog.timer --all --no-pager
+```
+
+预期 timer 为 enabled/active，最近 oneshot 为 success/0。timer 在每日备份窗口之后独立
+运行；watchdog 的异常不得阻塞、停止或重启 `salary-postgres-backup.service`。
+
+处置顺序：
+
+1. 先按告警 code 只读复核 timer/service、最新密文 basename 与 sidecar、BackupRecord、
+   backup health 和文件系统容量。
+2. 不得通过手工 full backup、改 key、删文件/记录、改 retention 或改系统时间制造恢复。
+3. 根因消失后等待下一次 timer，或受控执行
+   `sudo systemctl start salary-postgres-backup-watchdog.service`。
+4. 确认同 fingerprint 告警 resolved、其他 source 未变化、active critical 回到基线。
+5. watchdog 自身失败时检查
+   `salary-postgres-backup-watchdog-failure.service`；必要时仅 disable/stop Task93 timer，
+   恢复 root-only 回滚副本并 daemon-reload。不得回滚任务90的加密备份链。
+
+Task93 首次生产接入于 `2026-07-30T12:29:41Z–12:29:45Z` 完成。watchdog timer
+enabled/active，首次 oneshot success/0；下一次计划触发为
+`2026-07-31T04:03:08Z`。合成 critical 告警首次创建 1 条，第二次只更新同一 alert，
+随后 resolved；active critical 为 `0 → 0`。原备份 timer 保持 enabled/active，原
+service 保持 success/0，API/Web restart 保持 `0/0`。
+
+接入后标准 Release Gate generatedAt=`2026-07-30T13:00:41.248Z`：
+`36 pass / 1 warning / 0 fail`，exit=0。唯一 warning 为
+`E2E_PERMISSIONS_RECENT_RUN`；没有运行 permissions smoke，也没有刷新或伪造权限
+Evidence。

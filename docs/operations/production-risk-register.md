@@ -47,3 +47,16 @@
 | 当前是否阻断运行 | 否；当前 key 与最新备份已通过独立恢复验证 |
 | 禁止事项 | 不得在聊天、Git、日志或命令行记录 key；不得擅自删除、覆盖或轮换 |
 | 后续复核 | 与 RISK-DP-001 的异机备份/长期运营设计一并单独评估和授权 |
+
+## Task93 风险复核（2026-07-30）
+
+- RISK-DP-001 仍为 **Accepted / unresolved / non-blocking**。Task93 只增加本机自动
+  检测与告警闭环，没有配置 DigitalOcean Spaces、S3、对象存储或异机备份，不能把主机
+  与本机备份同时丢失的风险写成已解决。
+- RISK-DP-002 仍为 **Resolved / Closed**。新增 watchdog 会在物理密文存在但
+  BackupRecord 缺失或不一致时创建 stable-dedup critical 告警，并在真实一致性恢复后
+  自动 resolve；这加强复发检测，不改写任务90的关闭依据。
+- RISK-DP-003 仍为 **Open / Mitigated / non-blocking**。watchdog 不读取、复制、
+  输出、替换或轮换 encryption key；Task93 没有新增异机 key 托管或 key 恢复能力。
+- 新增 watchdog 自身失败由 `BACKUP_WATCHDOG_FAILED` critical 和独立 OnFailure
+  service 检测。watchdog 与每日备份无依赖关系，其失败不会阻塞原备份。

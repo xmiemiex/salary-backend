@@ -267,3 +267,47 @@ PostgreSQL。成功后同步幂等 `RestoreDrillRecord`；失败时不写成功 
 - Data owner：备份可用性、恢复点和数据保全判断；
 - Application owner：应用 backup/restore record 同步；
 - Release owner：release gate 与发布影响判断。
+
+## 8. Task93 独立备份 watchdog
+
+生产每日备份之后由独立 timer 运行：
+
+```bash
+systemctl status salary-postgres-backup-watchdog.timer
+systemctl status salary-postgres-backup-watchdog.service
+```
+
+timer 固定在每日 `04:00 UTC` 后触发，带 `RandomizedDelaySec=15m` 和
+`Persistent=true`。watchdog 是独立 oneshot，不是每日备份 service 的依赖，也不修改、
+停止或重启每日备份。它只读采集 timer/service、最新物理密文与 sidecar、现有本机
+backup health、磁盘和参数化 BackupRecord 查询结果，再通过 API 容器内现有 Prisma
+运行时写入 Alert、通知和审计记录；不新增内部 HTTP 入口，不输出生产环境内容。
+
+告警使用 `source=backup_watchdog` 和稳定 fingerprint
+`backup_watchdog:<CODE>`。重复异常只更新同一活动告警的 `lastSeenAt`；恢复后仅 resolve
+该 source 当前未再出现的告警，保留历史和审计，不批量关闭其他来源告警。
+
+| code | severity | 触发条件 |
+| --- | --- | --- |
+| `BACKUP_TIMER_INACTIVE` | critical | timer 缺失、disabled/inactive，或最后触发时间缺失/超过 36 小时 |
+| `BACKUP_SERVICE_FAILED` | critical | 最近 service Result 非 success 或 exit 非 0 |
+| `BACKUP_STALE_OVER_36H` | critical | 最近成功 full backup 超过 36 小时 |
+| `BACKUP_FILE_MISSING` | critical | 最新物理密文缺失 |
+| `BACKUP_CHECKSUM_INVALID` | critical | checksum sidecar 缺失或实际 SHA-256 不匹配 |
+| `BACKUP_RECORD_MISSING` | critical | 最新成功 full BackupRecord 缺失 |
+| `BACKUP_RECORD_MISMATCH` | critical | 物理文件与 BackupRecord 关键字段不一致 |
+| `BACKUP_HEALTH_CRITICAL` | critical | 既有本机或数据库 backup health 为 critical |
+| `BACKUP_DISK_WARNING` | warning | 文件系统使用率达到 80% |
+| `BACKUP_DISK_CRITICAL` | critical | 文件系统使用率达到 90%，或可用空间低于 5 GiB |
+| `BACKUP_WATCHDOG_FAILED` | critical | watchdog 自身执行失败，由独立 OnFailure service 上报 |
+
+受控人工验证只允许使用以下入口；不得通过停 timer、破坏备份、删除记录或填满磁盘测试：
+
+```bash
+sudo /usr/local/sbin/salary-postgres-backup-watchdog --dry-run
+sudo /usr/local/sbin/salary-postgres-backup-watchdog --self-test
+sudo systemctl start salary-postgres-backup-watchdog.service
+```
+
+合成告警入口仅用于受控验收，必须先 activate 两次验证幂等，再 resolve，并确认 active
+critical 回到执行前基线。不得把合成告警写成真实事故，也不得删除其审计历史。

@@ -1194,3 +1194,33 @@ RISK-DP-001 继续为 **Accepted / unresolved / non-blocking**，没有配置异
 独立后检窗口为 `2026-07-28T14:13:40Z–14:13:42Z`。没有发生回滚。
 无异机备份风险 `RISK-DP-001` 继续保持 Accepted / unresolved / non-blocking；
 RISK-DP-003 继续保持 Open / Mitigated / non-blocking。
+
+## 28. 任务93：每日加密备份失败告警、容量预警与恢复闭环（2026-07-30）
+
+任务起始 Git 基线为 `main`，
+`HEAD=origin/main=a99bb0509afed0d05e2d7420bf90ee590795cbbc`；
+`rc-20260712-2^{commit}=9f8f8f576dde54355983b96525335e94c55c8b32`。既有
+task80 未跟踪目录仅确认名称，未读取、修改或提交。
+
+| 证据项 | 结果 | 脱敏事实 |
+| --- | --- | --- |
+| 现状诊断 | **Gap confirmed** | 原 backup service 无 OnFailure；无独立 watchdog unit/timer；既有 local health 脚本未定时；既有 Alert scan 不是独立备份监控入口；DigitalOcean Agent 不能覆盖 timer 长期未触发和 BackupRecord 一致性 |
+| 实现 | **Pass** | 新增 root collector、参数化 Prisma Alert/audit helper、独立 oneshot/OnFailure/timer；不新增无认证 HTTP，不部署 API/Web |
+| 覆盖 | **Pass** | timer、service、36h stale、物理文件、checksum、BackupRecord 缺失/不一致、backup health、磁盘 80%/90%/<5 GiB、watchdog 自身失败均有明确 code |
+| 生产安装 | **Pass** | staging 逐文件 SHA-256 Pass；root-only 回滚副本 Pass；原子安装和 systemd verify Pass；daemon-reload performed；未回滚 |
+| watchdog | **Pass** | timer enabled/active；首次 oneshot Result=success、ExecMainStatus=0；下一次计划 `2026-07-31T04:03:08Z` |
+| synthetic 首次 | **Pass** | 明确 `synthetic=true/task93`；首次 generated=1、active=1；仅产生 1 个活动告警 |
+| synthetic 重复 | **Pass** | 第二次 generated=0、updated=1、active=1；alert ID 不变；未新增通知 |
+| synthetic 恢复 | **Pass** | resolved=1、active=0；历史/审计保留；未关闭其他 source |
+| critical 基线 | **Pass** | active critical `0 → 0` |
+| 原备份链 | **Pass** | timer enabled/active；service success/0；最后触发 `2026-07-30T02:28:16Z`；没有手工 full backup |
+| 备份健康 | **Pass** | Gate backup age=`10h`、backup health=`ok`；watchdog 当前检查 0 个活动异常，物理密文、checksum 和 BackupRecord 一致性通过 |
+| 容量 | **Pass** | 文件系统使用率 4%，可用 239,706,480,640 bytes；fixture 覆盖 80% warning、90% critical、<5 GiB critical |
+| 标准 Gate | **Pass / exit 0** | generatedAt=`2026-07-30T13:00:41.248Z`；`36 pass / 1 warning / 0 fail`；唯一 warning=`E2E_PERMISSIONS_RECENT_RUN` |
+| 服务后检 | **Pass** | Nginx/Docker/PostgreSQL active；failed units=0；API/Web healthy、restart `0/0` |
+| 变更边界 | **Pass** | 未部署或重启 API/Web；未重启 Nginx/PostgreSQL；未 migration/schema/业务数据/账号权限/RC/key/备份格式/retention/历史备份/异机备份变更 |
+| 本地门禁 | **Pass** | frozen install、Prisma validate/generate、Node/Bash/self-test/fixture/定向测试、全量 API 367 tests 与 Web 测试、typecheck、build、env check、diff check、敏感扫描均通过 |
+| 实现 Git | **Pass** | `8f57f1f49a105c5e1d8af9a93577a4832deda487` 已推送 main；最终文档提交另见提交历史 |
+
+RISK-DP-001 保持 Accepted / unresolved / non-blocking；RISK-DP-003 保持
+Open / Mitigated / non-blocking。生产接入没有发生回滚。

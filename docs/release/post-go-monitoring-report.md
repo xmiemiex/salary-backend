@@ -290,3 +290,48 @@ backup、删除备份、修改 retention、运行 recorder、切流或移动 RC 
 脱敏文档仅记录时间、状态、exit code、安全 code、basename、大小、权限和 record ID；
 不包含 key、`.env`、token、数据库 URL、dump、CSV、原始 journal 或原始 Evidence。
 任务92结论：`TASK92_OBSERVATION_COMPLETE`。
+
+## 任务93生产接入与恢复闭环（2026-07-30）
+
+### 自动 watchdog 状态
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| 接入窗口 | `2026-07-30T12:29:41Z–12:29:45Z` |
+| timer | enabled/active；`04:00 UTC` + 最多 15 分钟随机延迟；Persistent=true；下一次 `2026-07-31T04:03:08Z` |
+| service | oneshot；Result=success；ExecMainStatus=0 |
+| 当前告警 | watchdog active=0；active critical baseline=`0`，接入后=`0` |
+| synthetic 第一次 | generated=1；active=1；notifications created=1 |
+| synthetic 第二次 | generated=0；updated=1；active=1；notifications created=0 |
+| synthetic 恢复 | resolved=1；active=0；历史和审计记录保留 |
+| 原备份 | timer enabled/active；service success/0；最后触发 `2026-07-30T02:28:16Z` |
+| 容量 | `/dev/vda1` 使用率 4%；可用 239,706,480,640 bytes |
+| 回滚 | root-only 副本已建立；生产接入未触发回滚 |
+
+生产 synthetic 使用专用 source/fingerprint 和 `synthetic=true/task93`，没有伪装成真实
+备份事故。稳定 dedup key 令重复检查只更新时间；resolve 仅作用于 Task93 自身 source。
+fixture/self-test 已覆盖 timer/service、36h、文件/checksum、BackupRecord、health、
+80%/90%/<5 GiB 和 watchdog failure 分支。
+
+### 接入后标准 Release Gate
+
+标准入口在 `2026-07-30T13:00:41.248Z` 完成，exit=0：
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| Gate 总计 | `36 pass / 1 warning / 0 fail` |
+| required fail / warning | `none` / `E2E_PERMISSIONS_RECENT_RUN` |
+| recommended warning | `none` |
+| backup 72h | Pass；age=`10h` |
+| backup health | Pass；status=`ok` |
+| active critical | Pass；count=`0` |
+| system health | Pass；聚合 status=`warning`，由上述非故障 E2E warning 导致 |
+
+后检 Nginx、Docker、PostgreSQL active，failed units=0；API/Web 在 Task93 接入前后均
+healthy，restart count 为 `0/0`。上传 staging 已清理；最终文档提交前删除
+`/home/salaryops/task93-result.env`。root-only 回滚副本按变更恢复要求保留，不包含 secret
+输出。
+
+本任务没有运行 production permissions smoke，没有刷新或伪造权限 Evidence；没有部署
+或重启 API/Web/Nginx/PostgreSQL，没有 migration、schema/业务数据、key、备份格式、
+retention、历史备份、RC 标签或异机备份变更。RISK-DP-001 与 RISK-DP-003 状态不变。
