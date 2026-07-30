@@ -295,10 +295,14 @@ record_output "$baseline_output"
 synthetic_first="$("$watchdog" --synthetic-key-activate)"
 record_output "$synthetic_first"
 first_generated="$(sed -n 's/^TASK93_WATCHDOG_GENERATED=//p' <<<"$synthetic_first")"
+first_reactivated="$(sed -n 's/^TASK93_WATCHDOG_REACTIVATED=//p' <<<"$synthetic_first")"
 first_active="$(sed -n 's/^TASK93_WATCHDOG_ACTIVE_COUNT=//p' <<<"$synthetic_first")"
-[[ "$first_generated" == '1' && "$first_active" == '1' ]] ||
+[[ "$first_active" == '1' ]] || fail synthetic_first_active_failed
+[[ "$first_generated" == '1' && "$first_reactivated" == '0' \
+  || "$first_generated" == '0' && "$first_reactivated" == '1' ]] ||
   fail synthetic_first_create_failed
-record 'TASK94_SYNTHETIC_FIRST_CREATED=1'
+record "TASK94_SYNTHETIC_FIRST_GENERATED=$first_generated"
+record "TASK94_SYNTHETIC_FIRST_REACTIVATED=$first_reactivated"
 record 'TASK94_SYNTHETIC_FIRST_ACTIVE=1'
 
 synthetic_second="$("$watchdog" --synthetic-key-activate)"
