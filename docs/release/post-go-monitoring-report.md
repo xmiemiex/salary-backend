@@ -201,3 +201,92 @@ T+1/T+6/T+12 没有已激活自动任务，现明确取消。仅生成 T+24 的�
 本次 release gate 不是全绿，三个 warning 必须继续按原 gate 语义记录；但没有 fail，且两个
 备份门禁均 Pass。RISK-DP-002 已关闭；RISK-DP-001 仍为 Accepted / unresolved /
 non-blocking。此前失败尝试均触发旧备份入口自动回滚；最终执行没有回滚。
+
+## 任务92：每日加密备份 T+48 无人值守验收（2026-07-30）
+
+最终只读核验窗口为 `2026-07-30T10:39:11Z–10:39:15Z`。起始 Git 基线为
+`main`，`HEAD=origin/main=15839a495aff64b4e778b5c62ba57540fba3a0d6`；
+`rc-20260712-2^{commit}=9f8f8f576dde54355983b96525335e94c55c8b32`。既有
+`release-staging-task80-20260721T1225/` 只确认目录名存在，未读取、修改或提交。
+
+### Timer、service 与计划运行
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| timer | `salary-postgres-backup.timer` enabled/active；`Triggers=salary-postgres-backup.service` |
+| 调度 | `OnCalendar=02:15 UTC`、`RandomizedDelaySec=15m`、`Persistent=true` |
+| 最近/下次触发 | `2026-07-30T02:28:16Z` / `2026-07-31T02:17:20Z` |
+| service | oneshot 当前 inactive；最近 `Result=success`、`ExecMainStatus=0`，完成于 `2026-07-30T02:28:17Z` |
+| failed units | `0` |
+| 任务90后计划运行 | 三次：`2026-07-28T02:23:43Z`、`2026-07-29T02:28:16Z–02:28:17Z`、`2026-07-30T02:28:16Z–02:28:17Z`；均位于 timer 窗口，journal 脱敏状态均为 backup/encryption/checksum/decrypt/gzip/retention success、Evidence created |
+
+最近两次计划运行与任务90的 `2026-07-27T13:10Z` 手动验证明确区分，且均由
+timer/service 关联、调度窗口和独立 invocation 输出共同证明，不使用手动备份冒充。
+未提交原始 journal。
+
+### 最近两份计划密文与 BackupRecord
+
+| 项目 | `2026-07-29` 计划备份 | `2026-07-30` 计划备份 |
+| --- | --- | --- |
+| basename | `postgres-full-20260729T022816Z.sql.gz.enc` | `postgres-full-20260730T022816Z.sql.gz.enc` |
+| 运行窗口 | `02:28:16Z–02:28:17Z`；success | `02:28:16Z–02:28:17Z`；success |
+| 文件 | regular file、非 symlink、19,302 bytes | regular file、非 symlink、19,472 bytes |
+| owner/group/mode | `root:postgres 0640` | `root:postgres 0640` |
+| sidecar / ciphertext SHA-256 | sidecar 格式与权限正确；match | sidecar 格式与权限正确；match |
+| 认证解密 / gzip | AES-256-GCM authentication Pass；流式 `gzip -t` Pass | AES-256-GCM authentication Pass；流式 `gzip -t` Pass |
+| 同时间戳明文 | `.sql` / `.sql.gz` / 临时明文均为 0 | `.sql` / `.sql.gz` / 临时明文均为 0 |
+| BackupRecord ID | `aad9c4ae-64c3-4644-a162-bc8073cffdda` | `dd8bdc79-7b87-4f91-bbfd-5d64c8e84c44` |
+| Record 一致性 | count=1；succeeded/full/encrypted；backupKey、size、checksum、started/completed、storage/encryption/scope/safe metadata 全部匹配 | count=1；succeeded/full/encrypted；backupKey、size、checksum、started/completed、storage/encryption/scope/safe metadata 全部匹配 |
+
+两条 `backupKey` 的数据库计数均为 1，无重复、缺失、冲突或失败冒充 succeeded。只执行了
+Prisma 只读查询，没有运行 recorder 或补写 Evidence，没有查询或输出业务行。
+
+### 明文、容量、key 与保留策略
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| 当前密文 / 历史明文数 | `8 / 10`；历史明文按既有 retention 自然保留 |
+| 最新历史明文 | `postgres-full-20260727T021616Z.sql.gz`，mtime=`2026-07-27T02:16:17Z`，早于任务90最终接入 |
+| 任务90后新明文 / 临时明文 | `0 / 0` |
+| 备份目录 | 227,119 bytes；目录/文件无 world-readable、world-writable 或 group-writable |
+| 文件系统 | 248,505,155,584 bytes；可用 239,715,328,000 bytes；使用率 4%，低于 80% warning / 90% critical |
+| 30 天估算 | 最近两份平均 19,387 bytes；30 天数据文件约 581,610 bytes，不含少量 sidecar/文件系统开销 |
+| retention | 30 天；过期清理由 root-owned 每日备份脚本的既定 `delete_expired_backups` 路径管理；未手工删除旧备份 |
+| encryption key | 文件存在、非 symlink、`root:root 0600`；metadata 确认为 `aes-256-gcm-v1` 用途；未读取或输出 key 内容 |
+| 本机 backup health | `pass`；warning/failure codes=`none` |
+
+### 标准 Release Gate 与生产健康
+
+标准入口 `sudo /home/salaryops/production-release-gate.sh` 在
+`2026-07-30T10:39:15.599Z` 完成，exit=`0`：
+
+| 检查 | 脱敏结果 |
+| --- | --- |
+| Gate 总计 | `36 pass / 1 warning / 0 fail` |
+| required fail / warning | `none` / `E2E_PERMISSIONS_RECENT_RUN` |
+| recommended fail / warning | `none` / `none` |
+| warning safeDetails | `persisted=false`、`artifact.available=false`、`checksTotal=null`、`cleanup=null` |
+| backup 72h | `RECENT_FULL_BACKUP_WITHIN_72H=pass`；age=`8h` |
+| backup health | `BACKUP_HEALTH_NOT_CRITICAL=pass`；status=`ok` |
+| system health / critical alerts | gate=`pass`、status=`warning`（non-critical）；active critical alerts=`0` |
+| env / migration | Evidence gates 均 Pass |
+| E2E warning 判定 | 任务91最后一次真实 production 权限 E2E 已超过固定 24 小时有效期；本任务未运行 permissions smoke、未刷新或伪造 Evidence；该唯一 warning 为 expected / non-blocking |
+
+生产后检：Nginx、Docker、PostgreSQL 均 active，failed units=`0`；API/Web 均
+running/healthy，restart count 在核验前后保持 `0/0`；API live、API ready、Web health
+均为 HTTP 200；PostgreSQL 公网 `0.0.0.0/[::]/*:5432` 监听数为 0；active critical
+alerts=`0`。task92 临时 container、volume、`/run`/`/tmp` 脚本或明文残留均为 0。
+
+初次采集因三个检测口径错误（key metadata 扩展名、历史 retention 明文与临时明文混计、
+Docker bridge 监听与公网监听混计）安全停止在 Gate 之前，没有改变生产。修正检测口径后
+重新完整只读执行，上述结果为唯一权威结论；修正不涉及生产脚本、unit、timer、Gate 规则
+或 Evidence。
+
+本任务没有部署 API/Web，没有重启或 reload API、Web、Nginx、Docker、PostgreSQL，
+没有 daemon-reload、migration、schema/业务数据/账号/权限变更，没有手动触发 full
+backup、删除备份、修改 retention、运行 recorder、切流或移动 RC tag。无异机备份风险
+`RISK-DP-001` 与 key 丢失风险 `RISK-DP-003` 均保持原状态。
+
+脱敏文档仅记录时间、状态、exit code、安全 code、basename、大小、权限和 record ID；
+不包含 key、`.env`、token、数据库 URL、dump、CSV、原始 journal 或原始 Evidence。
+任务92结论：`TASK92_OBSERVATION_COMPLETE`。
