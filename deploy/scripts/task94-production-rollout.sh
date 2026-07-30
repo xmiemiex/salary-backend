@@ -203,7 +203,7 @@ record 'TASK94_ROLLBACK_COPY=pass'
 rollback_needed=1
 
 install -d -o root -g root -m 0755 "$libexec_dir"
-database_temp="${database_helper}.task94-new"
+database_temp="${libexec_dir}/.backup-watchdog-db.task94-new.cjs"
 watchdog_temp="${watchdog}.task94-new"
 recovery_tool_temp="${key_recovery_tool}.task94-new"
 install -o root -g root -m 0750 "$staging_dir/backup-watchdog-db.cjs" "$database_temp"
