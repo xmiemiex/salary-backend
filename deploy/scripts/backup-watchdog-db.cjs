@@ -2,8 +2,9 @@
 
 const SOURCE = 'backup_watchdog';
 const SYNTHETIC_SOURCE = 'backup_watchdog_synthetic';
+const KEY_SYNTHETIC_SOURCE = 'backup_watchdog_key_recovery_synthetic';
 const ACTOR_ROLE = 'system_backup_watchdog';
-const USER_AGENT = 'salary-backup-watchdog/task93';
+const USER_AGENT = 'salary-backup-watchdog/task94';
 const STALE_SECONDS = 36 * 60 * 60;
 const DISK_WARNING_PERCENT = 80;
 const DISK_CRITICAL_PERCENT = 90;
@@ -69,10 +70,40 @@ const DEFINITIONS = Object.freeze({
     title: 'Backup watchdog failed',
     message: 'The independent backup watchdog could not complete its checks.',
   },
+  BACKUP_ACTIVE_KEY_MISSING: {
+    severity: 'critical',
+    title: 'Active backup encryption key is missing',
+    message: 'The configured active backup encryption key is missing.',
+  },
+  BACKUP_ACTIVE_KEY_PERMISSION_INVALID: {
+    severity: 'critical',
+    title: 'Active backup encryption key is invalid',
+    message: 'The active backup encryption key type, ownership, permissions, format, or metadata is invalid.',
+  },
+  BACKUP_KEY_RECOVERY_COPY_MISSING: {
+    severity: 'critical',
+    title: 'Backup key recovery copy is missing',
+    message: 'The root-only local backup key recovery copy is missing.',
+  },
+  BACKUP_KEY_RECOVERY_PERMISSION_INVALID: {
+    severity: 'critical',
+    title: 'Backup key recovery copy is invalid',
+    message: 'The recovery directory, key, or metadata type, ownership, permissions, format, or link count is invalid.',
+  },
+  BACKUP_KEY_RECOVERY_MISMATCH: {
+    severity: 'critical',
+    title: 'Backup key recovery copy does not match',
+    message: 'The active and recovery key bytes, identity, or non-secret metadata do not match.',
+  },
+  BACKUP_KEY_RECOVERY_DECRYPT_FAILED: {
+    severity: 'critical',
+    title: 'Backup key recovery authentication failed',
+    message: 'The recovery key could not authenticate and validate the latest encrypted backup.',
+  },
 });
 
 function encodeSnapshot(args) {
-  if (args.length !== 19) throw new Error('invalid_snapshot_arguments');
+  if (args.length !== 26) throw new Error('invalid_snapshot_arguments');
   const [
     checkedAt,
     timerExists,
@@ -93,6 +124,13 @@ function encodeSnapshot(args) {
     diskUsedPercent,
     diskAvailableBytes,
     healthFailureCodes,
+    activeKeyExists,
+    activeKeyValid,
+    recoveryKeyExists,
+    recoveryKeyValid,
+    keyMatch,
+    recoveryDecryptStatus,
+    keyHealthCodes,
   ] = args;
   const snapshot = {
     checkedAt: requiredDate(checkedAt, 'checked_at').toISOString(),
@@ -124,6 +162,19 @@ function encodeSnapshot(args) {
       usedPercent: requiredInteger(diskUsedPercent, 0, 100, 'disk_used_percent'),
       availableBytes: requiredInteger(diskAvailableBytes, 0, Number.MAX_SAFE_INTEGER, 'disk_available_bytes'),
     },
+    keyRecovery: {
+      activeExists: booleanValue(activeKeyExists, 'active_key_exists'),
+      activeValid: booleanValue(activeKeyValid, 'active_key_valid'),
+      recoveryExists: booleanValue(recoveryKeyExists, 'recovery_key_exists'),
+      recoveryValid: booleanValue(recoveryKeyValid, 'recovery_key_valid'),
+      matches: enumValue(keyMatch, ['true', 'false', 'unknown'], 'key_match'),
+      decryptStatus: enumValue(
+        recoveryDecryptStatus,
+        ['pass', 'fail', 'not_checked'],
+        'recovery_decrypt_status',
+      ),
+      healthCodes: safeCodeList(keyHealthCodes),
+    },
   };
   validateSnapshot(snapshot);
   return Buffer.from(JSON.stringify(snapshot)).toString('base64url');
@@ -145,7 +196,8 @@ function decodeSnapshot(encoded) {
 function validateSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw new Error('invalid_snapshot');
   requiredDate(snapshot.checkedAt, 'checked_at');
-  if (!snapshot.timer || !snapshot.service || !snapshot.backup || !snapshot.health || !snapshot.disk) {
+  if (!snapshot.timer || !snapshot.service || !snapshot.backup || !snapshot.health
+    || !snapshot.disk || !snapshot.keyRecovery) {
     throw new Error('invalid_snapshot');
   }
   booleanValue(snapshot.timer.exists, 'timer_exists');
@@ -166,6 +218,17 @@ function validateSnapshot(snapshot) {
   safeCodeList(snapshot.health.failureCodes);
   requiredInteger(snapshot.disk.usedPercent, 0, 100, 'disk_used_percent');
   requiredInteger(snapshot.disk.availableBytes, 0, Number.MAX_SAFE_INTEGER, 'disk_available_bytes');
+  booleanValue(snapshot.keyRecovery.activeExists, 'active_key_exists');
+  booleanValue(snapshot.keyRecovery.activeValid, 'active_key_valid');
+  booleanValue(snapshot.keyRecovery.recoveryExists, 'recovery_key_exists');
+  booleanValue(snapshot.keyRecovery.recoveryValid, 'recovery_key_valid');
+  enumValue(snapshot.keyRecovery.matches, ['true', 'false', 'unknown'], 'key_match');
+  enumValue(
+    snapshot.keyRecovery.decryptStatus,
+    ['pass', 'fail', 'not_checked'],
+    'recovery_decrypt_status',
+  );
+  safeCodeList(snapshot.keyRecovery.healthCodes);
   if (snapshot.backup.exists) {
     if (!BACKUP_NAME.test(snapshot.backup.key ?? '')
       || !Number.isSafeInteger(snapshot.backup.mtimeEpoch)
@@ -270,6 +333,24 @@ function evaluateSnapshot(snapshot, records, now = new Date(snapshot.checkedAt))
       usedPercent: snapshot.disk.usedPercent,
       warningPercent: DISK_WARNING_PERCENT,
     });
+  }
+
+  const keyDetails = { failureCodes: snapshot.keyRecovery.healthCodes };
+  if (!snapshot.keyRecovery.activeExists) {
+    add('BACKUP_ACTIVE_KEY_MISSING', keyDetails);
+  } else if (!snapshot.keyRecovery.activeValid) {
+    add('BACKUP_ACTIVE_KEY_PERMISSION_INVALID', keyDetails);
+  }
+  if (!snapshot.keyRecovery.recoveryExists) {
+    add('BACKUP_KEY_RECOVERY_COPY_MISSING', keyDetails);
+  } else if (!snapshot.keyRecovery.recoveryValid) {
+    add('BACKUP_KEY_RECOVERY_PERMISSION_INVALID', keyDetails);
+  }
+  if (snapshot.keyRecovery.matches === 'false') {
+    add('BACKUP_KEY_RECOVERY_MISMATCH', keyDetails);
+  }
+  if (snapshot.keyRecovery.decryptStatus === 'fail') {
+    add('BACKUP_KEY_RECOVERY_DECRYPT_FAILED', keyDetails);
   }
 
   return dedupeCandidates(candidates);
@@ -621,13 +702,68 @@ async function commandSynthetic(prisma, action) {
   throw new Error('invalid_synthetic_action');
 }
 
+async function commandSyntheticKey(prisma, action) {
+  const now = new Date();
+  const code = 'BACKUP_KEY_RECOVERY_MISMATCH';
+  const fingerprint = `${KEY_SYNTHETIC_SOURCE}:${code}`;
+  if (action === 'activate') {
+    const item = candidate(code, {
+      synthetic: true,
+      task: 'task94',
+    }, {
+      source: KEY_SYNTHETIC_SOURCE,
+      synthetic: true,
+      category: 'task94_key_recovery_synthetic',
+      title: 'Task94 synthetic backup key recovery alert',
+      safeMessage: 'Synthetic task94 key recovery alert for lifecycle verification; this is not a real key incident.',
+    });
+    const result = await reconcileSource(prisma, [item], KEY_SYNTHETIC_SOURCE, now);
+    const record = await prisma.alert.findUnique({ where: { fingerprint } });
+    printResult({
+      mode: 'synthetic_key_activate',
+      ...result,
+      alertId: record?.id ?? 'unavailable',
+      status: record?.status ?? 'unavailable',
+      firstSeenAt: record?.firstSeenAt?.toISOString?.() ?? 'unavailable',
+      lastSeenAt: record?.lastSeenAt?.toISOString?.() ?? 'unavailable',
+      activeCount: await prisma.alert.count({
+        where: { fingerprint, status: { in: ACTIVE_STATUSES } },
+      }),
+    });
+    return;
+  }
+  if (action === 'resolve') {
+    const result = await reconcileSource(prisma, [], KEY_SYNTHETIC_SOURCE, now);
+    const record = await prisma.alert.findUnique({ where: { fingerprint } });
+    printResult({
+      mode: 'synthetic_key_resolve',
+      ...result,
+      alertId: record?.id ?? 'unavailable',
+      status: record?.status ?? 'unavailable',
+      resolvedAt: record?.resolvedAt?.toISOString?.() ?? 'unavailable',
+      activeCount: await prisma.alert.count({
+        where: { fingerprint, status: { in: ACTIVE_STATUSES } },
+      }),
+    });
+    return;
+  }
+  throw new Error('invalid_synthetic_action');
+}
+
 async function commandBaseline(prisma) {
-  const [activeCritical, activeWatchdog, activeSynthetic] = await Promise.all([
+  const [activeCritical, activeWatchdog, activeSynthetic, activeKeySynthetic] = await Promise.all([
     prisma.alert.count({ where: { status: 'active', severity: 'critical' } }),
     prisma.alert.count({ where: { status: { in: ACTIVE_STATUSES }, source: SOURCE } }),
     prisma.alert.count({ where: { status: { in: ACTIVE_STATUSES }, source: SYNTHETIC_SOURCE } }),
+    prisma.alert.count({ where: { status: { in: ACTIVE_STATUSES }, source: KEY_SYNTHETIC_SOURCE } }),
   ]);
-  printResult({ mode: 'baseline', activeCritical, activeWatchdog, activeSynthetic });
+  printResult({
+    mode: 'baseline',
+    activeCritical,
+    activeWatchdog,
+    activeSynthetic,
+    activeKeySynthetic,
+  });
 }
 
 function selfTest() {
@@ -652,6 +788,15 @@ function selfTest() {
     },
     health: { status: 'pass', failureCodes: [] },
     disk: { usedPercent: 4, availableBytes: 100 * 1024 * 1024 * 1024 },
+    keyRecovery: {
+      activeExists: true,
+      activeValid: true,
+      recoveryExists: true,
+      recoveryValid: true,
+      matches: 'true',
+      decryptStatus: 'pass',
+      healthCodes: [],
+    },
   };
   const record = {
     backupKey: healthy.backup.key,
@@ -688,6 +833,7 @@ function printResult(result) {
     'activeCritical',
     'activeWatchdog',
     'activeSynthetic',
+    'activeKeySynthetic',
     'alertId',
     'status',
     'firstSeenAt',
@@ -799,6 +945,7 @@ async function main() {
     else if (command === 'dry-run') await commandReconcile(prisma, args[0], true);
     else if (command === 'report-failure') await commandReportFailure(prisma, args[0]);
     else if (command === 'synthetic') await commandSynthetic(prisma, args[0]);
+    else if (command === 'synthetic-key') await commandSyntheticKey(prisma, args[0]);
     else if (command === 'baseline') await commandBaseline(prisma);
     else throw new Error('invalid_command');
   } finally {
@@ -816,6 +963,7 @@ if (require.main === module || process.argv[1] === '-') {
 module.exports = {
   SOURCE,
   SYNTHETIC_SOURCE,
+  KEY_SYNTHETIC_SOURCE,
   DEFINITIONS,
   STALE_SECONDS,
   DISK_WARNING_PERCENT,

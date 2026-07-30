@@ -9,6 +9,7 @@ service_unit='salary-postgres-backup.service'
 backup_dir='/opt/salary-settlement-admin/backups'
 health_tool='/usr/local/sbin/check-local-backup-health'
 database_helper='/usr/local/libexec/salary-settlement-admin/backup-watchdog-db.cjs'
+key_recovery_tool='/usr/local/sbin/backup-key-recovery'
 api_container='salary-settlement-admin-api-1'
 lock_file='/run/lock/salary-postgres-backup-watchdog.lock'
 report_failure_enabled=0
@@ -66,6 +67,12 @@ self_test() {
   fi
   [[ -f "$helper" && ! -L "$helper" ]] || fail database_helper_invalid
   node "$helper" self-test
+  local recovery_helper="$key_recovery_tool"
+  if [[ ! -r "$recovery_helper" ]]; then
+    recovery_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup-key-recovery"
+  fi
+  [[ -f "$recovery_helper" && ! -L "$recovery_helper" ]] || fail key_recovery_tool_invalid
+  "$recovery_helper" --self-test
   echo 'TASK93_BACKUP_WATCHDOG_SELF_TEST=pass'
 }
 
@@ -79,6 +86,7 @@ if [[ "$EUID" -ne 0 ]]; then
   fail requires_root
 fi
 [[ -f "$database_helper" && ! -L "$database_helper" ]] || fail database_helper_invalid
+[[ -f "$key_recovery_tool" && ! -L "$key_recovery_tool" ]] || fail key_recovery_tool_invalid
 [[ -S /var/run/docker.sock ]] || fail docker_socket_missing
 
 case "${1:-}" in
@@ -95,6 +103,16 @@ case "${1:-}" in
   --synthetic-resolve)
     [[ "$#" -eq 1 ]] || fail invalid_arguments
     run_database_helper synthetic resolve
+    exit 0
+    ;;
+  --synthetic-key-activate)
+    [[ "$#" -eq 1 ]] || fail invalid_arguments
+    run_database_helper synthetic-key activate
+    exit 0
+    ;;
+  --synthetic-key-resolve)
+    [[ "$#" -eq 1 ]] || fail invalid_arguments
+    run_database_helper synthetic-key resolve
     exit 0
     ;;
   --report-failure)
@@ -169,6 +187,32 @@ if [[ -n "$latest" && -f "$latest" && ! -L "$latest" ]]; then
 fi
 
 set +e
+key_health_output="$("$key_recovery_tool" check "$latest" 2>&1)"
+key_health_exit=$?
+set -e
+[[ "$key_health_exit" -eq 0 ]] || fail key_recovery_check_failed
+active_key_exists="$(sed -n 's/^TASK94_ACTIVE_KEY_EXISTS=//p' <<<"$key_health_output" | tail -n 1)"
+active_key_valid="$(sed -n 's/^TASK94_ACTIVE_KEY_VALID=//p' <<<"$key_health_output" | tail -n 1)"
+recovery_key_exists="$(sed -n 's/^TASK94_RECOVERY_KEY_EXISTS=//p' <<<"$key_health_output" | tail -n 1)"
+recovery_key_valid="$(sed -n 's/^TASK94_RECOVERY_KEY_VALID=//p' <<<"$key_health_output" | tail -n 1)"
+key_match="$(sed -n 's/^TASK94_KEY_MATCH=//p' <<<"$key_health_output" | tail -n 1)"
+recovery_decrypt_status="$(sed -n 's/^TASK94_RECOVERY_DECRYPT_STATUS=//p' <<<"$key_health_output" | tail -n 1)"
+key_health_codes="$(sed -n 's/^TASK94_KEY_HEALTH_CODES=//p' <<<"$key_health_output" | tail -n 1)"
+[[ "$active_key_exists" == 'true' || "$active_key_exists" == 'false' ]] ||
+  fail active_key_exists_invalid
+[[ "$active_key_valid" == 'true' || "$active_key_valid" == 'false' ]] ||
+  fail active_key_valid_invalid
+[[ "$recovery_key_exists" == 'true' || "$recovery_key_exists" == 'false' ]] ||
+  fail recovery_key_exists_invalid
+[[ "$recovery_key_valid" == 'true' || "$recovery_key_valid" == 'false' ]] ||
+  fail recovery_key_valid_invalid
+[[ "$key_match" == 'true' || "$key_match" == 'false' || "$key_match" == 'unknown' ]] ||
+  fail key_match_invalid
+[[ "$recovery_decrypt_status" == 'pass' || "$recovery_decrypt_status" == 'fail' ||
+  "$recovery_decrypt_status" == 'not_checked' ]] || fail recovery_decrypt_status_invalid
+[[ -n "$key_health_codes" ]] || key_health_codes='none'
+
+set +e
 health_output="$("$health_tool" 2>&1)"
 health_exit=$?
 set -e
@@ -195,7 +239,10 @@ snapshot="$(
     "$service_exists" "$service_result" "$service_exit" \
     "$backup_exists" "$backup_key" "$backup_mtime_epoch" "$backup_size_bytes" \
     "$checksum_present" "$checksum_valid" "$checksum_sha256" \
-    "$health_status" "$disk_used_percent" "$disk_available_bytes" "$health_failure_codes"
+    "$health_status" "$disk_used_percent" "$disk_available_bytes" "$health_failure_codes" \
+    "$active_key_exists" "$active_key_valid" \
+    "$recovery_key_exists" "$recovery_key_valid" \
+    "$key_match" "$recovery_decrypt_status" "$key_health_codes"
 )"
 
 if [[ "${1:-}" == '--dry-run' ]]; then
@@ -215,3 +262,7 @@ echo "TASK93_WATCHDOG_BACKUP_KEY=$backup_key"
 echo "TASK93_WATCHDOG_HEALTH_STATUS=$health_status"
 echo "TASK93_WATCHDOG_DISK_USED_PERCENT=$disk_used_percent"
 echo "TASK93_WATCHDOG_DISK_AVAILABLE_BYTES=$disk_available_bytes"
+echo "TASK94_WATCHDOG_ACTIVE_KEY_VALID=$active_key_valid"
+echo "TASK94_WATCHDOG_RECOVERY_KEY_VALID=$recovery_key_valid"
+echo "TASK94_WATCHDOG_KEY_MATCH=$key_match"
+echo "TASK94_WATCHDOG_RECOVERY_DECRYPT_STATUS=$recovery_decrypt_status"
