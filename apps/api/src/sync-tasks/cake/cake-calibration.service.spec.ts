@@ -8,7 +8,10 @@ const actor = {
 };
 
 describe('CakeCalibrationService', () => {
-  let prisma: { affiliateAccount: { findUnique: jest.Mock } };
+  let prisma: {
+    affiliateAccount: { findUnique: jest.Mock };
+    subIdMapping: { findMany: jest.Mock };
+  };
   let credentials: { getAffiliateAccountCredentialPayload: jest.Mock };
   let client: {
     getConversions: jest.Mock;
@@ -28,6 +31,16 @@ describe('CakeCalibrationService', () => {
           accountCode: '329',
           accountName: 'Blitzads',
         }),
+      },
+      subIdMapping: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            subField: 'sub1',
+            subValue: 'employee-sub',
+            employeeId: 'employee-1',
+            employee: { employeeCode: '01', name: 'Alice' },
+          },
+        ]),
       },
     };
     credentials = {
@@ -74,7 +87,7 @@ describe('CakeCalibrationService', () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       conversion_id: `conversion-${index}`,
       conversion_date: '2026-07-30T12:00:00+08:00',
-      subid_1: index === 0 ? 'employee-sub' : '',
+      subid_1: index === 0 ? 'employee-sub' : index === 1 ? 'unmapped-sensitive-value' : '',
       price: '12.34',
       disposition: index === 0 ? 'Approved' : 'Pending',
       api_key: 'must-not-return',
@@ -121,11 +134,45 @@ describe('CakeCalibrationService', () => {
       dispositionTypeEvidence: { returnedCount: 2, payablePolicyConfirmed: false },
       payoutEvidence: { sameWindowTotalsEqual: true, conversionsComplete: true, campaignSummaryComplete: true },
       currencyEvidence: { campaignCurrencyNames: ['US Dollar'], usdConfirmed: true },
+      subAttributionEvidence: {
+        readOnly: true,
+        evaluationSupported: true,
+        effectiveMonth: '2026-07-01',
+        configuredMappingCount: 1,
+        recordsWithSubCount: 3,
+        attributedRecordCount: 2,
+        noSubRecordCount: 98,
+        unmappedRecordCount: 1,
+        conflictingEmployeeRecordCount: 0,
+        mappingMatchCounts: [
+          {
+            subField: 'sub1',
+            subValue: 'employee-sub',
+            employeeCode: '01',
+            employeeName: 'Alice',
+            recordCount: 2,
+          },
+        ],
+      },
       rawPayloadReturned: false,
+    });
+    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith({
+      where: {
+        affiliateAccountId: 'account-1',
+        effectiveMonth: new Date('2026-07-01T00:00:00.000Z'),
+        status: 'active',
+      },
+      select: {
+        subField: true,
+        subValue: true,
+        employeeId: true,
+        employee: { select: { employeeCode: true, name: true } },
+      },
     });
     const serialized = JSON.stringify({ result, audit: audit.success.mock.calls });
     expect(serialized).not.toContain('test-only-secret');
     expect(serialized).not.toContain('must-not-return');
+    expect(serialized).not.toContain('unmapped-sensitive-value');
     expect(serialized).not.toContain('"raw"');
   });
 

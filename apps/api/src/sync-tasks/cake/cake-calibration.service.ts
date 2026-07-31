@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { CommonStatus, Prisma } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AuditService } from '../../audit/audit.service';
 import { Actor } from '../../auth/auth.types';
@@ -24,6 +24,13 @@ type ConversionWindowEvidence = {
   providerRowCount: number | null;
   pageReturnedCounts: number[];
   httpStatuses: number[];
+};
+
+type CalibrationMapping = {
+  subField: string;
+  subValue: string;
+  employeeId: string;
+  employee: { employeeCode: string; name: string };
 };
 
 export type CakeCalibrationInput = {
@@ -90,12 +97,32 @@ export class CakeCalibrationService {
       }),
       this.client.getCurrencies({ credential, affiliateId: account.accountCode }),
     ]);
+    const mappingMonth = sameCalendarMonth(range.startDate, range.endDate)
+      ? new Date(`${range.startDate.slice(0, 7)}-01T00:00:00.000Z`)
+      : null;
+    const mappings: CalibrationMapping[] = mappingMonth
+      ? await this.prisma.subIdMapping.findMany({
+          where: {
+            affiliateAccountId: account.id,
+            effectiveMonth: mappingMonth,
+            status: CommonStatus.active,
+          },
+          select: {
+            subField: true,
+            subValue: true,
+            employeeId: true,
+            employee: { select: { employeeCode: true, name: true } },
+          },
+        })
+      : [];
     const summary = summarize(combined, range, {
       startDay,
       endDay,
       dispositionTypes,
       campaignSummary,
       currencies,
+      mappings,
+      mappingMonth,
     });
     await this.audit.success({
       actorUserId: actor.userId,
@@ -212,6 +239,8 @@ function summarize(
       rowCount: number | null;
       httpStatus: number;
     };
+    mappings: CalibrationMapping[];
+    mappingMonth: Date | null;
   },
 ) {
   const records = combined.records;
@@ -319,6 +348,11 @@ function summarize(
     externalConversionIdHitCount: externalIds.length,
     duplicateExternalIdCount,
     subFieldHitCounts,
+    subAttributionEvidence: summarizeSubAttribution(
+      records,
+      auxiliary.mappings,
+      auxiliary.mappingMonth,
+    ),
     payoutFieldHitCounts,
     dispositionDistribution,
     timestampSummary,
@@ -392,6 +426,86 @@ function summarize(
     },
     rawPayloadReturned: false,
   };
+}
+
+function summarizeSubAttribution(
+  records: CakeConversionRecord[],
+  mappings: CalibrationMapping[],
+  mappingMonth: Date | null,
+) {
+  if (!mappingMonth) {
+    return {
+      readOnly: true,
+      evaluationSupported: false,
+      reason: 'calibration_range_crosses_settlement_month',
+      effectiveMonth: null,
+      configuredMappingCount: 0,
+      recordsWithSubCount: null,
+      attributedRecordCount: null,
+      noSubRecordCount: null,
+      unmappedRecordCount: null,
+      conflictingEmployeeRecordCount: null,
+      mappingMatchCounts: [],
+    };
+  }
+
+  let recordsWithSubCount = 0;
+  let attributedRecordCount = 0;
+  let noSubRecordCount = 0;
+  let unmappedRecordCount = 0;
+  let conflictingEmployeeRecordCount = 0;
+  const matchCounts = new Array<number>(mappings.length).fill(0);
+
+  for (const record of records) {
+    const candidates = [1, 2, 3, 4, 5]
+      .map((index) => ({ subField: `sub${index}`, subValue: nonBlank(record[`subid_${index}`]) }))
+      .filter((candidate): candidate is { subField: string; subValue: string } => Boolean(candidate.subValue));
+    if (candidates.length === 0) {
+      noSubRecordCount += 1;
+      continue;
+    }
+    recordsWithSubCount += 1;
+    const matchedIndexes = mappings
+      .map((mapping, index) => ({ mapping, index }))
+      .filter(({ mapping }) => candidates.some(
+        (candidate) => candidate.subField === mapping.subField && candidate.subValue === mapping.subValue,
+      ));
+    if (matchedIndexes.length === 0) {
+      unmappedRecordCount += 1;
+      continue;
+    }
+    matchedIndexes.forEach(({ index }) => { matchCounts[index] += 1; });
+    const employeeIds = new Set(matchedIndexes.map(({ mapping }) => mapping.employeeId));
+    if (employeeIds.size > 1) {
+      conflictingEmployeeRecordCount += 1;
+      continue;
+    }
+    attributedRecordCount += 1;
+  }
+
+  return {
+    readOnly: true,
+    evaluationSupported: true,
+    reason: null,
+    effectiveMonth: mappingMonth.toISOString().slice(0, 10),
+    configuredMappingCount: mappings.length,
+    recordsWithSubCount,
+    attributedRecordCount,
+    noSubRecordCount,
+    unmappedRecordCount,
+    conflictingEmployeeRecordCount,
+    mappingMatchCounts: mappings.map((mapping, index) => ({
+      subField: mapping.subField,
+      subValue: mapping.subValue,
+      employeeCode: mapping.employee.employeeCode,
+      employeeName: mapping.employee.name,
+      recordCount: matchCounts[index],
+    })),
+  };
+}
+
+function sameCalendarMonth(startDate: string, endDate: string) {
+  return startDate.slice(0, 7) === endDate.slice(0, 7);
 }
 
 function extractExternalIds(records: CakeConversionRecord[]): string[] {
