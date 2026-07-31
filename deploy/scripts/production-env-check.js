@@ -61,7 +61,10 @@ check('API_CREDENTIAL_ENCRYPTION_KEY', () => {
   return decoded.length === 32 && decoded.toString('base64').replace(/=+$/, '') === raw.replace(/=+$/, '');
 });
 check('BUILD_TIMESTAMP', () => required('BUILD_TIMESTAMP') && !Number.isNaN(Date.parse(process.env.BUILD_TIMESTAMP)));
-check('RELEASE_IMAGE_TAG', () => process.env.RELEASE_IMAGE_TAG === 'rc-20260712-2');
+check('RELEASE_IMAGE_TAG', () => {
+  const value = process.env.RELEASE_IMAGE_TAG ?? '';
+  return value === 'rc-20260712-2' || /^task96-[0-9a-f]{12}$/.test(value);
+});
 check('VITE_API_BASE_URL', () => process.env.VITE_API_BASE_URL === 'https://api-salary.lovemiemie.com');
 check('PRODUCTION_ENV_FILE', () => process.env.PRODUCTION_ENV_FILE === '/opt/salary-settlement-admin/shared/.env');
 check('SYNC_PLANNER_ENABLED', () => ['true', 'false'].includes(process.env.SYNC_PLANNER_ENABLED));

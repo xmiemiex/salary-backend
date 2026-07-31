@@ -10,6 +10,7 @@ export type SyncAdapterContext = {
   provider?: Provider;
   settlementMonth: Date;
   affiliateAccountId?: string;
+  affiliateAccountCode?: string;
   requestedBy?: string | null;
   credential: {
     credentialId: string;

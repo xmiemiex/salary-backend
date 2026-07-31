@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, StreamableFile } from '@nestjs/common';
 import { RequirePermissions } from '../auth/require-permissions.decorator';
 import {
   AffiliateIncomeReconciliationQuery,
@@ -15,6 +15,15 @@ export class SyncReconciliationController {
   @Get('affiliate-income')
   affiliateIncome(@Query() query: AffiliateIncomeReconciliationQuery) {
     return this.reconciliation.affiliateIncome(query);
+  }
+
+  @Get('affiliate-income/export.csv')
+  async exportAffiliateIncome(@Query() query: AffiliateIncomeReconciliationQuery) {
+    const result = await this.reconciliation.exportAffiliatePayoutCsv(query);
+    return new StreamableFile(Buffer.from(result.csv, 'utf8'), {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
   }
 
   @Get('card-spend')

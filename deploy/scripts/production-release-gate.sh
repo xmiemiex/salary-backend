@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-release_dir='/opt/salary-settlement-admin/releases/rc-20260712-2-9f8f8f57'
 prod_env='/opt/salary-settlement-admin/shared/.env'
 summary='/home/salaryops/release-gate-summary.js'
 env_helper='/home/salaryops/production-env-check.js'
@@ -9,11 +8,27 @@ migration_helper='/home/salaryops/production-migration-evidence.js'
 evidence_dir='/opt/salary-settlement-admin/evidence/release-gate-current'
 run_id="release-gate-$(date -u +%Y%m%dT%H%M%SZ)"
 run_dir="/opt/salary-settlement-admin/evidence/release-gate-runs/${run_id}"
+migration_image='salary-settlement-migration:rc-20260712-2'
 
 if [[ "$EUID" -ne 0 ]]; then
   echo 'ERROR: run through sudo.' >&2
   exit 1
 fi
+
+release_tag="$(awk -F= '$1 == "RELEASE_IMAGE_TAG" { value=$2 } END { gsub(/^[[:space:]\"'\'' ]+|[[:space:]\"'\'' ]+$/, "", value); print value }' "$prod_env")"
+case "$release_tag" in
+  rc-20260712-2)
+    release_dir='/opt/salary-settlement-admin/releases/rc-20260712-2-9f8f8f57'
+    ;;
+  task96-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+    release_dir="/opt/salary-settlement-admin/releases/${release_tag}"
+    ;;
+  *)
+    echo 'PRODUCTION_RELEASE_GATE_ERROR=invalid_release_image_tag' >&2
+    exit 2
+    ;;
+esac
+api_image="salary-settlement-api:${release_tag}"
 
 for required_file in \
   "$prod_env" \
@@ -45,7 +60,7 @@ docker run --rm \
   --env-file "$prod_env" \
   --mount "type=bind,src=$env_helper,dst=/tmp/production-env-check.js,readonly" \
   --mount "type=bind,src=$collection_dir,dst=/app/tmp/release-evidence" \
-  salary-settlement-api:rc-20260712-2 \
+  "$api_image" \
   node /tmp/production-env-check.js /app/tmp/release-evidence/env-check.json \
   >"$run_dir/env-check.log" 2>&1 ||
   evidence_collection_exit=1
@@ -57,7 +72,7 @@ docker run --rm \
   --mount "type=bind,src=$release_dir/prisma,dst=/app/prisma,readonly" \
   --mount "type=bind,src=$collection_dir,dst=/app/tmp/release-evidence" \
   --mount "type=bind,src=$migration_helper,dst=/app/production-migration-evidence.js,readonly" \
-  salary-settlement-migration:rc-20260712-2 \
+  "$migration_image" \
   node /app/production-migration-evidence.js /app/tmp/release-evidence/migration-status.json \
   >"$run_dir/migration-status.log" 2>&1 ||
   evidence_collection_exit=1
@@ -82,7 +97,7 @@ docker run --rm \
   --mount "type=bind,src=$evidence_dir,dst=/app/tmp/release-evidence,readonly" \
   --mount "type=bind,src=$run_dir,dst=/task91-output" \
   --mount "type=bind,src=$summary,dst=/tmp/release-gate-summary.js,readonly" \
-  salary-settlement-migration:rc-20260712-2 \
+  "$migration_image" \
   sh -c '
     pnpm exec tsx scripts/release-check.ts --json >/task91-output/release-gate.json
     gate_exit=$?

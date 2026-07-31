@@ -11,6 +11,7 @@ const scriptsDir = __dirname;
 const envCheck = resolve(scriptsDir, 'production-env-check.js');
 const gateScript = resolve(scriptsDir, 'production-release-gate.sh');
 const permissionsScript = resolve(scriptsDir, 'production-permissions-smoke.sh');
+const task96RolloutScript = resolve(scriptsDir, 'task96-production-rollout.sh');
 
 function validProductionEnv() {
   return {
@@ -82,9 +83,19 @@ test('production env check preserves a real failure in evidence', () => {
   }
 });
 
+test('production env check accepts the immutable task96 release format', () => {
+  const environment = validProductionEnv();
+  environment.RELEASE_IMAGE_TAG = 'task96-0123456789ab';
+  const result = spawnSync(process.execPath, [envCheck], { env: environment, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
+});
+
 test('standard gate refreshes read-only evidence and mounts it into the gate', () => {
   const script = readFileSync(gateScript, 'utf8');
   assert.match(script, /release-gate-current/);
+  assert.match(script, /task96-\[0-9a-f\]/);
+  assert.match(script, /api_image="salary-settlement-api:\$\{release_tag\}"/);
   assert.match(script, /production-env-check\.js/);
   assert.match(script, /production-migration-evidence\.js/);
   assert.match(script, /docker run --rm \\\n  --user 0:0 \\\n  --env-file "\$prod_env"/);
@@ -106,4 +117,19 @@ test('production permissions smoke only reuses the approved account and role', (
   assert.doesNotMatch(script, /-X POST[\s\S]{0,200}http:\/\/127\.0\.0\.1:3000\/roles\s/);
   assert.doesNotMatch(script, /-X POST[\s\S]{0,200}http:\/\/127\.0\.0\.1:3000\/admin-users\s/);
   assert.doesNotMatch(script, /-X PATCH/);
+});
+
+test('task96 rollout is scoped to API/web and preserves database and nginx boundaries', () => {
+  const script = readFileSync(task96RolloutScript, 'utf8');
+  assert.match(script, /SCHEMA_AND_MIGRATIONS=unchanged/);
+  assert.match(script, /diff -qr .*prisma\/migrations/);
+  assert.match(script, /up -d --no-build --no-deps api web/);
+  assert.match(script, /AUTOMATIC_ROLLBACK=triggered/);
+  assert.match(script, /ILLEGAL_PLATFORM_HTTP=\$\{illegal_code\}/);
+  assert.match(script, /nginx-target-before\.txt/);
+  assert.match(script, /nginx-target-after\.txt/);
+  assert.doesNotMatch(script, /prisma migrate|db:migrate|migrate deploy/i);
+  assert.doesNotMatch(script, /docker compose (down|restart)/);
+  assert.doesNotMatch(script, /systemctl|service (postgres|nginx)|nginx -s/i);
+  assert.doesNotMatch(script, /--remove-orphans/);
 });

@@ -77,10 +77,10 @@ export class ApiCredentialsService {
 
   async upsertAffiliateAccount(affiliateAccountIdInput: string, input: UpsertApiCredentialInput, actor: Actor) {
     const affiliateAccountId = requireNonBlank(affiliateAccountIdInput, 'affiliateAccountId');
-    const payload = validatePayload(input?.payload);
-    const maskedPayload = maskPayload(payload);
     const account = await this.getAffiliateAccountOrThrow(affiliateAccountId);
     assertAffiliatePlatform(account.platform);
+    const payload = validateAffiliateCredentialPayload(account, input?.payload);
+    const maskedPayload = maskAffiliatePayload(payload);
 
     const encryptedPayload = this.crypto.encryptJson(payload);
     const beforeAudit = account.credential ? toCredentialAudit(account.credential) : undefined;
@@ -282,13 +282,95 @@ function validatePayload(payload: unknown): Record<string, unknown> {
   return payload as Record<string, unknown>;
 }
 
+function validateAffiliateCredentialPayload(account: AffiliateAccountRecord, payloadInput: unknown): Record<string, string> {
+  const payload = validatePayload(payloadInput);
+  if ('affiliateId' in payload || 'affiliate_id' in payload) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Affiliate ID is read-only and comes from affiliateAccount.accountCode.',
+    );
+  }
+
+  const apiKey = requiredString(payload.apiKey, 'apiKey');
+  const platform = account.platform.toLowerCase();
+  if (platform === 'cake') {
+    const baseUrl = validateHttpsUrl(requiredString(payload.baseUrl, 'baseUrl'), 'baseUrl');
+    const conversionsPath = optionalString(payload.conversionsPath, 'conversionsPath');
+    rejectUnexpectedKeys(payload, ['apiKey', 'baseUrl', 'conversionsPath']);
+    return {
+      apiKey,
+      baseUrl,
+      ...(conversionsPath ? { conversionsPath } : {}),
+    };
+  }
+
+  const baseUrl = optionalString(payload.baseUrl, 'baseUrl');
+  rejectUnexpectedKeys(payload, ['apiKey', 'baseUrl']);
+  return {
+    apiKey,
+    ...(baseUrl ? { baseUrl: validateHttpsUrl(baseUrl, 'baseUrl') } : {}),
+  };
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} is required.`);
+  }
+  return value.trim();
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be a non-blank string when provided.`);
+  }
+  return value.trim();
+}
+
+function validateHttpsUrl(value: string, field: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be a valid HTTPS URL.`);
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be a credential-free HTTPS URL.`);
+  }
+  return value.replace(/\/+$/, '');
+}
+
+function rejectUnexpectedKeys(payload: Record<string, unknown>, allowed: string[]) {
+  const unexpected = Object.keys(payload).filter((key) => !allowed.includes(key));
+  if (unexpected.length) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `Unsupported credential field(s): ${unexpected.join(', ')}.`);
+  }
+}
+
+function maskAffiliatePayload(value: unknown, parentKey = ''): unknown {
+  if (typeof value === 'string') return isSecretKey(parentKey) ? maskString(value) : value;
+  if (Array.isArray(value)) return value.map((child) => maskAffiliatePayload(child, parentKey));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, maskAffiliatePayload(nested, key)]),
+    );
+  }
+  return { type: value === null ? 'null' : typeof value };
+}
+
 function maskPayload(value: unknown): unknown {
   if (typeof value === 'string') return maskString(value);
   if (Array.isArray(value)) return value.map(maskPayload);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, maskPayload(nested)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, maskPayload(nested)]),
+    );
   }
   return { type: value === null ? 'null' : typeof value };
+}
+
+function isSecretKey(key: string): boolean {
+  return /api.?key|secret|token|password|authorization/i.test(key);
 }
 
 function maskString(value: string): string {
@@ -328,14 +410,24 @@ function credentialChangedFields(before: ReturnType<typeof toCredentialAudit> | 
 }
 
 function toAffiliateAccountDto(account: AffiliateAccountRecord) {
+  const platform = account.platform.toLowerCase();
+  const maskedPayload =
+    account.credential?.maskedPayload && typeof account.credential.maskedPayload === 'object'
+      ? Object.fromEntries(
+          Object.entries(account.credential.maskedPayload as Record<string, unknown>).filter(
+            ([key]) => key !== 'affiliateId' && key !== 'affiliate_id',
+          ),
+        )
+      : account.credential?.maskedPayload ?? null;
   return {
     affiliateAccountId: account.id,
-    platform: account.platform,
+    platform,
     accountCode: account.accountCode,
     accountName: account.accountName,
+    affiliateId: platform === 'cake' ? account.accountCode : null,
     hasCredential: Boolean(account.credential),
     status: account.credential?.status,
-    maskedPayload: account.credential?.maskedPayload ?? null,
+    maskedPayload,
     updatedAt: account.credential?.updatedAt ?? null,
   };
 }

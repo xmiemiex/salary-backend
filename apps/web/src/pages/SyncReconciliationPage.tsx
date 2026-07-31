@@ -142,6 +142,17 @@ function accountLabel(account: AffiliateAccountOption): string {
   return `${account.accountName?.trim() || account.accountCode} / ${account.accountCode} / ${account.platform}`;
 }
 
+function downloadCsv(filename: string, csv: string) {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function SummaryStats({ values }: { values: { label: string; value: string | number }[] }) {
   return (
     <div className="reconciliation-summary">
@@ -169,6 +180,7 @@ export function SyncReconciliationPage() {
   const [affiliatePage, setAffiliatePage] = useState(1);
   const [affiliatePageSize, setAffiliatePageSize] = useState(PAGE_SIZE);
   const [affiliateFilters, setAffiliateFilters] = useState<Record<string, unknown>>({});
+  const [affiliateExporting, setAffiliateExporting] = useState(false);
 
   const [cardRows, setCardRows] = useState<CardSpendRow[]>([]);
   const [cardSummary, setCardSummary] = useState<CardSpendSummary | null>(null);
@@ -251,6 +263,21 @@ export function SyncReconciliationPage() {
     [cardFilters, cardPage, cardPageSize, messageApi, settlementMonth],
   );
 
+  const exportAffiliatePayout = useCallback(async () => {
+    setAffiliateExporting(true);
+    try {
+      const csv = await apiClient.request<string>(
+        `/sync-reconciliation/affiliate-income/export.csv?${buildQuery({ settlementMonth, ...affiliateFilters })}`,
+      );
+      downloadCsv(`affiliate-payout-${settlementMonth}.csv`, csv);
+      messageApi.success('payout CSV 已导出。');
+    } catch (error) {
+      messageApi.error(errorMessage(error));
+    } finally {
+      setAffiliateExporting(false);
+    }
+  }, [affiliateFilters, messageApi, settlementMonth]);
+
   const loadUnmatched = useCallback(async () => {
     setUnmatchedLoading(true);
     try {
@@ -311,9 +338,9 @@ export function SyncReconciliationPage() {
       { title: 'subId', dataIndex: 'subId', key: 'subId', render: textValue },
       { title: 'employeeName', dataIndex: 'employeeName', key: 'employeeName', render: textValue },
       { title: 'employeeId', dataIndex: 'employeeId', key: 'employeeId', render: textValue },
-      { title: 'revenueUsd', dataIndex: 'revenueUsd', key: 'revenueUsd' },
-      { title: 'conversionTime / eventTime', key: 'eventTime', render: (_, record) => formatDateTime(record.conversionTime ?? record.eventTime) },
-      { title: 'rawStatus', dataIndex: 'rawStatus', key: 'rawStatus', render: textValue },
+      { title: 'payout USD', dataIndex: 'revenueUsd', key: 'revenueUsd' },
+      { title: '销售/转化时间 GMT+8', key: 'eventTime', render: (_, record) => formatDateTime(record.conversionTime ?? record.eventTime) },
+      { title: 'disposition/status', dataIndex: 'rawStatus', key: 'rawStatus', render: textValue },
       { title: 'importedBy', dataIndex: 'importedBy', key: 'importedBy', render: textValue },
       { title: 'syncTaskId', dataIndex: 'syncTaskId', key: 'syncTaskId', render: displaySyncTaskId },
       { title: 'createdAt', dataIndex: 'createdAt', key: 'createdAt', render: formatDateTime },
@@ -422,7 +449,7 @@ export function SyncReconciliationPage() {
           },
           {
             key: 'affiliate-income',
-            label: '联盟收入',
+            label: '联盟 payout',
             children: (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Form
@@ -447,6 +474,9 @@ export function SyncReconciliationPage() {
                       <Button type="primary" htmlType="submit">
                         查询
                       </Button>
+                      <Button loading={affiliateExporting} onClick={() => void exportAffiliatePayout()}>
+                        导出 payout CSV
+                      </Button>
                       <Button
                         onClick={() => {
                           setAffiliateFilters({});
@@ -461,9 +491,9 @@ export function SyncReconciliationPage() {
                 {affiliateSummary ? (
                   <SummaryStats
                     values={[
-                      { label: 'totalRevenueUsd', value: affiliateSummary.totalRevenueUsd },
-                      { label: 'matchedRevenueUsd', value: affiliateSummary.matchedRevenueUsd },
-                      { label: 'unmatchedRevenueUsd', value: affiliateSummary.unmatchedRevenueUsd },
+                      { label: '截至最近同步 payout USD', value: affiliateSummary.totalRevenueUsd },
+                      { label: '已归因 payout USD', value: affiliateSummary.matchedRevenueUsd },
+                      { label: '未归因 payout USD', value: affiliateSummary.unmatchedRevenueUsd },
                       { label: 'eventCount', value: affiliateSummary.eventCount },
                       { label: 'matchedCount', value: affiliateSummary.matchedCount },
                       { label: 'unmatchedCount', value: affiliateSummary.unmatchedCount },

@@ -9,6 +9,7 @@ import { AirwallexClient } from './airwallex/airwallex-client';
 import { AirwallexCardSyncAdapter } from './airwallex/airwallex-card-sync.adapter';
 import { CakeClient } from './cake/cake-client';
 import { CakeIncomeSyncAdapter } from './cake/cake-income-sync.adapter';
+import { CakeCalibrationService } from './cake/cake-calibration.service';
 import { EverflowClient } from './everflow/everflow-client';
 import { EverflowIncomeSyncAdapter } from './everflow/everflow-income-sync.adapter';
 import { PhotonPayClient } from './photonpay/photonpay-client';
@@ -39,6 +40,7 @@ import { SyncAutoExecutorScheduler } from './sync-auto-executor.scheduler';
     EverflowClient,
     EverflowIncomeSyncAdapter,
     CakeClient,
+    CakeCalibrationService,
     CakeIncomeSyncAdapter,
     AirwallexClient,
     AirwallexCardSyncAdapter,

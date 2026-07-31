@@ -6,7 +6,7 @@
     "dev": "vite --port %WEB_PORT%",
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/data-sync-utils.test.ts && tsx test/data-sync-planning-page.test.tsx && tsx test/audit-log-utils.test.ts && tsx test/api-client.test.ts && tsx test/auth-flow.test.ts && tsx test/security-page.test.ts && tsx test/admin-user-utils.test.ts && tsx test/role-utils.test.ts && tsx test/dashboard-page.test.ts && tsx test/system-health-page.test.ts && tsx test/alerts-page.test.ts && tsx test/backup-recovery-page.test.ts && tsx test/release-gate-page.test.ts"
+    "test": "tsx test/data-sync-utils.test.ts && tsx test/data-sync-planning-page.test.tsx && tsx test/affiliate-account-form.test.tsx && tsx test/audit-log-utils.test.ts && tsx test/api-client.test.ts && tsx test/auth-flow.test.ts && tsx test/security-page.test.ts && tsx test/admin-user-utils.test.ts && tsx test/role-utils.test.ts && tsx test/dashboard-page.test.ts && tsx test/system-health-page.test.ts && tsx test/alerts-page.test.ts && tsx test/backup-recovery-page.test.ts && tsx test/release-gate-page.test.ts"
   },
   "dependencies": {
     "@salary/shared": "workspace:*",

@@ -9,6 +9,7 @@ export type InternalCredentialPayload = {
   credentialId: string;
   payload: unknown;
   maskedPayload: unknown;
+  affiliateAccountCode?: string;
 };
 
 type CredentialRecord = {
@@ -19,8 +20,12 @@ type CredentialRecord = {
 };
 
 type CredentialReaderPrisma = {
-  affiliateAccountCredential: {
-    findFirst(args: unknown): Promise<CredentialRecord | null>;
+  affiliateAccount: {
+    findUnique(args: unknown): Promise<{
+      platform: string;
+      accountCode: string;
+      credential: CredentialRecord | null;
+    } | null>;
   };
   cardProviderCredential: {
     findFirst(args: unknown): Promise<CredentialRecord | null>;
@@ -35,14 +40,34 @@ export class CredentialReaderService {
   ) {}
 
   async getAffiliateAccountCredentialPayload(affiliateAccountId: string): Promise<InternalCredentialPayload> {
-    const credential = await this.db().affiliateAccountCredential.findFirst({
-      where: { affiliateAccountId, status: CommonStatus.active },
-      select: { id: true, encryptedPayload: true, maskedPayload: true, status: true },
+    const account = await this.db().affiliateAccount.findUnique({
+      where: { id: affiliateAccountId },
+      select: {
+        platform: true,
+        accountCode: true,
+        credential: {
+          select: { id: true, encryptedPayload: true, maskedPayload: true, status: true },
+        },
+      },
     });
+    const credential = account?.credential;
     if (!credential || credential.status !== CommonStatus.active) {
       throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Active affiliate account credential is required.');
     }
-    return this.toInternalPayload(credential);
+    const internal = this.toInternalPayload(credential);
+    if (account.platform.toLowerCase() !== 'cake') return internal;
+
+    const payload = asObject(internal.payload);
+    const legacyAffiliateId = optionalString(payload.affiliateId ?? payload.affiliate_id);
+    if (legacyAffiliateId && legacyAffiliateId !== account.accountCode) {
+      throw new AppError(ERROR_CODES.VALIDATION_ERROR, '联盟账号 Affiliate ID 与历史凭据不一致');
+    }
+    const { affiliateId: _legacyCamel, affiliate_id: _legacySnake, ...canonicalPayload } = payload;
+    return {
+      ...internal,
+      payload: canonicalPayload,
+      affiliateAccountCode: account.accountCode,
+    };
   }
 
   async getCardProviderCredentialPayload(provider: Provider): Promise<InternalCredentialPayload> {
@@ -67,4 +92,15 @@ export class CredentialReaderService {
   private db(): CredentialReaderPrisma {
     return this.prisma as unknown as CredentialReaderPrisma;
   }
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Affiliate credential payload is invalid.');
+  }
+  return value as Record<string, unknown>;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }

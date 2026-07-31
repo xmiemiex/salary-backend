@@ -4,12 +4,13 @@ import { ERROR_CODES } from '@salary/shared';
 import { parseMonthStart, requireNonBlank } from '../base-data/base-data.utils';
 import { AppError } from '../common/app-error';
 import { PrismaService } from '../prisma/prisma.service';
+import { csvSafeCell } from '../audit/audit-sanitizer';
 
 const ZERO = new Prisma.Decimal(0);
 const AFFILIATE_SOURCES = ['everflow', 'cake'] as const;
 const SECRET_FIELD_PATTERN = /apiKey|token|secret|clientId|merchantId|authorization|signature|password|encryptedPayload/i;
 const UNMATCHED_LIMITATION =
-  'Current API sync adapters skip unmapped third-party records before writing events, so this endpoint only shows unassigned records already present in the database and is not a complete list of third-party records pulled from APIs but not matched.';
+  'This tab only shows unassigned income/card rows. CAKE records rejected before income write are preserved in sync_unmatched_events and shown on the dedicated unmatched-events page.';
 
 export type AffiliateIncomeReconciliationQuery = {
   settlementMonth?: string;
@@ -91,9 +92,9 @@ export class SyncReconciliationService {
         employeeId: record.employeeId,
         employeeName: record.employee?.name ?? null,
         revenueUsd: decimalToString(record.incomeUsd),
-        conversionTime: safeRawDate(record.rawData, ['conversion_unix_timestamp', 'conversion_time', 'conversionTime', 'event_time', 'eventTime']),
-        eventTime: safeRawDate(record.rawData, ['event_time', 'eventTime', 'conversion_time', 'conversionTime']),
-        rawStatus: safeRawString(record.rawData, ['status', 'conversion_status', 'conversionStatus']),
+        conversionTime: safeRawDate(record.rawData, ['conversion_date', 'conversionDate', 'conversion_unix_timestamp', 'conversion_time', 'conversionTime', 'event_time', 'eventTime']),
+        eventTime: safeRawDate(record.rawData, ['event_time', 'eventTime', 'conversion_date', 'conversionDate', 'conversion_time', 'conversionTime']),
+        rawStatus: safeRawString(record.rawData, ['disposition', 'status', 'conversion_status', 'conversionStatus']),
         syncTaskId: null,
         importedBy: record.importedBy,
         createdAt: record.createdAt,
@@ -109,6 +110,71 @@ export class SyncReconciliationService {
         matchedCount,
         unmatchedCount: aggregate._count._all - matchedCount,
       },
+    };
+  }
+
+  async exportAffiliatePayoutCsv(query: AffiliateIncomeReconciliationQuery) {
+    const settlementMonth = parseRequiredMonth(query.settlementMonth);
+    const where: Prisma.IncomeRecordWhereInput = {
+      settlementMonth,
+      source: { in: [...AFFILIATE_SOURCES] },
+      affiliateAccountId: optionalString(query.affiliateAccountId),
+      employeeId: optionalString(query.employeeId),
+      subValue: optionalString(query.subId),
+    };
+    const records = await this.prisma.incomeRecord.findMany({
+      where,
+      include: {
+        affiliateAccount: { select: { platform: true, accountCode: true, accountName: true } },
+        employee: { select: { id: true, name: true } },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 50_000,
+    });
+    const headers = [
+      '平台',
+      '联盟账号名称',
+      'Affiliate ID/账号编码',
+      'external conversion ID',
+      'sales/conversion time GMT+8',
+      'SUB字段',
+      'SUB值',
+      'payout USD',
+      'disposition/status',
+      '匹配员工',
+      '最近同步时间',
+    ];
+    const rows = records.map((record) => {
+      const occurredAt = safeRawDate(record.rawData, [
+        'conversion_date',
+        'conversionDate',
+        'conversion_time',
+        'conversionTime',
+        'event_time',
+        'eventTime',
+      ]);
+      const syncedAt =
+        safeRawDate(record.rawData, ['synced_at', 'syncedAt']) ??
+        record.updatedAt.toISOString();
+      return [
+        normalizeAffiliatePlatform(record.affiliateAccount?.platform ?? record.source),
+        record.affiliateAccount?.accountName ?? '',
+        record.affiliateAccount?.accountCode ?? '',
+        record.externalRecordId ?? '',
+        occurredAt ? formatGmt8DateTime(occurredAt) : '',
+        record.subField ?? '',
+        record.subValue ?? '',
+        decimalToString(record.incomeUsd),
+        safeRawString(record.rawData, ['disposition', 'status', 'conversion_status', 'conversionStatus']) ?? '',
+        record.employee ? `${record.employee.name} (${record.employee.id})` : '',
+        formatGmt8DateTime(syncedAt),
+      ];
+    });
+    const csv = `\uFEFF${[headers, ...rows].map((row) => row.map(csvSafeCell).join(',')).join('\r\n')}`;
+    return {
+      csv,
+      filename: `affiliate-payout-${formatDate(settlementMonth).slice(0, 7)}.csv`,
+      exportedCount: records.length,
     };
   }
 
@@ -361,6 +427,13 @@ function decimalToString(value: DecimalLike): string {
 
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function formatGmt8DateTime(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} +08:00`;
 }
 
 function decimalMap<T extends { employeeId: string | null; _sum?: Record<string, Prisma.Decimal | null | undefined> }>(

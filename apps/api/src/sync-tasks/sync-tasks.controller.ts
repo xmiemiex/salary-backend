@@ -14,6 +14,7 @@ import {
   SyncTaskOperationsQuery,
   SyncTaskOperationsService,
 } from './sync-task-operations.service';
+import { CakeCalibrationInput, CakeCalibrationService } from './cake/cake-calibration.service';
 
 @Controller('sync-tasks')
 export class SyncTasksController {
@@ -21,6 +22,7 @@ export class SyncTasksController {
     private readonly syncTasks: SyncTasksService,
     private readonly syncTaskExecution: SyncTaskExecutionService,
     private readonly syncTaskOperations: SyncTaskOperationsService,
+    private readonly cakeCalibration: CakeCalibrationService,
   ) {}
 
   @Get()
@@ -55,6 +57,16 @@ export class SyncTasksController {
     @CurrentActor() actor: Actor,
   ) {
     return this.syncTasks.createCardSpend(provider, body, actor);
+  }
+
+  @Post('cake-calibration/:affiliateAccountId')
+  @RequirePermissions('api_config.manage')
+  calibrateCake(
+    @Param('affiliateAccountId') affiliateAccountId: string,
+    @Body() body: CakeCalibrationInput,
+    @CurrentActor() actor: Actor,
+  ) {
+    return this.cakeCalibration.run(affiliateAccountId, body, actor);
   }
 
   @Post(':taskId/execute')

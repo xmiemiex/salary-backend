@@ -145,7 +145,7 @@ export class SyncAutoExecutionService {
     try {
       const task = await this.prisma.syncTask.findUnique({
         where: { id: claim.id },
-        include: { affiliateAccount: { select: { id: true, platform: true, status: true } } },
+        include: { affiliateAccount: { select: { id: true, platform: true, accountCode: true, status: true } } },
       });
       if (!task || task.status !== SyncTaskStatus.running || task.leaseOwner !== this.instanceId) return;
 
@@ -167,6 +167,7 @@ export class SyncAutoExecutionService {
         taskId: task.id, sourceType: task.sourceType, taskType: task.taskType, platform: task.platform,
         provider: task.provider ?? undefined, settlementMonth: task.settlementMonth,
         affiliateAccountId: task.affiliateAccountId ?? undefined, requestedBy: null,
+        affiliateAccountCode: task.affiliateAccount?.accountCode ?? credential.affiliateAccountCode,
         credential: { credentialId: credential.credentialId, hasCredential: true, maskedPayload: credential.maskedPayload, payload: credential.payload },
       });
       if (result.status === 'completed') await this.finishSuccess(task.id, claim, result);
@@ -178,7 +179,7 @@ export class SyncAutoExecutionService {
     }
   }
 
-  private async preExecutionBlocker(task: Awaited<ReturnType<PrismaService['syncTask']['findUnique']>> & { affiliateAccount?: { platform: string; status: CommonStatus } | null }) {
+  private async preExecutionBlocker(task: Awaited<ReturnType<PrismaService['syncTask']['findUnique']>> & { affiliateAccount?: { platform: string; accountCode?: string; status: CommonStatus } | null }) {
     const locked = await this.prisma.monthlySettlement.findUnique({ where: { settlementMonth: task!.settlementMonth }, select: { status: true } });
     if (locked?.status === SettlementStatus.locked) return SyncExecutionErrorCategory.MONTH_LOCKED;
     if (task!.sourceType === SyncTaskSourceType.affiliate_income) {

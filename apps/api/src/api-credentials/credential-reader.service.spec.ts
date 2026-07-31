@@ -12,7 +12,7 @@ describe('CredentialReaderService', () => {
   const affiliateSecret = 'affiliate-reader-plain-secret';
   const cardSecret = 'card-reader-plain-secret';
   let prisma: {
-    affiliateAccountCredential: { findFirst: jest.Mock };
+    affiliateAccount: { findUnique: jest.Mock };
     cardProviderCredential: { findFirst: jest.Mock };
   };
   let audit: { success: jest.Mock; failure: jest.Mock };
@@ -22,7 +22,7 @@ describe('CredentialReaderService', () => {
   beforeEach(() => {
     process.env.API_CREDENTIAL_ENCRYPTION_KEY = '12345678901234567890123456789012';
     prisma = {
-      affiliateAccountCredential: { findFirst: jest.fn() },
+      affiliateAccount: { findUnique: jest.fn() },
       cardProviderCredential: { findFirst: jest.fn() },
     };
     audit = { success: jest.fn(), failure: jest.fn() };
@@ -39,19 +39,25 @@ describe('CredentialReaderService', () => {
   });
 
   it('reads only active affiliate credential and returns plaintext payload for internal callers', async () => {
-    prisma.affiliateAccountCredential.findFirst.mockResolvedValue(
-      credential({
-        id: 'affiliate-cred-1',
-        encryptedPayload: crypto.encryptJson({ apiKey: 'affiliate-key-123', secret: affiliateSecret }),
-        maskedPayload: { apiKey: 'affi****-123', secret: 'affi****cret' },
-      }),
-    );
+    prisma.affiliateAccount.findUnique.mockResolvedValue({
+      platform: 'everflow',
+      accountCode: 'acct-1',
+      credential: credential({
+          id: 'affiliate-cred-1',
+          encryptedPayload: crypto.encryptJson({ apiKey: 'affiliate-key-123', secret: affiliateSecret }),
+          maskedPayload: { apiKey: 'affi****-123', secret: 'affi****cret' },
+        }),
+    });
 
     const result = await service.getAffiliateAccountCredentialPayload('10000000-0000-0000-0000-000000000001');
 
-    expect(prisma.affiliateAccountCredential.findFirst).toHaveBeenCalledWith({
-      where: { affiliateAccountId: '10000000-0000-0000-0000-000000000001', status: CommonStatus.active },
-      select: { id: true, encryptedPayload: true, maskedPayload: true, status: true },
+    expect(prisma.affiliateAccount.findUnique).toHaveBeenCalledWith({
+      where: { id: '10000000-0000-0000-0000-000000000001' },
+      select: {
+        platform: true,
+        accountCode: true,
+        credential: { select: { id: true, encryptedPayload: true, maskedPayload: true, status: true } },
+      },
     });
     expect(result).toEqual({
       credentialId: 'affiliate-cred-1',
@@ -62,7 +68,7 @@ describe('CredentialReaderService', () => {
   });
 
   it('does not return plaintext for disabled affiliate credential', async () => {
-    prisma.affiliateAccountCredential.findFirst.mockResolvedValue(null);
+    prisma.affiliateAccount.findUnique.mockResolvedValue({ platform: 'cake', accountCode: '329', credential: null });
     const decryptSpy = jest.spyOn(crypto, 'decryptJson');
 
     await expect(
@@ -73,6 +79,48 @@ describe('CredentialReaderService', () => {
     });
 
     expect(decryptSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts a matching legacy CAKE affiliateId but removes it from the internal payload', async () => {
+    prisma.affiliateAccount.findUnique.mockResolvedValue({
+      platform: 'cake',
+      accountCode: '329',
+      credential: credential({
+        id: 'cake-cred',
+        encryptedPayload: crypto.encryptJson({
+          apiKey: 'cake-key-123',
+          baseUrl: 'https://cake.example.test/affiliates/api',
+          affiliateId: '329',
+        }),
+      }),
+    });
+
+    const result = await service.getAffiliateAccountCredentialPayload('10000000-0000-0000-0000-000000000001');
+
+    expect(result).toMatchObject({
+      affiliateAccountCode: '329',
+      payload: { apiKey: 'cake-key-123', baseUrl: 'https://cake.example.test/affiliates/api' },
+    });
+    expect(JSON.stringify(result.payload)).not.toContain('affiliateId');
+  });
+
+  it('blocks a conflicting legacy CAKE affiliateId without exposing the API Key', async () => {
+    prisma.affiliateAccount.findUnique.mockResolvedValue({
+      platform: 'cake',
+      accountCode: '329',
+      credential: credential({
+        id: 'cake-cred',
+        encryptedPayload: crypto.encryptJson({
+          apiKey: 'cake-key-must-not-leak',
+          baseUrl: 'https://cake.example.test/affiliates/api',
+          affiliateId: '998',
+        }),
+      }),
+    });
+
+    await expect(
+      service.getAffiliateAccountCredentialPayload('10000000-0000-0000-0000-000000000001'),
+    ).rejects.toMatchObject({ message: '联盟账号 Affiliate ID 与历史凭据不一致' });
   });
 
   it('reads only active card provider credential and returns plaintext payload for internal callers', async () => {

@@ -172,8 +172,8 @@ describe('SyncReconciliationService', () => {
     const result = await service.unmatched({ settlementMonth: '2026-06', type: 'affiliate_income' });
 
     expect(result.affiliateIncomeEvents).toHaveLength(1);
-    expect(result.limitation).toContain('adapters skip unmapped third-party records');
-    expect(result.warnings).toEqual([expect.stringContaining('only shows unassigned records already present in the database')]);
+    expect(result.limitation).toContain('sync_unmatched_events');
+    expect(result.warnings).toEqual([expect.stringContaining('dedicated unmatched-events page')]);
     expect(result.affiliateIncomeEvents[0]).toMatchObject({
       reason: 'SUB_ID_NOT_MAPPED',
       subId: 'unknown-sub',
@@ -305,6 +305,42 @@ describe('SyncReconciliationService', () => {
       expect(serialized).not.toContain(forbidden);
     }
   });
+
+  it('exports a minimal payout CSV with GMT+8 sales time and no raw payload or secret fields', async () => {
+    prisma.incomeRecord.findMany.mockResolvedValue([
+      incomeRecord({
+        source: 'cake',
+        externalRecordId: 'cake-cv-1',
+        subField: 'sub1',
+        subValue: 'alice-sub',
+        incomeUsd: new Prisma.Decimal('12.34'),
+        rawData: {
+          conversion_date: '2026-05-31T16:00:00.000Z',
+          disposition: 'Approved',
+          synced_at: '2026-06-02T01:02:03.000Z',
+          apiKey: 'must-not-export',
+          rawPayload: 'must-not-export',
+        },
+        affiliateAccount: {
+          platform: 'cake',
+          accountCode: '329',
+          accountName: 'Blitzads',
+        },
+      }),
+    ]);
+
+    const result = await service.exportAffiliatePayoutCsv({ settlementMonth: '2026-06' });
+
+    expect(result.filename).toBe('affiliate-payout-2026-06.csv');
+    expect(result.exportedCount).toBe(1);
+    expect(result.csv).toContain('sales/conversion time GMT+8');
+    expect(result.csv).toContain('2026-06-01 00:00:00 +08:00');
+    expect(result.csv).toContain('"cake","Blitzads","329","cake-cv-1"');
+    expect(result.csv).toContain('"sub1","alice-sub","12.34","Approved","Alice');
+    expect(result.csv).not.toContain('must-not-export');
+    expect(result.csv).not.toContain('apiKey');
+    expect(result.csv).not.toContain('rawPayload');
+  });
 });
 
 function incomeRecord(overrides: Record<string, unknown> = {}) {
@@ -326,6 +362,7 @@ function incomeRecord(overrides: Record<string, unknown> = {}) {
     status: CommonStatus.confirmed,
     importedBy: '20000000-0000-0000-0000-000000000001',
     createdAt: new Date(Date.UTC(2026, 5, 2)),
+    updatedAt: new Date(Date.UTC(2026, 5, 2)),
     employee: { id: employeeId, name: 'Alice' },
     affiliateAccount: {
       id: '10000000-0000-0000-0000-000000000001',

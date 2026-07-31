@@ -75,6 +75,11 @@ const PROVIDER_OPTIONS = [
   { label: 'PhotonPay', value: 'photonpay' },
 ];
 
+export const AFFILIATE_PLATFORM_OPTIONS = [
+  { label: 'CAKE', value: 'cake' },
+  { label: 'Everflow', value: 'everflow' },
+];
+
 const PAGE_CONFIGS: Record<string, PageConfig> = {
   '/employees': {
     title: '员工管理',
@@ -93,12 +98,11 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
   '/affiliate-accounts': {
     title: '联盟账号',
     endpoint: '/affiliate-accounts',
-    defaultCreateValues: { status: 'active' },
+    defaultCreateValues: { platform: 'cake', status: 'active' },
     fields: [
-      { name: 'platform', label: '平台', required: true },
-      { name: 'accountCode', label: '账号编码', required: true },
-      { name: 'accountName', label: '账号名称' },
-      { name: 'defaultEmployeeId', label: '默认员工 ID' },
+      { name: 'platform', label: '平台', type: 'select', options: AFFILIATE_PLATFORM_OPTIONS, required: true },
+      { name: 'accountCode', label: 'Affiliate ID/账号编码', required: true },
+      { name: 'accountName', label: '联盟账号名称' },
       { name: 'status', label: '状态', type: 'select', options: STATUS_OPTIONS, filter: true },
     ],
   },
@@ -359,14 +363,49 @@ function statusText(value: unknown): string {
   return typeof value === 'string' ? map[value] ?? value : '';
 }
 
-function FieldControl({ field }: { field: FieldConfig }) {
+type FieldControlProps = {
+  field: FieldConfig;
+  onValueChange?: () => void;
+  id?: string;
+  value?: string | number | bigint | readonly string[];
+  onChange?: (...args: unknown[]) => void;
+  disabled?: boolean;
+};
+
+function FieldControl({ field, onValueChange, onChange, ...formControlProps }: FieldControlProps) {
+  const handleChange = (...args: unknown[]) => {
+    onChange?.(...args);
+    onValueChange?.();
+  };
   if (field.type === 'select') {
-    return <Select allowClear options={field.options ?? []} placeholder={field.placeholder ?? `请选择${field.label}`} />;
+    return (
+      <Select
+        {...formControlProps}
+        onChange={handleChange}
+        allowClear
+        options={field.options ?? []}
+        placeholder={field.placeholder ?? `请选择${field.label}`}
+      />
+    );
   }
   if (field.type === 'textarea' || field.type === 'json') {
-    return <Input.TextArea rows={field.type === 'json' ? 5 : 3} placeholder={field.placeholder ?? `请输入${field.label}`} />;
+    return (
+      <Input.TextArea
+        {...formControlProps}
+        onInput={handleChange}
+        rows={field.type === 'json' ? 5 : 3}
+        placeholder={field.placeholder ?? `请输入${field.label}`}
+      />
+    );
   }
-  return <Input type={field.type === 'date' || field.type === 'month' ? field.type : 'text'} placeholder={field.placeholder ?? `请输入${field.label}`} />;
+  return (
+    <Input
+      {...formControlProps}
+      onInput={handleChange}
+      type={field.type === 'date' || field.type === 'month' ? field.type : 'text'}
+      placeholder={field.placeholder ?? `请输入${field.label}`}
+    />
+  );
 }
 
 function PerformanceGroupMembersForm() {
@@ -436,6 +475,7 @@ export function BaseDataPage({ path }: { path: string }) {
   const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [form] = Form.useForm();
   const [filterForm] = Form.useForm();
+  const selectedAffiliatePlatform = Form.useWatch('platform', form);
   const [messageApi, messageHolder] = message.useMessage();
   const [modalApi, modalHolder] = Modal.useModal();
 
@@ -459,6 +499,16 @@ export function BaseDataPage({ path }: { path: string }) {
   useEffect(() => {
     void load({});
   }, [load]);
+
+  useEffect(() => {
+    if (!open) return;
+    form.resetFields();
+    form.setFieldsValue(
+      editing
+        ? normalizeForForm(editing, config.fields.filter((field) => field.create !== false), config.customForm)
+        : config.defaultCreateValues ?? {},
+    );
+  }, [config.customForm, config.defaultCreateValues, config.fields, editing, form, open]);
 
   const editableFields = useMemo(() => config.fields.filter((field) => field.create !== false), [config.fields]);
   const filterFields = useMemo(() => config.fields.filter((field) => field.filter), [config.fields]);
@@ -522,7 +572,6 @@ export function BaseDataPage({ path }: { path: string }) {
               size="small"
               onClick={() => {
                 setEditing(record);
-                form.setFieldsValue(normalizeForForm(record, editableFields, config.customForm));
                 setOpen(true);
               }}
             >
@@ -555,7 +604,12 @@ export function BaseDataPage({ path }: { path: string }) {
   }, [config.actions, config.customForm, config.fields, editableFields, form, runAction]);
 
   const submit = async () => {
-    const values = await form.validateFields();
+    let values: Record<string, unknown>;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
     let payload: Record<string, unknown>;
     try {
       payload =
@@ -605,8 +659,6 @@ export function BaseDataPage({ path }: { path: string }) {
             type="primary"
             onClick={() => {
               setEditing(null);
-              form.resetFields();
-              form.setFieldsValue(config.defaultCreateValues ?? {});
               setOpen(true);
             }}
           >
@@ -664,21 +716,38 @@ export function BaseDataPage({ path }: { path: string }) {
         onCancel={() => {
           setOpen(false);
           setEditing(null);
+          form.resetFields();
         }}
-        destroyOnClose
+        forceRender
       >
         <Form form={form} layout="vertical" preserve={false}>
-          {editableFields.map((field) => (
-            <Form.Item
-              key={field.name}
-              name={field.name}
-              label={field.label}
-              help={field.help}
-              rules={[{ required: field.required, message: `请填写${field.label}` }]}
-            >
-              <FieldControl field={field} />
-            </Form.Item>
-          ))}
+          {editableFields.map((field) => {
+            const label =
+              path === '/affiliate-accounts' && field.name === 'accountCode'
+                ? selectedAffiliatePlatform === 'cake'
+                  ? 'Affiliate ID'
+                  : '账号编码'
+                : field.label;
+            return (
+              <Form.Item
+                key={field.name}
+                name={field.name}
+                label={label}
+                help={field.help}
+                validateTrigger={['onChange', 'onBlur']}
+                rules={[{ required: field.required, whitespace: field.type !== 'select', message: `请填写${label}` }]}
+              >
+                <FieldControl
+                  field={{ ...field, label }}
+                  onValueChange={() => {
+                    queueMicrotask(() => {
+                      void form.validateFields([field.name]).catch(() => undefined);
+                    });
+                  }}
+                />
+              </Form.Item>
+            );
+          })}
           {config.customForm === 'performanceGroup' ? <PerformanceGroupMembersForm /> : null}
         </Form>
       </Modal>

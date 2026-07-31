@@ -198,6 +198,11 @@ function countText(value: unknown): string | number {
   return typeof value === 'number' ? value : '-';
 }
 
+function resultCount(record: SyncTaskRecord, key: string): string | number {
+  if (!record.resultPayload || typeof record.resultPayload !== 'object') return '-';
+  return countText((record.resultPayload as Record<string, unknown>)[key]);
+}
+
 function taskSubject(record: SyncTaskRecord): string {
   if (record.sourceType === 'affiliate_income' || record.taskType === 'affiliate_income') {
     if (record.affiliateAccount) return accountLabel(record.affiliateAccount);
@@ -647,8 +652,10 @@ export function DataSyncPage() {
         width: 150,
         render: (value: string) => <Tag color={statusColor(value)}>{statusText(value)}</Tag>,
       },
-      { title: 'successCount', dataIndex: 'successCount', key: 'successCount', width: 120, render: countText },
-      { title: 'failedCount', dataIndex: 'failedCount', key: 'failedCount', width: 120, render: countText },
+      { title: '拉取条数', key: 'pulledCount', width: 110, render: (_, record) => resultCount(record, 'pulledCount') },
+      { title: '成功归因', dataIndex: 'successCount', key: 'successCount', width: 110, render: countText },
+      { title: 'unmatched', key: 'unmatchedCount', width: 110, render: (_, record) => resultCount(record, 'unmatchedCount') },
+      { title: '失败条数', dataIndex: 'failedCount', key: 'failedCount', width: 110, render: countText },
       { title: '执行方式', dataIndex: 'triggerType', key: 'triggerType', width: 110, render: (value) => value === 'scheduled' ? '规划自动任务' : '人工任务' },
       { title: '尝试次数', dataIndex: 'attemptCount', key: 'attemptCount', width: 100, render: countText },
       { title: '错误分类', dataIndex: 'lastErrorCategory', key: 'lastErrorCategory', width: 180, render: (value) => value ?? '-' },
@@ -663,7 +670,7 @@ export function DataSyncPage() {
       { title: 'createdAt', dataIndex: 'createdAt', key: 'createdAt', width: 180, render: formatTime },
       { title: 'updatedAt', dataIndex: 'updatedAt', key: 'updatedAt', width: 180, render: formatTime },
       { title: 'startedAt', dataIndex: 'startedAt', key: 'startedAt', width: 180, render: formatTime },
-      { title: 'finishedAt', dataIndex: 'finishedAt', key: 'finishedAt', width: 180, render: formatTime },
+      { title: '最近同步时间', dataIndex: 'finishedAt', key: 'finishedAt', width: 180, render: formatTime },
       {
         title: '操作',
         key: 'operation',

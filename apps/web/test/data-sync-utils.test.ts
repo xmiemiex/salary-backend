@@ -91,8 +91,8 @@ assert.doesNotMatch(
   /Blitz/i,
 );
 
-assert.match(UNMATCHED_LIMITATION_NOTICE, /当前只显示数据库中已有的未归属记录/);
-assert.match(UNMATCHED_LIMITATION_NOTICE, /不是完整的第三方未匹配明细/);
+assert.match(UNMATCHED_LIMITATION_NOTICE, /只显示未归属的收入\/卡记录/);
+assert.match(UNMATCHED_LIMITATION_NOTICE, /同步未匹配事件/);
 
 assert.equal(displaySyncTaskId(null), '无真实任务关联');
 assert.equal(displaySyncTaskId(undefined), '无真实任务关联');

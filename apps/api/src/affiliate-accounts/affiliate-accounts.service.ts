@@ -18,7 +18,6 @@ export type CreateAffiliateAccountInput = {
   platform: string;
   accountCode: string;
   accountName?: string;
-  defaultEmployeeId?: string;
   status?: CommonStatus;
 };
 
@@ -104,20 +103,18 @@ export class AffiliateAccountsService {
 
   private validateCreate(input: CreateAffiliateAccountInput) {
     return {
-      platform: requireNonBlank(input.platform, 'platform'),
+      platform: validateAffiliatePlatform(input.platform),
       accountCode: requireNonBlank(input.accountCode, 'accountCode'),
       accountName: optionalNonBlank(input.accountName, 'accountName'),
-      defaultEmployeeId: optionalNonBlank(input.defaultEmployeeId, 'defaultEmployeeId'),
       status: input.status ?? CommonStatus.active,
     };
   }
 
   private validateUpdate(input: UpdateAffiliateAccountInput) {
     const data: Record<string, unknown> = {};
-    if (input.platform !== undefined) data.platform = requireNonBlank(input.platform, 'platform');
+    if (input.platform !== undefined) data.platform = validateAffiliatePlatform(input.platform);
     if (input.accountCode !== undefined) data.accountCode = requireNonBlank(input.accountCode, 'accountCode');
     if (input.accountName !== undefined) data.accountName = optionalNonBlank(input.accountName, 'accountName') ?? null;
-    if (input.defaultEmployeeId !== undefined) data.defaultEmployeeId = optionalNonBlank(input.defaultEmployeeId, 'defaultEmployeeId') ?? null;
     if (input.status !== undefined) data.status = input.status;
     return data;
   }
@@ -145,4 +142,9 @@ export class AffiliateAccountsService {
       userAgent: actor.userAgent,
     };
   }
+}
+
+function validateAffiliatePlatform(value: unknown): 'cake' | 'everflow' {
+  if (value === 'cake' || value === 'everflow') return value;
+  throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'platform must be exactly cake or everflow.');
 }

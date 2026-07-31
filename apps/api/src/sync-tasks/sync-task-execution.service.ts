@@ -148,6 +148,7 @@ export class SyncTaskExecutionService {
         provider: runningTask.provider ?? undefined,
         settlementMonth: runningTask.settlementMonth,
         affiliateAccountId: runningTask.affiliateAccountId ?? undefined,
+        affiliateAccountCode: runningTask.affiliateAccount?.accountCode ?? credential.affiliateAccountCode,
         requestedBy: runningTask.requestedBy,
         credential: {
           credentialId: credential.credentialId,

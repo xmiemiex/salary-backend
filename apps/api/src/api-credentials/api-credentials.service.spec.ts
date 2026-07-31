@@ -67,13 +67,12 @@ describe('ApiCredentialsService', () => {
 
     const result = await service.upsertAffiliateAccount(
       '10000000-0000-0000-0000-000000000001',
-      { payload: { apiKey: 'abcd12345678wxyz', secret: 'super-secret-token' } },
+      { payload: { apiKey: 'abcd12345678wxyz', baseUrl: 'https://api.eflow.team' } },
       actor,
     );
 
     const upsertArgs = prisma.affiliateAccountCredential.upsert.mock.calls[0][0];
     expect(upsertArgs.create.encryptedPayload).not.toContain('abcd12345678wxyz');
-    expect(upsertArgs.create.encryptedPayload).not.toContain('super-secret-token');
     expect(JSON.parse(upsertArgs.create.encryptedPayload)).toEqual(
       expect.objectContaining({ alg: 'aes-256-gcm', iv: expect.any(String), tag: expect.any(String), ciphertext: expect.any(String) }),
     );
@@ -81,11 +80,10 @@ describe('ApiCredentialsService', () => {
       expect.objectContaining({
         affiliateAccountId: '10000000-0000-0000-0000-000000000001',
         hasCredential: true,
-        maskedPayload: { apiKey: 'abcd****wxyz', secret: 'supe****oken' },
+        maskedPayload: { apiKey: 'abcd****wxyz', baseUrl: 'https://api.eflow.team' },
       }),
     );
     expect(JSON.stringify(result)).not.toContain('abcd12345678wxyz');
-    expect(JSON.stringify(result)).not.toContain('super-secret-token');
   });
 
   it('updates affiliateAccount credential, overwrites encryptedPayload, and writes audit', async () => {
@@ -107,7 +105,7 @@ describe('ApiCredentialsService', () => {
 
     await service.upsertAffiliateAccount(
       '10000000-0000-0000-0000-000000000001',
-      { payload: { apiKey: 'new-api-key-0001', token: 'new-token-0002' } },
+      { payload: { apiKey: 'new-api-key-0001', baseUrl: 'https://cake.example.test/affiliates/api' } },
       actor,
     );
 
@@ -156,6 +154,42 @@ describe('ApiCredentialsService', () => {
     ).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
 
     expect(prisma.affiliateAccountCredential.upsert).not.toHaveBeenCalled();
+  });
+
+  it('uses accountCode as read-only CAKE Affiliate ID and rejects duplicate affiliateId input', async () => {
+    prisma.affiliateAccount.findUnique.mockResolvedValue({
+      ...affiliateAccount('cake'),
+      accountCode: '329',
+    });
+    prisma.affiliateAccountCredential.upsert.mockImplementation(async (args) =>
+      credential({ ...args.create, id: 'cred-cake' }),
+    );
+
+    const result = await service.upsertAffiliateAccount(
+      '10000000-0000-0000-0000-000000000001',
+      { payload: { apiKey: 'new-cake-key-0001', baseUrl: 'https://cake.example.test/affiliates/api' } },
+      actor,
+    );
+    expect(result).toMatchObject({ affiliateId: '329', accountCode: '329' });
+    const encrypted = prisma.affiliateAccountCredential.upsert.mock.calls[0][0].create.encryptedPayload;
+    expect(JSON.stringify(encrypted)).not.toContain('affiliateId');
+
+    await expect(
+      service.upsertAffiliateAccount(
+        '10000000-0000-0000-0000-000000000001',
+        {
+          payload: {
+            apiKey: 'new-cake-key-0002',
+            baseUrl: 'https://cake.example.test/affiliates/api',
+            affiliateId: '329',
+          },
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      code: ERROR_CODES.VALIDATION_ERROR,
+      message: 'Affiliate ID is read-only and comes from affiliateAccount.accountCode.',
+    });
   });
 
   it('creates card provider credential only for airwallex/photonpay', async () => {
