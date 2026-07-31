@@ -1,14 +1,30 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AuditService } from '../../audit/audit.service';
 import { Actor } from '../../auth/auth.types';
 import { CredentialReaderService } from '../../api-credentials/credential-reader.service';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CakeClient, CakeConversionRecord, CakeCredentialPayload } from './cake-client';
+import {
+  CakeCampaignSummaryRecord,
+  CakeClient,
+  CakeConversionRecord,
+  CakeCredentialPayload,
+  CakeCurrencyRecord,
+  CakeDispositionTypeRecord,
+} from './cake-client';
 
 const CALIBRATION_PAGE_SIZE = 100;
 const CALIBRATION_MAX_PAGES = 2;
+const CALIBRATION_CAMPAIGN_ROW_LIMIT = 1000;
+
+type ConversionWindowEvidence = {
+  records: CakeConversionRecord[];
+  providerRowCount: number | null;
+  pageReturnedCounts: number[];
+  httpStatuses: number[];
+};
 
 export type CakeCalibrationInput = {
   startDate?: string;
@@ -36,31 +52,50 @@ export class CakeCalibrationService {
     const range = parseRange(input);
     const internal = await this.credentials.getAffiliateAccountCredentialPayload(account.id);
     const credential = parseCredential(internal.payload);
-    const records: CakeConversionRecord[] = [];
-    const pageReturnedCounts: number[] = [];
-    const httpStatuses: number[] = [];
-    let providerRowCount: number | null = null;
-    for (let page = 0; page < CALIBRATION_MAX_PAGES; page += 1) {
-      const response = await this.client.getConversions({
+    const combined = await this.fetchConversionWindow(
+      credential,
+      account.accountCode,
+      range.startDate,
+      range.endDate,
+      CALIBRATION_MAX_PAGES,
+    );
+    const startDay =
+      range.startDate === range.endDate
+        ? combined
+        : await this.fetchConversionWindow(
+            credential,
+            account.accountCode,
+            range.startDate,
+            range.startDate,
+            1,
+          );
+    const endDay =
+      range.startDate === range.endDate
+        ? combined
+        : await this.fetchConversionWindow(
+            credential,
+            account.accountCode,
+            range.endDate,
+            range.endDate,
+            1,
+          );
+    const [dispositionTypes, campaignSummary, currencies] = await Promise.all([
+      this.client.getDispositionTypes({ credential, affiliateId: account.accountCode }),
+      this.client.getCampaignSummary({
         credential,
         affiliateId: account.accountCode,
         startDate: range.startDate,
         endDate: range.endDate,
-        startAtRow: page * CALIBRATION_PAGE_SIZE + 1,
-        rowLimit: CALIBRATION_PAGE_SIZE,
-      });
-      records.push(...response.conversions);
-      pageReturnedCounts.push(response.conversions.length);
-      httpStatuses.push(response.httpStatus);
-      providerRowCount = response.rowCount ?? providerRowCount;
-      const moreRows =
-        response.conversions.length === CALIBRATION_PAGE_SIZE &&
-        (response.rowCount === null || records.length < response.rowCount);
-      if (!moreRows) break;
-    }
-    const summary = summarize(records, providerRowCount, range, {
-      pageReturnedCounts,
-      httpStatuses,
+        rowLimit: CALIBRATION_CAMPAIGN_ROW_LIMIT,
+      }),
+      this.client.getCurrencies({ credential, affiliateId: account.accountCode }),
+    ]);
+    const summary = summarize(combined, range, {
+      startDay,
+      endDay,
+      dispositionTypes,
+      campaignSummary,
+      currencies,
     });
     await this.audit.success({
       actorUserId: actor.userId,
@@ -81,6 +116,40 @@ export class CakeCalibrationService {
       affiliateIdSource: 'affiliate_accounts.account_code',
       ...summary,
     };
+  }
+
+  private async fetchConversionWindow(
+    credential: CakeCredentialPayload,
+    affiliateId: string,
+    startDate: string,
+    endDate: string,
+    maxPages: number,
+  ): Promise<ConversionWindowEvidence> {
+    const evidence: ConversionWindowEvidence = {
+      records: [],
+      providerRowCount: null,
+      pageReturnedCounts: [],
+      httpStatuses: [],
+    };
+    for (let page = 0; page < maxPages; page += 1) {
+      const response = await this.client.getConversions({
+        credential,
+        affiliateId,
+        startDate,
+        endDate,
+        startAtRow: page * CALIBRATION_PAGE_SIZE + 1,
+        rowLimit: CALIBRATION_PAGE_SIZE,
+      });
+      evidence.records.push(...response.conversions);
+      evidence.pageReturnedCounts.push(response.conversions.length);
+      evidence.httpStatuses.push(response.httpStatus);
+      evidence.providerRowCount = response.rowCount ?? evidence.providerRowCount;
+      const moreRows =
+        response.conversions.length === CALIBRATION_PAGE_SIZE &&
+        (response.rowCount === null || evidence.records.length < response.rowCount);
+      if (!moreRows) break;
+    }
+    return evidence;
   }
 }
 
@@ -123,11 +192,30 @@ function parseCredential(payload: unknown): CakeCredentialPayload {
 }
 
 function summarize(
-  records: CakeConversionRecord[],
-  rowCount: number | null,
+  combined: ConversionWindowEvidence,
   range: ReturnType<typeof parseRange>,
-  pages: { pageReturnedCounts: number[]; httpStatuses: number[] },
+  auxiliary: {
+    startDay: ConversionWindowEvidence;
+    endDay: ConversionWindowEvidence;
+    dispositionTypes: {
+      rows: CakeDispositionTypeRecord[];
+      rowCount: number | null;
+      httpStatus: number;
+    };
+    campaignSummary: {
+      rows: CakeCampaignSummaryRecord[];
+      rowCount: number | null;
+      httpStatus: number;
+    };
+    currencies: {
+      rows: CakeCurrencyRecord[];
+      rowCount: number | null;
+      httpStatus: number;
+    };
+  },
 ) {
+  const records = combined.records;
+  const rowCount = combined.providerRowCount;
   const subFieldHitCounts = Object.fromEntries(
     [1, 2, 3, 4, 5].map((index) => [
       `subid_${index}`,
@@ -151,11 +239,68 @@ function summarize(
   }
   const externalIds = records.map((record) => nonBlank(record.conversion_id)).filter((value): value is string => Boolean(value));
   const duplicateExternalIdCount = externalIds.length - new Set(externalIds).size;
+  const dispositionTypes = auxiliary.dispositionTypes.rows.map((record) => ({
+    id: finiteNumber(record.disposition_type_id),
+    name: nonBlank(record.disposition_type_name),
+  })).filter((record): record is { id: number | null; name: string } => Boolean(record.name));
+  const currencyTypes = auxiliary.currencies.rows.map((record) => ({
+    id: finiteNumber(record.currency_id),
+    name: nonBlank(record.currency_name),
+  })).filter((record): record is { id: number | null; name: string } => Boolean(record.name));
+  const campaignCurrencyIds = uniqueNumbers(auxiliary.campaignSummary.rows.map((record) => record.currency_id));
+  const campaignCurrencyNames = campaignCurrencyIds.map(
+    (id) => currencyTypes.find((currency) => currency.id === id)?.name ?? `(unknown:${id})`,
+  );
+  const campaignCurrencySymbols = uniqueStrings(
+    auxiliary.campaignSummary.rows.map((record) => record.currency_symbol),
+  );
+  const conversionPriceTotal = sumDecimal(records, 'price');
+  const campaignRevenueTotal = sumDecimal(auxiliary.campaignSummary.rows, 'revenue');
+  const conversionsComplete = rowCount !== null && rowCount <= records.length;
+  const campaignComplete =
+    auxiliary.campaignSummary.rowCount !== null &&
+    auxiliary.campaignSummary.rowCount <= auxiliary.campaignSummary.rows.length;
+  const totalsComparable =
+    conversionsComplete &&
+    campaignComplete &&
+    conversionPriceTotal.validCount > 0 &&
+    conversionPriceTotal.invalidCount === 0 &&
+    campaignRevenueTotal.validCount > 0 &&
+    campaignRevenueTotal.invalidCount === 0;
+  const combinedIds = new Set(externalIds);
+  const startIds = new Set(extractExternalIds(auxiliary.startDay.records));
+  const endIds = new Set(extractExternalIds(auxiliary.endDay.records));
+  const unionIds = new Set([...startIds, ...endIds]);
+  const startComplete = isWindowComplete(auxiliary.startDay);
+  const endComplete = isWindowComplete(auxiliary.endDay);
+  const boundaryComparable =
+    range.startDate !== range.endDate && conversionsComplete && startComplete && endComplete;
+  const combinedEqualsSingleDayUnion =
+    boundaryComparable && setsEqual(combinedIds, unionIds);
+  const endDateObservedInclusive =
+    boundaryComparable && endIds.size > 0 && [...endIds].every((id) => combinedIds.has(id));
+  const timestamps = records
+    .map((record) => nonBlank(record.conversion_date))
+    .filter((value): value is string => Boolean(value))
+    .sort();
   return {
     requestRange: range,
     httpResult: {
       success: true,
-      statuses: [...new Set(pages.httpStatuses)],
+      statuses: [...new Set([
+        ...combined.httpStatuses,
+        ...auxiliary.startDay.httpStatuses,
+        ...auxiliary.endDay.httpStatuses,
+        auxiliary.dispositionTypes.httpStatus,
+        auxiliary.campaignSummary.httpStatus,
+        auxiliary.currencies.httpStatus,
+      ])],
+      endpoints: {
+        conversions: 'Reports/Conversions',
+        campaignSummary: 'Reports/CampaignSummary',
+        dispositionTypes: 'Lists/DispositionTypes',
+        currencies: 'Lists/Currencies',
+      },
     },
     returnedCount: records.length,
     providerRowCount: rowCount,
@@ -165,20 +310,126 @@ function summarize(
     payoutFieldHitCounts,
     dispositionDistribution,
     timestampSummary,
+    timestampEvidence: {
+      earliest: timestamps[0] ?? null,
+      latest: timestamps.at(-1) ?? null,
+      startDayDatePrefixMismatchCount: countDatePrefixMismatches(auxiliary.startDay.records, range.startDate),
+      endDayDatePrefixMismatchCount: countDatePrefixMismatches(auxiliary.endDay.records, range.endDate),
+      timezoneSemantics: timestampSummary.noTimezone > 0
+        ? 'unconfirmed_naive_provider_timestamp'
+        : 'explicit_offset_observed',
+    },
+    dateBoundaryEvidence: {
+      startDayReturnedCount: auxiliary.startDay.records.length,
+      startDayProviderRowCount: auxiliary.startDay.providerRowCount,
+      endDayReturnedCount: auxiliary.endDay.records.length,
+      endDayProviderRowCount: auxiliary.endDay.providerRowCount,
+      singleDayWindowsComplete: startComplete && endComplete,
+      combinedEqualsSingleDayUnion,
+      crossDayDuplicateExternalIdCount: [...startIds].filter((id) => endIds.has(id)).length,
+      endDateInclusivity: endDateObservedInclusive
+        ? 'observed_inclusive_for_sample'
+        : 'unconfirmed_requires_more_evidence',
+    },
+    dispositionTypeEvidence: {
+      httpStatus: auxiliary.dispositionTypes.httpStatus,
+      returnedCount: dispositionTypes.length,
+      providerRowCount: auxiliary.dispositionTypes.rowCount,
+      types: dispositionTypes,
+      conversionDispositionMissingCount: dispositionDistribution['(missing)'] ?? 0,
+      payablePolicyConfirmed: false,
+    },
+    payoutEvidence: {
+      conversionPriceTotal: conversionPriceTotal.value,
+      conversionPriceValidCount: conversionPriceTotal.validCount,
+      conversionPriceInvalidCount: conversionPriceTotal.invalidCount,
+      campaignRevenueTotal: campaignRevenueTotal.value,
+      campaignRevenueValidCount: campaignRevenueTotal.validCount,
+      campaignRevenueInvalidCount: campaignRevenueTotal.invalidCount,
+      conversionsComplete,
+      campaignSummaryComplete: campaignComplete,
+      sameWindowTotalsEqual: totalsComparable
+        ? new Prisma.Decimal(conversionPriceTotal.value as string).equals(
+            new Prisma.Decimal(campaignRevenueTotal.value as string),
+          )
+        : null,
+      comparisonBasis: 'Reports/Conversions.price versus Reports/CampaignSummary.revenue for the same account and date window',
+    },
+    currencyEvidence: {
+      httpStatus: auxiliary.currencies.httpStatus,
+      campaignCurrencyIds,
+      campaignCurrencyNames,
+      campaignCurrencySymbols,
+      usdConfirmed:
+        campaignCurrencyNames.length > 0 &&
+        campaignCurrencyNames.every((name) => /(^|\b)(USD|US Dollar)(\b|$)/i.test(name)),
+      conversionRowsContainCurrency: records.some((record) => nonBlank(record.currency ?? record.currency_code)),
+    },
     pagination: {
       startAtRow: 1,
       rowLimit: CALIBRATION_PAGE_SIZE,
-      pageCount: pages.pageReturnedCounts.length,
-      pageReturnedCounts: pages.pageReturnedCounts,
+      pageCount: combined.pageReturnedCounts.length,
+      pageReturnedCounts: combined.pageReturnedCounts,
       returnedCount: records.length,
       providerRowCount: rowCount,
       moreRowsPossible:
-        pages.pageReturnedCounts.at(-1) === CALIBRATION_PAGE_SIZE ||
+        combined.pageReturnedCounts.at(-1) === CALIBRATION_PAGE_SIZE ||
         (rowCount !== null && rowCount > records.length),
     },
-    providerEndDateInclusivity: 'unconfirmed_requires_live_boundary_comparison',
     rawPayloadReturned: false,
   };
+}
+
+function extractExternalIds(records: CakeConversionRecord[]): string[] {
+  return records
+    .map((record) => nonBlank(record.conversion_id))
+    .filter((value): value is string => Boolean(value));
+}
+
+function isWindowComplete(window: ConversionWindowEvidence): boolean {
+  return window.providerRowCount !== null && window.providerRowCount <= window.records.length;
+}
+
+function setsEqual(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function countDatePrefixMismatches(records: CakeConversionRecord[], date: string): number {
+  return records.filter((record) => {
+    const timestamp = nonBlank(record.conversion_date);
+    return !timestamp || timestamp.slice(0, 10) !== date;
+  }).length;
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return [...new Set(values.map(nonBlank).filter((value): value is string => Boolean(value)))];
+}
+
+function uniqueNumbers(values: unknown[]): number[] {
+  return [...new Set(values.map(finiteNumber).filter((value): value is number => value !== null))];
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+function sumDecimal(records: Array<Record<string, unknown>>, field: string) {
+  let total = new Prisma.Decimal(0);
+  let validCount = 0;
+  let invalidCount = 0;
+  for (const record of records) {
+    const raw = record[field];
+    if (raw === undefined || raw === null || raw === '') continue;
+    try {
+      total = total.plus(new Prisma.Decimal(raw as string | number));
+      validCount += 1;
+    } catch {
+      invalidCount += 1;
+    }
+  }
+  return { value: validCount > 0 ? total.toString() : null, validCount, invalidCount };
 }
 
 function nonBlank(value: unknown): string | null {

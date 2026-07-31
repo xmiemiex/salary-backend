@@ -2,6 +2,9 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { providerFetch } from '../provider-request-error';
 
 export const CAKE_DEFAULT_CONVERSIONS_PATH = 'Reports/Conversions';
+export const CAKE_CAMPAIGN_SUMMARY_PATH = 'Reports/CampaignSummary';
+export const CAKE_DISPOSITION_TYPES_PATH = 'Lists/DispositionTypes';
+export const CAKE_CURRENCIES_PATH = 'Lists/Currencies';
 export const CAKE_FETCH = 'CAKE_FETCH';
 const CAKE_CONVERSION_FIELDS = [
   'conversion_id',
@@ -30,6 +33,9 @@ export type CakeCredentialPayload = {
 };
 
 export type CakeConversionRecord = Record<string, unknown>;
+export type CakeCampaignSummaryRecord = Record<string, unknown>;
+export type CakeDispositionTypeRecord = Record<string, unknown>;
+export type CakeCurrencyRecord = Record<string, unknown>;
 
 export type CakeConversionsResponse = {
   conversions: CakeConversionRecord[];
@@ -77,6 +83,65 @@ export class CakeClient {
       raw,
     };
   }
+
+  async getCampaignSummary(input: {
+    credential: CakeCredentialPayload;
+    startDate: string;
+    endDate: string;
+    affiliateId: string;
+    rowLimit: number;
+  }) {
+    const url = this.buildAuthenticatedUrl(CAKE_CAMPAIGN_SUMMARY_PATH, input.credential, input.affiliateId);
+    url.searchParams.set('start_date', input.startDate);
+    url.searchParams.set('end_date', input.endDate);
+    url.searchParams.set('conversion_type', 'conversions');
+    url.searchParams.set('start_at_row', '1');
+    url.searchParams.set('row_limit', String(input.rowLimit));
+    url.searchParams.set('response_format', 'json');
+    ['offer_id', 'offer_name', 'price', 'conversions', 'revenue', 'currency_id', 'currency_symbol'].forEach((field) =>
+      url.searchParams.append('fields', field),
+    );
+    return this.fetchRows<CakeCampaignSummaryRecord>(url);
+  }
+
+  async getDispositionTypes(input: {
+    credential: CakeCredentialPayload;
+    affiliateId: string;
+  }) {
+    const url = this.buildAuthenticatedUrl(CAKE_DISPOSITION_TYPES_PATH, input.credential, input.affiliateId);
+    url.searchParams.set('response_format', 'json');
+    return this.fetchRows<CakeDispositionTypeRecord>(url);
+  }
+
+  async getCurrencies(input: {
+    credential: CakeCredentialPayload;
+    affiliateId: string;
+  }) {
+    const url = this.buildAuthenticatedUrl(CAKE_CURRENCIES_PATH, input.credential, input.affiliateId);
+    url.searchParams.set('response_format', 'json');
+    return this.fetchRows<CakeCurrencyRecord>(url);
+  }
+
+  private buildAuthenticatedUrl(path: string, credential: CakeCredentialPayload, affiliateId: string) {
+    const url = new URL(path, normalizeBaseUrl(credential.baseUrl));
+    url.searchParams.set('api_key', credential.apiKey);
+    url.searchParams.set('affiliate_id', affiliateId);
+    return url;
+  }
+
+  private async fetchRows<T extends Record<string, unknown>>(url: URL) {
+    const response = await providerFetch(this.fetchImpl, 'CAKE', url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const raw = await response.json();
+    return {
+      rows: extractRows(raw) as T[],
+      rowCount: extractRowCount(raw),
+      httpStatus: typeof response.status === 'number' ? response.status : 200,
+      raw,
+    };
+  }
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -106,6 +171,14 @@ function extractConversions(raw: unknown): CakeConversionRecord[] {
     if (isRecord(candidate)) return [candidate];
   }
 
+  return [];
+}
+
+function extractRows(raw: unknown): CakeConversionRecord[] {
+  if (Array.isArray(raw)) return raw.filter(isRecord);
+  if (!isRecord(raw)) return [];
+  if (Array.isArray(raw.data)) return raw.data.filter(isRecord);
+  if (isRecord(raw.data)) return [raw.data];
   return [];
 }
 

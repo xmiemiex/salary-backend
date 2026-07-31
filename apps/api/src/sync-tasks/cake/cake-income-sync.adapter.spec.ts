@@ -44,6 +44,36 @@ describe('CakeClient', () => {
     expect(url.searchParams.getAll('fields')).toEqual(expect.arrayContaining(['conversion_id', 'subid_1', 'subid_5', 'price', 'disposition']));
     expect(response).toMatchObject({ rowCount: 1, conversions: [{ conversion_id: 'cv-1' }] });
   });
+
+  it('uses the official read-only campaign, disposition, and currency calibration paths', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: jest.fn().mockResolvedValue({ row_count: 1, data: [{ revenue: 12 }] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: jest.fn().mockResolvedValue({ row_count: 1, data: [{ disposition_type_name: 'Approved' }] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: jest.fn().mockResolvedValue({ row_count: 1, data: [{ currency_name: 'US Dollar' }] }) });
+    const client = new CakeClient(fetchMock as never);
+    const credential = { apiKey: 'test-api-key', baseUrl: 'https://cake.example.test/affiliates/api' };
+
+    await client.getCampaignSummary({
+      credential,
+      affiliateId: '329',
+      startDate: '2026-07-30',
+      endDate: '2026-07-31',
+      rowLimit: 1000,
+    });
+    await client.getDispositionTypes({ credential, affiliateId: '329' });
+    await client.getCurrencies({ credential, affiliateId: '329' });
+
+    const urls = fetchMock.mock.calls.map(([url]) => url as URL);
+    expect(urls.map((url) => url.pathname)).toEqual([
+      '/affiliates/api/Reports/CampaignSummary',
+      '/affiliates/api/Lists/DispositionTypes',
+      '/affiliates/api/Lists/Currencies',
+    ]);
+    expect(urls.every((url) => url.searchParams.get('affiliate_id') === '329')).toBe(true);
+    expect(urls[0].searchParams.getAll('fields')).toEqual(
+      expect.arrayContaining(['revenue', 'currency_id', 'currency_symbol']),
+    );
+  });
 });
 
 describe('CakeIncomeSyncAdapter', () => {
