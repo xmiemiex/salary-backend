@@ -10,6 +10,12 @@ const actorUserId = '00000000-0000-0000-0000-000000000001';
 const affiliateAccountId = '10000000-0000-0000-0000-000000000001';
 const employeeId = '30000000-0000-0000-0000-000000000001';
 const settlementMonth = new Date(Date.UTC(2026, 5, 1));
+const confirmedTestPolicy = {
+  liveCalibrationConfirmed: true,
+  payoutField: 'price' as const,
+  payableDispositions: ['approved'],
+  evidenceBasis: 'test_fixture_only',
+};
 
 describe('CakeClient', () => {
   it('uses accountCode as affiliate_id and reads the latest schema data/row_count response', async () => {
@@ -56,7 +62,35 @@ describe('CakeIncomeSyncAdapter', () => {
     };
     client = { getConversions: jest.fn() };
     unmatchedEvents = { recordUnmatchedEvent: jest.fn().mockResolvedValue({ id: 'unmatched-1' }) };
-    adapter = new CakeIncomeSyncAdapter(prisma as never, client as never, unmatchedEvents as never);
+    adapter = new CakeIncomeSyncAdapter(
+      prisma as never,
+      client as never,
+      unmatchedEvents as never,
+      confirmedTestPolicy,
+    );
+  });
+
+  it('fails closed before provider access or database writes when live calibration is unconfirmed', async () => {
+    const blockedAdapter = new CakeIncomeSyncAdapter(prisma as never, client as never, unmatchedEvents as never);
+
+    const result = await blockedAdapter.execute(context());
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      successCount: 0,
+      failedCount: 1,
+      resultPayload: {
+        pulledCount: 0,
+        payoutField: 'unconfirmed',
+        payableDispositionPolicy: [],
+        dispositionPolicySource: 'blocked_pending_live_calibration',
+      },
+    });
+    expect(result.errorMessage).toContain('live payout and disposition calibration');
+    expect(client.getConversions).not.toHaveBeenCalled();
+    expect(prisma.subIdMapping.findMany).not.toHaveBeenCalled();
+    expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
+    expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
   it('calculates the exact GMT+8 half-open month window', () => {

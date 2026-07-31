@@ -1,5 +1,12 @@
-import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  CommonStatus,
+  Prisma,
+  SyncExecutionErrorCategory,
+  SyncTaskPlatform,
+  SyncTaskSourceType,
+  SyncTaskType,
+} from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,8 +17,23 @@ import { CakeClient, CakeConversionRecord, CakeCredentialPayload } from './cake-
 
 const CAKE_SOURCE = 'cake';
 const PAGE_SIZE = 2000;
-const PAYABLE_DISPOSITIONS = new Set(['approved']);
 const NON_FINAL_DISPOSITIONS = new Set(['pending', 'rejected', 'invalid', 'cancelled', 'canceled', 'void', 'declined']);
+
+export const CAKE_PAYOUT_POLICY = 'CAKE_PAYOUT_POLICY';
+
+export type CakePayoutPolicy = {
+  liveCalibrationConfirmed: boolean;
+  payoutField: 'price' | null;
+  payableDispositions: readonly string[];
+  evidenceBasis: string;
+};
+
+const UNCONFIRMED_PAYOUT_POLICY: CakePayoutPolicy = {
+  liveCalibrationConfirmed: false,
+  payoutField: null,
+  payableDispositions: [],
+  evidenceBasis: 'blocked_pending_live_calibration',
+};
 
 export type NormalizedCakeRecord = {
   externalRecordId: string | null;
@@ -45,6 +67,9 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     private readonly prisma: PrismaService,
     private readonly client: CakeClient,
     private readonly unmatchedEvents: SyncUnmatchedEventsService,
+    @Optional()
+    @Inject(CAKE_PAYOUT_POLICY)
+    private readonly payoutPolicy: CakePayoutPolicy = UNCONFIRMED_PAYOUT_POLICY,
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
@@ -52,6 +77,18 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     const credential = parseCredentialPayload(context.credential.payload);
     const affiliateId = context.affiliateAccountCode as string;
     const window = getCakeGmt8SettlementMonthWindow(context.settlementMonth);
+    if (!this.payoutPolicy.liveCalibrationConfirmed) {
+      const message = 'CAKE payout sync is blocked until live payout and disposition calibration is confirmed.';
+      return {
+        ...this.result('failed', 0, 1, window, message, context, {
+          pulledCount: 0,
+          unmatchedCount: 0,
+          duplicateCount: 0,
+          pageCount: 0,
+        }),
+        errorCategory: SyncExecutionErrorCategory.BUSINESS_REJECTED,
+      };
+    }
     const seenExternalIds = new Set<string>();
     const seenPageSignatures = new Set<string>();
 
@@ -166,9 +203,9 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
         pageCount: counts.pageCount,
         failedCount,
         payoutCurrency: 'USD',
-        payoutField: 'price',
-        payableDispositionPolicy: ['approved'],
-        dispositionPolicySource: 'conservative_pending_live_calibration',
+        payoutField: this.payoutPolicy.payoutField ?? 'unconfirmed',
+        payableDispositionPolicy: [...this.payoutPolicy.payableDispositions],
+        dispositionPolicySource: this.payoutPolicy.evidenceBasis,
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
         cakeRequest: {
           startDate: window.startDate,
@@ -194,6 +231,15 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     }
     if (!record.payoutField) {
       await this.recordUnmatchedIncome(record, context, 'PAYOUT_MISSING', 'CAKE conversion has no supported payout field.');
+      return false;
+    }
+    if (!this.payoutPolicy.payoutField || record.payoutField.toLowerCase() !== this.payoutPolicy.payoutField) {
+      await this.recordUnmatchedIncome(
+        record,
+        context,
+        'PAYOUT_FIELD_UNCONFIRMED',
+        'CAKE conversion payout field is not the live-calibrated affiliate payout field.',
+      );
       return false;
     }
     if (!record.payoutValid) {
@@ -232,7 +278,8 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       await this.recordUnmatchedIncome(record, context, 'PAYOUT_NOT_FINAL', 'CAKE conversion disposition is not final payable.');
       return false;
     }
-    if (!PAYABLE_DISPOSITIONS.has(normalizedDisposition)) {
+    const payableDispositions = new Set(this.payoutPolicy.payableDispositions.map((value) => value.toLowerCase()));
+    if (!payableDispositions.has(normalizedDisposition)) {
       await this.recordUnmatchedIncome(
         record,
         context,
