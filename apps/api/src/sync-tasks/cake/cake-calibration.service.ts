@@ -279,6 +279,18 @@ function summarize(
     boundaryComparable && setsEqual(combinedIds, unionIds);
   const endDateObservedInclusive =
     boundaryComparable && endIds.size > 0 && [...endIds].every((id) => combinedIds.has(id));
+  const timestampsWithinHalfOpenRange = records.every((record) => {
+    const timestamp = nonBlank(record.conversion_date);
+    if (!timestamp) return true;
+    const datePrefix = timestamp.slice(0, 10);
+    return datePrefix >= range.startDate && datePrefix < range.endDate;
+  });
+  const endDateObservedExclusive =
+    boundaryComparable &&
+    combinedIds.size > 0 &&
+    startIds.size === 0 &&
+    endIds.size === 0 &&
+    timestampsWithinHalfOpenRange;
   const timestamps = records
     .map((record) => nonBlank(record.conversion_date))
     .filter((value): value is string => Boolean(value))
@@ -329,7 +341,9 @@ function summarize(
       crossDayDuplicateExternalIdCount: [...startIds].filter((id) => endIds.has(id)).length,
       endDateInclusivity: endDateObservedInclusive
         ? 'observed_inclusive_for_sample'
-        : 'unconfirmed_requires_more_evidence',
+        : endDateObservedExclusive
+          ? 'observed_exclusive_for_sample'
+          : 'unconfirmed_requires_more_evidence',
     },
     dispositionTypeEvidence: {
       httpStatus: auxiliary.dispositionTypes.httpStatus,

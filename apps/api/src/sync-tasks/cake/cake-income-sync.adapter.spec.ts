@@ -127,7 +127,7 @@ describe('CakeIncomeSyncAdapter', () => {
     const window = getCakeGmt8SettlementMonthWindow(settlementMonth);
     expect(window.startInclusiveUtc.toISOString()).toBe('2026-05-31T16:00:00.000Z');
     expect(window.endExclusiveUtc.toISOString()).toBe('2026-06-30T16:00:00.000Z');
-    expect(window).toMatchObject({ startDate: '2026-06-01', endDate: '2026-06-30' });
+    expect(window).toMatchObject({ startDate: '2026-06-01', endDate: '2026-07-01' });
   });
 
   it('normalizes official subid_1..5 to sub1..5 and does not let aliases override official values', () => {
@@ -170,6 +170,8 @@ describe('CakeIncomeSyncAdapter', () => {
     expect(result).toMatchObject({ successCount: 1, failedCount: 0 });
     expect(client.getConversions).toHaveBeenCalledWith(expect.objectContaining({
       affiliateId: '329',
+      startDate: '2026-06-01',
+      endDate: '2026-07-01',
       credential: { apiKey: 'plain-secret', baseUrl: 'https://cake.example.test/affiliates/api', conversionsPath: undefined },
     }));
     expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith({

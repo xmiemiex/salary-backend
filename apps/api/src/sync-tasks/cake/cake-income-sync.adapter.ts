@@ -210,7 +210,7 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
         cakeRequest: {
           startDate: window.startDate,
           endDate: window.endDate,
-          endDateMayBeInclusive: true,
+          endDateExclusiveConfirmed: true,
           startInclusiveUtc: window.startInclusiveUtc.toISOString(),
           endExclusiveUtc: window.endExclusiveUtc.toISOString(),
           timezone: 'Asia/Shanghai',
@@ -424,14 +424,14 @@ export function getCakeGmt8SettlementMonthWindow(settlementMonth: Date) {
   const endExclusiveUtc = new Date(
     Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 1, -8, 0, 0, 0),
   );
-  const endInclusiveDate = new Date(
-    Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 0),
+  const endExclusiveDate = new Date(
+    Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 1),
   );
   return {
     startInclusiveUtc,
     endExclusiveUtc,
     startDate: formatDate(settlementMonth),
-    endDate: formatDate(endInclusiveDate),
+    endDate: formatDate(endExclusiveDate),
   };
 }
 

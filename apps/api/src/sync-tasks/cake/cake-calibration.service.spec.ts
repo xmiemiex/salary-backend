@@ -117,6 +117,7 @@ describe('CakeCalibrationService', () => {
       duplicateExternalIdCount: 1,
       httpResult: { success: true, statuses: [200] },
       pagination: { pageCount: 2, pageReturnedCounts: [100, 1], moreRowsPossible: false },
+      dateBoundaryEvidence: { endDateInclusivity: 'unconfirmed_requires_more_evidence' },
       dispositionTypeEvidence: { returnedCount: 2, payablePolicyConfirmed: false },
       payoutEvidence: { sameWindowTotalsEqual: true, conversionsComplete: true, campaignSummaryComplete: true },
       currencyEvidence: { campaignCurrencyNames: ['US Dollar'], usdConfirmed: true },
@@ -126,6 +127,35 @@ describe('CakeCalibrationService', () => {
     expect(serialized).not.toContain('test-only-secret');
     expect(serialized).not.toContain('must-not-return');
     expect(serialized).not.toContain('"raw"');
+  });
+
+  it('reports an observed exclusive end date for the live-style half-open sample', async () => {
+    client.getConversions
+      .mockResolvedValueOnce({
+        conversions: [{ conversion_id: 'conversion-1', conversion_date: '2026-07-30T12:00:00', price: '5' }],
+        rowCount: 1,
+        httpStatus: 200,
+        raw: {},
+      })
+      .mockResolvedValueOnce({ conversions: [], rowCount: 0, httpStatus: 200, raw: {} })
+      .mockResolvedValueOnce({ conversions: [], rowCount: 0, httpStatus: 200, raw: {} });
+    client.getCampaignSummary.mockResolvedValueOnce({
+      rows: [{ revenue: '5', currency_id: 1, currency_symbol: '$' }],
+      rowCount: 1,
+      httpStatus: 200,
+    });
+
+    const result = await service.run(
+      'account-1',
+      { startDate: '2026-07-30', endDate: '2026-07-31' },
+      actor,
+    );
+
+    expect(result.dateBoundaryEvidence).toMatchObject({
+      startDayReturnedCount: 0,
+      endDayReturnedCount: 0,
+      endDateInclusivity: 'observed_exclusive_for_sample',
+    });
   });
 
   it('rejects non-CAKE accounts and calibration ranges over two calendar days', async () => {
