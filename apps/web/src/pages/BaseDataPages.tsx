@@ -6,6 +6,7 @@ import { ApiError, apiClient } from '../lib/api-client';
 type CommonStatus = 'active' | 'disabled' | 'draft' | 'confirmed' | 'locked';
 type FieldType = 'text' | 'date' | 'month' | 'select' | 'textarea' | 'json';
 type ActionType = 'confirm' | 'disable' | 'returnToDraft';
+type OptionSource = 'affiliateAccounts' | 'employees';
 
 type BaseRecord = {
   id: string;
@@ -29,6 +30,8 @@ type FieldConfig = {
   type?: FieldType;
   required?: boolean;
   options?: { label: string; value: string }[];
+  optionSource?: OptionSource;
+  clearOnEmpty?: boolean;
   placeholder?: string;
   help?: string;
   list?: boolean;
@@ -88,7 +91,7 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
     fields: [
       { name: 'employeeCode', label: '员工编码', required: true, filter: false },
       { name: 'name', label: '姓名', required: true },
-      { name: 'email', label: '邮箱' },
+      { name: 'email', label: '邮箱', clearOnEmpty: true },
       { name: 'phone', label: '手机号' },
       { name: 'hiredAt', label: '入职日期', type: 'date' },
       { name: 'leftAt', label: '离职日期', type: 'date' },
@@ -111,11 +114,11 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
     endpoint: '/sub-id-mappings',
     defaultCreateValues: { status: 'active' },
     fields: [
-      { name: 'affiliateAccountId', label: '联盟账号 ID', required: true },
-      { name: 'subField', label: 'SUB 字段', required: true },
+      { name: 'affiliateAccountId', label: '联盟账号', type: 'select', optionSource: 'affiliateAccounts', required: true },
+      { name: 'subField', label: 'SUB 字段', type: 'select', options: ['sub1', 'sub2', 'sub3', 'sub4', 'sub5'].map((value) => ({ label: value, value })), required: true },
       { name: 'subValue', label: 'SUB 值', required: true },
       { name: 'effectiveMonth', label: '生效月份', type: 'month', required: true, filter: true },
-      { name: 'employeeId', label: '员工 ID', required: true, filter: true },
+      { name: 'employeeId', label: '员工', type: 'select', optionSource: 'employees', required: true, filter: true },
       { name: 'status', label: '状态', type: 'select', options: STATUS_OPTIONS, filter: true },
     ],
   },
@@ -306,11 +309,15 @@ function normalizeForForm(record: BaseRecord, fields: FieldConfig[], customForm?
   return result;
 }
 
-function normalizePayload(values: Record<string, unknown>, fields: FieldConfig[]) {
+export function normalizePayload(values: Record<string, unknown>, fields: FieldConfig[], includeCleared = false) {
   const result: Record<string, unknown> = {};
   fields.forEach((field) => {
     const value = values[field.name];
-    if (value === undefined || value === null || value === '') return;
+    if (value === undefined || value === null) return;
+    if (value === '') {
+      if (includeCleared && field.clearOnEmpty) result[field.name] = '';
+      return;
+    }
     if (field.type === 'month') {
       result[field.name] = `${String(value)}-01`;
       return;
@@ -408,6 +415,20 @@ function FieldControl({ field, onValueChange, onChange, ...formControlProps }: F
   );
 }
 
+export function buildAffiliateAccountOptions(accounts: BaseRecord[]) {
+  return accounts.map((account) => ({
+    value: account.id,
+    label: `${String(account.platform ?? '').toUpperCase()} / ${String(account.accountName ?? account.accountCode ?? '')} / ${String(account.accountCode ?? '')}`,
+  }));
+}
+
+export function buildEmployeeOptions(employees: BaseRecord[]) {
+  return employees.map((employee) => ({
+    value: employee.id,
+    label: `${String(employee.employeeCode ?? '')} / ${String(employee.name ?? '')}${employee.status === 'disabled' ? '（已禁用）' : ''}`,
+  }));
+}
+
 function PerformanceGroupMembersForm() {
   return (
     <Form.List
@@ -475,6 +496,10 @@ export function BaseDataPage({ path }: { path: string }) {
   const [filters, setFilters] = useState<Record<string, unknown>>({});
   const [form] = Form.useForm();
   const [filterForm] = Form.useForm();
+  const [referenceOptions, setReferenceOptions] = useState<Record<OptionSource, { label: string; value: string }[]>>({
+    affiliateAccounts: [],
+    employees: [],
+  });
   const selectedAffiliatePlatform = Form.useWatch('platform', form);
   const [messageApi, messageHolder] = message.useMessage();
   const [modalApi, modalHolder] = Modal.useModal();
@@ -499,6 +524,36 @@ export function BaseDataPage({ path }: { path: string }) {
   useEffect(() => {
     void load({});
   }, [load]);
+
+  useEffect(() => {
+    const sources = new Set(config.fields.map((field) => field.optionSource).filter((source): source is OptionSource => Boolean(source)));
+    if (sources.size === 0) return;
+    let cancelled = false;
+    void Promise.all([
+      sources.has('affiliateAccounts')
+        ? apiClient.request<BaseRecord[]>('/affiliate-accounts')
+        : Promise.resolve([]),
+      sources.has('employees')
+        ? apiClient.request<BaseRecord[]>('/employees')
+        : Promise.resolve([]),
+    ]).then(([accounts, employees]) => {
+      if (cancelled) return;
+      setReferenceOptions({
+        affiliateAccounts: buildAffiliateAccountOptions(accounts),
+        employees: buildEmployeeOptions(employees),
+      });
+    }).catch((error) => {
+      if (!cancelled) messageApi.error(`下拉选项加载失败：${errorMessage(error)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [config.fields, messageApi]);
+
+  const fieldOptions = useCallback(
+    (field: FieldConfig) => field.optionSource ? referenceOptions[field.optionSource] : field.options ?? [],
+    [referenceOptions],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -552,6 +607,9 @@ export function BaseDataPage({ path }: { path: string }) {
         render: (value: unknown, record: BaseRecord) => {
           if (field.render) return field.render(record);
           if (field.name === 'status') return <Tag color={statusColor(value)}>{statusText(value)}</Tag>;
+          if (field.type === 'select') {
+            return fieldOptions(field).find((option) => option.value === value)?.label ?? formatValue(value);
+          }
           if (field.type === 'month') return formatMonth(value);
           if (field.type === 'date') return formatDate(value);
           return formatValue(value);
@@ -601,7 +659,7 @@ export function BaseDataPage({ path }: { path: string }) {
         ),
       },
     ];
-  }, [config.actions, config.customForm, config.fields, editableFields, form, runAction]);
+  }, [config.actions, config.customForm, config.fields, editableFields, fieldOptions, form, runAction]);
 
   const submit = async () => {
     let values: Record<string, unknown>;
@@ -615,7 +673,7 @@ export function BaseDataPage({ path }: { path: string }) {
       payload =
         config.customForm === 'performanceGroup'
           ? normalizePerformanceGroupPayload(values, editableFields)
-          : normalizePayload(values, editableFields);
+          : normalizePayload(values, editableFields, Boolean(editing));
     } catch (error) {
       messageApi.error(errorMessage(error));
       return;
@@ -681,7 +739,7 @@ export function BaseDataPage({ path }: { path: string }) {
         >
           {filterFields.map((field) => (
             <Form.Item key={field.name} name={field.name} label={field.label}>
-              <FieldControl field={field} />
+              <FieldControl field={{ ...field, options: fieldOptions(field) }} />
             </Form.Item>
           ))}
           <Form.Item>
@@ -738,7 +796,7 @@ export function BaseDataPage({ path }: { path: string }) {
                 rules={[{ required: field.required, whitespace: field.type !== 'select', message: `请填写${label}` }]}
               >
                 <FieldControl
-                  field={{ ...field, label }}
+                  field={{ ...field, label, options: fieldOptions(field) }}
                   onValueChange={() => {
                     queueMicrotask(() => {
                       void form.validateFields([field.name]).catch(() => undefined);

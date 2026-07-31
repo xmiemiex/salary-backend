@@ -129,6 +129,20 @@ describe('base data management services', () => {
     );
   });
 
+  it('clears an existing employee email when update receives an empty string', async () => {
+    const { employees, prisma } = createHarness();
+    prisma.employee.findUnique.mockResolvedValue({
+      id: 'emp-1', employeeCode: 'E001', name: 'Alice', email: 'old@example.test', status: CommonStatus.active,
+    });
+    prisma.employee.update.mockResolvedValue({
+      id: 'emp-1', employeeCode: 'E001', name: 'Alice', email: null, status: CommonStatus.active,
+    });
+
+    await employees.update('emp-1', { email: '' }, actor);
+
+    expect(prisma.employee.update).toHaveBeenCalledWith({ where: { id: 'emp-1' }, data: { email: null } });
+  });
+
   it('creates sub id mapping after lock check, audits success, and rejects duplicate key', async () => {
     const { subIdMappings, prisma, monthLock, audit } = createHarness();
     prisma.subIdMapping.create.mockResolvedValue({
