@@ -59,7 +59,7 @@ describe('SyncTasksService', () => {
 
   it('uses everflow from affiliateAccount.platform', async () => {
     prisma.affiliateAccount.findUnique.mockResolvedValue(affiliateAccount('everflow'));
-    prisma.syncTask.create.mockResolvedValue(syncTask({ platform: SyncTaskPlatform.everflow }));
+    prisma.syncTask.create.mockResolvedValue(syncTask({ platform: SyncTaskPlatform.everflow, status: SyncTaskStatus.pending }));
 
     const task = await service.createAffiliateIncome(
       { settlementMonth: '2026-06', affiliateAccountId: '10000000-0000-0000-0000-000000000001' },
@@ -72,12 +72,13 @@ describe('SyncTasksService', () => {
           sourceType: SyncTaskSourceType.affiliate_income,
           taskType: SyncTaskType.affiliate_income,
           platform: SyncTaskPlatform.everflow,
-          status: SyncTaskStatus.not_implemented,
+          status: SyncTaskStatus.pending,
+          message: null,
         }),
       }),
     );
     expect(task.platform).toBe(SyncTaskPlatform.everflow);
-    expect(task.status).toBe(SyncTaskStatus.not_implemented);
+    expect(task.status).toBe(SyncTaskStatus.pending);
     expect(task.status).not.toBe('completed');
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'sync_task.create.affiliate_income' }));
   });

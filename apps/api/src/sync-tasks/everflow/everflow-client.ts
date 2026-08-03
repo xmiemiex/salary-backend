@@ -20,6 +20,23 @@ export type EverflowConversionsResponse = {
   };
 };
 
+export type EverflowReportingColumn = {
+  column_type?: string;
+  id?: string | number | null;
+  label?: string | null;
+};
+
+export type EverflowSubRevenueRow = {
+  columns?: EverflowReportingColumn[];
+  reporting?: Record<string, unknown>;
+};
+
+export type EverflowSubRevenueResponse = {
+  table?: EverflowSubRevenueRow[];
+  summary?: Record<string, unknown>;
+  incomplete_results?: boolean;
+};
+
 type FetchLike = typeof fetch;
 export const EVERFLOW_FETCH = 'EVERFLOW_FETCH';
 
@@ -55,6 +72,33 @@ export class EverflowClient {
     });
 
     return (await response.json()) as EverflowConversionsResponse;
+  }
+
+  async getAffiliateSubRevenueSummary(input: {
+    credential: EverflowCredentialPayload;
+    from: string;
+    to: string;
+    timezoneId: number;
+    subField: 'sub1';
+  }): Promise<EverflowSubRevenueResponse> {
+    const url = new URL('/v1/affiliates/reporting/entity/table', normalizeBaseUrl(input.credential.baseUrl));
+    const response = await providerFetch(this.fetchImpl, 'Everflow', url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [EVERFLOW_API_KEY_HEADER]: input.credential.apiKey,
+      },
+      body: JSON.stringify({
+        from: input.from,
+        to: input.to,
+        timezone_id: input.timezoneId,
+        currency_id: 'USD',
+        columns: [{ column: input.subField }],
+        query: { filters: [] },
+      }),
+    });
+
+    return (await response.json()) as EverflowSubRevenueResponse;
   }
 }
 

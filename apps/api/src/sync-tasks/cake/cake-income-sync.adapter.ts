@@ -1,5 +1,7 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { Injectable } from '@nestjs/common';
 import {
+  AuditResult,
   CommonStatus,
   Prisma,
   SyncExecutionErrorCategory,
@@ -13,49 +15,21 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
 import { providerErrorCategory } from '../provider-request-error';
-import { CakeClient, CakeConversionRecord, CakeCredentialPayload } from './cake-client';
+import { CakeClient, CakeCredentialPayload, CakeSubAffiliateSummaryRecord } from './cake-client';
 
 const CAKE_SOURCE = 'cake';
-const PAGE_SIZE = 2000;
-const NON_FINAL_DISPOSITIONS = new Set(['pending', 'rejected', 'invalid', 'cancelled', 'canceled', 'void', 'declined']);
+const SUB_FIELD = 'sub1';
+export const CAKE_MONTHLY_SUB_CALIBRATION_ACTION = 'cake.monthly_sub_revenue.calibration.pass';
 
-export const CAKE_PAYOUT_POLICY = 'CAKE_PAYOUT_POLICY';
-
-export type CakePayoutPolicy = {
-  liveCalibrationConfirmed: boolean;
-  payoutField: 'price' | null;
-  payableDispositions: readonly string[];
-  evidenceBasis: string;
-};
-
-const UNCONFIRMED_PAYOUT_POLICY: CakePayoutPolicy = {
-  liveCalibrationConfirmed: false,
-  payoutField: null,
-  payableDispositions: [],
-  evidenceBasis: 'blocked_pending_live_calibration',
-};
-
-export type NormalizedCakeRecord = {
-  externalRecordId: string | null;
-  payoutUsd: Prisma.Decimal;
-  payoutField: string | null;
-  payoutValid: boolean;
-  currency: string;
-  occurredAt: Date | null;
-  timestampHasExplicitTimezone: boolean;
-  disposition: string | null;
-  subCandidates: Array<{ subField: string; subValue: string }>;
-  rawData: CakeConversionRecord;
-};
-
-type CakeMapping = { subField: string; subValue: string; employeeId: string };
-
+type CakeSummaryRow = { subValue: string | null; revenueUsd: Prisma.Decimal };
+type Mapping = { employeeId: string };
 type CakeAdapterPrisma = {
-  subIdMapping: {
-    findMany(args: unknown): Promise<CakeMapping[]>;
-  };
+  affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
+  auditLog: { findFirst(args: unknown): Promise<{ id: string; createdAt: Date } | null> };
+  subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
+    deleteMany(args: unknown): Promise<{ count: number }>;
   };
 };
 
@@ -67,9 +41,6 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     private readonly prisma: PrismaService,
     private readonly client: CakeClient,
     private readonly unmatchedEvents: SyncUnmatchedEventsService,
-    @Optional()
-    @Inject(CAKE_PAYOUT_POLICY)
-    private readonly payoutPolicy: CakePayoutPolicy = UNCONFIRMED_PAYOUT_POLICY,
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
@@ -77,104 +48,176 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     const credential = parseCredentialPayload(context.credential.payload);
     const affiliateId = context.affiliateAccountCode as string;
     const window = getCakeGmt8SettlementMonthWindow(context.settlementMonth);
-    if (!this.payoutPolicy.liveCalibrationConfirmed) {
-      const message = 'CAKE payout sync is blocked until live payout and disposition calibration is confirmed.';
-      return {
-        ...this.result('failed', 0, 1, window, message, context, {
-          pulledCount: 0,
-          unmatchedCount: 0,
-          duplicateCount: 0,
-          pageCount: 0,
-        }),
-        errorCategory: SyncExecutionErrorCategory.BUSINESS_REJECTED,
-      };
-    }
-    const seenExternalIds = new Set<string>();
-    const seenPageSignatures = new Set<string>();
 
-    let pulledCount = 0;
-    let attributedCount = 0;
-    let unmatchedCount = 0;
-    let duplicateCount = 0;
-    let pageCount = 0;
-    let startAtRow = 1;
+    if (!(await this.hasCurrentCalibration(context.affiliateAccountId as string))) {
+      const message = 'CAKE monthly SubAffiliate revenue sync is blocked until current credentials pass read-only calibration.';
+      return this.result('failed', 0, 1, window, message, context, {
+        pulledCount: 0,
+        positiveRevenueCount: 0,
+        attributedCount: 0,
+        unmatchedCount: 0,
+        zeroRevenueCount: 0,
+        calibrationRequired: true,
+      }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
+    }
 
     try {
-      while (true) {
-        const response = await this.client.getConversions({
-          credential,
-          affiliateId,
-          startDate: window.startDate,
-          endDate: window.endDate,
-          startAtRow,
-          rowLimit: PAGE_SIZE,
-        });
-        const records = response.conversions ?? [];
-        pageCount += 1;
-        pulledCount += records.length;
-
-        const pageSignature = records
-          .map((raw) => firstNonBlank(raw.conversion_id, raw.conversionId, raw.ConversionID) ?? '?')
-          .join('|');
-        if (records.length > 0 && seenPageSignatures.has(pageSignature)) {
-          duplicateCount += records.length;
-          break;
-        }
-        if (records.length > 0) seenPageSignatures.add(pageSignature);
-
-        for (const raw of records) {
-          const normalized = normalizeCakeRecord(raw);
-          if (normalized.externalRecordId && seenExternalIds.has(normalized.externalRecordId)) {
-            duplicateCount += 1;
-            continue;
-          }
-          if (normalized.externalRecordId) seenExternalIds.add(normalized.externalRecordId);
-
-          const result = await this.upsertIncomeRecord(normalized, context, window);
-          if (result) attributedCount += 1;
-          else unmatchedCount += 1;
-        }
-
-        if (
-          records.length < PAGE_SIZE ||
-          (response.rowCount !== null && startAtRow + records.length > response.rowCount) ||
-          records.length === 0
-        ) {
-          break;
-        }
-        startAtRow += PAGE_SIZE;
-      }
-    } catch (error) {
-      const errorMessage = sanitizeErrorMessage(
-        error instanceof Error ? error.message : 'CAKE API request failed.',
+      const response = await this.client.getSubAffiliateSummary({
         credential,
-      );
-      return {
-        ...this.result(
-          'failed',
-          attributedCount,
-          1,
-          window,
-          errorMessage,
-          context,
-          { pulledCount, unmatchedCount, duplicateCount, pageCount },
-        ),
-        errorCategory: providerErrorCategory(error),
-      };
-    }
+        affiliateId,
+        startDate: window.startDate,
+        endDate: window.endDate,
+      });
+      if (response.rowCount !== null && response.rowCount > response.rows.length) {
+        return this.result('failed', 0, 1, window, 'CAKE returned an incomplete SubAffiliateSummary; no income was written.', context, {
+          pulledCount: response.rows.length,
+          providerRowCount: response.rowCount,
+          positiveRevenueCount: 0,
+          attributedCount: 0,
+          unmatchedCount: 0,
+          zeroRevenueCount: 0,
+          incompleteResults: true,
+        }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
+      }
 
-    const message =
-      `CAKE payout sync completed: pulled=${pulledCount}, attributed=${attributedCount}, ` +
-      `unmatched=${unmatchedCount}, duplicatesSkipped=${duplicateCount}.`;
-    return this.result(
-      'completed',
-      attributedCount,
-      0,
-      window,
-      message,
-      context,
-      { pulledCount, unmatchedCount, duplicateCount, pageCount },
-    );
+      const rows = aggregateRows(response.rows);
+      let positiveRevenueCount = 0;
+      let attributedCount = 0;
+      let unmatchedCount = 0;
+      let zeroRevenueCount = 0;
+
+      for (const row of rows) {
+        const externalRecordId = monthlyExternalRecordId(context, row.subValue);
+        if (row.revenueUsd.isZero()) {
+          zeroRevenueCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+          continue;
+        }
+        positiveRevenueCount += 1;
+        if (!row.subValue) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'CAKE SubAffiliateSummary revenue row has no SUB1 value.');
+          continue;
+        }
+        const mappings = await this.db().subIdMapping.findMany({
+          where: {
+            affiliateAccountId: context.affiliateAccountId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            effectiveMonth: context.settlementMonth,
+            status: CommonStatus.active,
+          },
+          select: { employeeId: true },
+        });
+        const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
+        if (employeeIds.length === 0) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_NOT_MAPPED', 'CAKE SUB1 is not mapped to an employee.');
+          continue;
+        }
+        if (employeeIds.length !== 1) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'CAKE SUB1 maps to multiple employees.');
+          continue;
+        }
+
+        await this.db().incomeRecord.upsert({
+          where: { source_externalRecordId: { source: CAKE_SOURCE, externalRecordId } },
+          create: {
+            settlementMonth: context.settlementMonth,
+            affiliateAccountId: context.affiliateAccountId,
+            employeeId: employeeIds[0],
+            source: CAKE_SOURCE,
+            externalRecordId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            incomeUsd: row.revenueUsd,
+            rawData: safeRawData(row, context),
+            status: CommonStatus.confirmed,
+            importedBy: context.requestedBy ?? null,
+          },
+          update: {
+            settlementMonth: context.settlementMonth,
+            affiliateAccountId: context.affiliateAccountId,
+            employeeId: employeeIds[0],
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            incomeUsd: row.revenueUsd,
+            rawData: safeRawData(row, context),
+            status: CommonStatus.confirmed,
+            importedBy: context.requestedBy ?? null,
+          },
+        });
+        attributedCount += 1;
+      }
+
+      const message = `CAKE monthly SubAffiliate revenue sync completed: pulled=${response.rows.length}, positive=${positiveRevenueCount}, attributed=${attributedCount}, unmatched=${unmatchedCount}, zero=${zeroRevenueCount}.`;
+      return this.result('completed', attributedCount, unmatchedCount, window, message, context, {
+        pulledCount: response.rows.length,
+        aggregateRowCount: rows.length,
+        providerRowCount: response.rowCount,
+        positiveRevenueCount,
+        attributedCount,
+        unmatchedCount,
+        zeroRevenueCount,
+        incompleteResults: false,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'CAKE SubAffiliateSummary request failed.';
+      return this.result('failed', 0, 1, window, message, context, {
+        pulledCount: 0,
+        positiveRevenueCount: 0,
+        attributedCount: 0,
+        unmatchedCount: 0,
+        zeroRevenueCount: 0,
+      }, providerErrorCategory(error));
+    }
+  }
+
+  private async hasCurrentCalibration(affiliateAccountId: string) {
+    const credential = await this.db().affiliateAccountCredential.findUnique({
+      where: { affiliateAccountId },
+      select: { updatedAt: true },
+    });
+    if (!credential) return false;
+    return Boolean(await this.db().auditLog.findFirst({
+      where: {
+        action: CAKE_MONTHLY_SUB_CALIBRATION_ACTION,
+        objectType: 'affiliate_accounts',
+        objectId: affiliateAccountId,
+        result: AuditResult.success,
+        createdAt: { gte: credential.updatedAt },
+      },
+      select: { id: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    }));
+  }
+
+  private async recordUnmatched(
+    row: CakeSummaryRow,
+    externalRecordId: string,
+    context: SyncAdapterContext,
+    reasonCode: string,
+    reasonMessage: string,
+  ) {
+    await this.unmatchedEvents.recordUnmatchedEvent({
+      settlementMonth: context.settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: context.affiliateAccountId,
+      syncTaskId: context.taskId,
+      thirdPartyEventId: externalRecordId,
+      reasonCode,
+      reasonMessage,
+      subField: SUB_FIELD,
+      subValue: row.subValue,
+      amountUsd: row.revenueUsd,
+      rawSafeData: { subField: SUB_FIELD, subValue: row.subValue, amount: row.revenueUsd.toString(), currency: 'USD' },
+    });
   }
 
   private result(
@@ -184,7 +227,8 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     window: ReturnType<typeof getCakeGmt8SettlementMonthWindow>,
     message: string,
     context: SyncAdapterContext,
-    counts: { pulledCount: number; unmatchedCount: number; duplicateCount: number; pageCount: number },
+    statistics: Record<string, unknown>,
+    errorCategory?: SyncExecutionErrorCategory,
   ): SyncAdapterResult {
     return {
       status,
@@ -192,209 +236,26 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       failedCount,
       message,
       errorMessage: status === 'failed' ? message : null,
+      errorCategory,
       resultPayload: {
         adapterKey: this.adapterKey,
         source: CAKE_SOURCE,
-        pulledThirdPartyData: true,
-        pulledCount: counts.pulledCount,
-        attributedCount: successCount,
-        unmatchedCount: counts.unmatchedCount,
-        duplicateCount: counts.duplicateCount,
-        pageCount: counts.pageCount,
-        failedCount,
-        payoutCurrency: 'USD',
-        payoutField: this.payoutPolicy.payoutField ?? 'unconfirmed',
-        payableDispositionPolicy: [...this.payoutPolicy.payableDispositions],
-        dispositionPolicySource: this.payoutPolicy.evidenceBasis,
+        sourceReport: 'Reports/SubAffiliateSummary',
+        aggregation: 'monthly_revenue_by_sub1',
+        affiliateIdSource: 'affiliate_accounts.account_code',
+        currency: 'USD',
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
         cakeRequest: {
+          affiliateId: context.affiliateAccountCode,
           startDate: window.startDate,
           endDate: window.endDate,
-          endDateExclusiveConfirmed: true,
-          startInclusiveUtc: window.startInclusiveUtc.toISOString(),
-          endExclusiveUtc: window.endExclusiveUtc.toISOString(),
-          timezone: 'Asia/Shanghai',
-          affiliateIdSource: 'affiliate_accounts.account_code',
+          timezone: 'China Standard Time',
+          boundary: '[start,end)',
         },
+        ...statistics,
+        rawPayloadReturned: false,
       },
     };
-  }
-
-  private async upsertIncomeRecord(
-    record: NormalizedCakeRecord,
-    context: SyncAdapterContext,
-    window: ReturnType<typeof getCakeGmt8SettlementMonthWindow>,
-  ): Promise<boolean> {
-    if (!record.externalRecordId) {
-      await this.recordUnmatchedIncome(record, context, 'EXTERNAL_ID_MISSING', 'CAKE conversion is missing conversion_id.');
-      return false;
-    }
-    if (!record.payoutField) {
-      await this.recordUnmatchedIncome(record, context, 'PAYOUT_MISSING', 'CAKE conversion has no supported payout field.');
-      return false;
-    }
-    if (!this.payoutPolicy.payoutField || record.payoutField.toLowerCase() !== this.payoutPolicy.payoutField) {
-      await this.recordUnmatchedIncome(
-        record,
-        context,
-        'PAYOUT_FIELD_UNCONFIRMED',
-        'CAKE conversion payout field is not the live-calibrated affiliate payout field.',
-      );
-      return false;
-    }
-    if (!record.payoutValid) {
-      await this.recordUnmatchedIncome(record, context, 'PAYOUT_INVALID', 'CAKE conversion price is not a valid payout amount.');
-      return false;
-    }
-    if (record.currency !== 'USD') {
-      await this.recordUnmatchedIncome(record, context, 'INVALID_CURRENCY', 'CAKE conversion currency is not USD.');
-      return false;
-    }
-    if (!record.occurredAt) {
-      const reason = record.timestampHasExplicitTimezone ? 'TIMESTAMP_INVALID' : 'TIMESTAMP_TIMEZONE_UNCONFIRMED';
-      await this.recordUnmatchedIncome(
-        record,
-        context,
-        reason,
-        'CAKE conversion_date must be a valid timestamp with an explicit timezone.',
-      );
-      return false;
-    }
-    if (record.occurredAt < window.startInclusiveUtc || record.occurredAt >= window.endExclusiveUtc) {
-      await this.recordUnmatchedIncome(
-        record,
-        context,
-        'OUTSIDE_SETTLEMENT_WINDOW',
-        'CAKE conversion is outside the GMT+8 half-open settlement window.',
-      );
-      return false;
-    }
-    if (!record.disposition) {
-      await this.recordUnmatchedIncome(record, context, 'DISPOSITION_MISSING', 'CAKE conversion disposition is missing.');
-      return false;
-    }
-    const normalizedDisposition = record.disposition.toLowerCase();
-    if (NON_FINAL_DISPOSITIONS.has(normalizedDisposition)) {
-      await this.recordUnmatchedIncome(record, context, 'PAYOUT_NOT_FINAL', 'CAKE conversion disposition is not final payable.');
-      return false;
-    }
-    const payableDispositions = new Set(this.payoutPolicy.payableDispositions.map((value) => value.toLowerCase()));
-    if (!payableDispositions.has(normalizedDisposition)) {
-      await this.recordUnmatchedIncome(
-        record,
-        context,
-        'DISPOSITION_UNCONFIRMED',
-        'CAKE conversion disposition is not in the conservative payable allowlist.',
-      );
-      return false;
-    }
-    if (record.subCandidates.length === 0) {
-      await this.recordUnmatchedIncome(record, context, 'SUB_ID_MISSING', 'CAKE conversion has no SUB candidate.');
-      return false;
-    }
-
-    const mappingResult = await this.findMapping(context, record.subCandidates);
-    if (mappingResult.kind === 'none') {
-      await this.recordUnmatchedIncome(record, context, 'SUB_ID_NOT_MAPPED', 'CAKE conversion SUB is not mapped to an employee.');
-      return false;
-    }
-    if (mappingResult.kind === 'conflict') {
-      await this.recordUnmatchedIncome(
-        record,
-        context,
-        'SUB_ID_EMPLOYEE_CONFLICT',
-        'CAKE conversion SUB fields map to different employees.',
-      );
-      return false;
-    }
-
-    const syncedAt = new Date().toISOString();
-    const safeRawData = buildCakeStoredData(record, context, syncedAt);
-    await this.db().incomeRecord.upsert({
-      where: { source_externalRecordId: { source: CAKE_SOURCE, externalRecordId: record.externalRecordId } },
-      update: {
-        affiliateAccountId: context.affiliateAccountId,
-        employeeId: mappingResult.mapping.employeeId,
-        settlementMonth: context.settlementMonth,
-        subField: mappingResult.mapping.subField,
-        subValue: mappingResult.mapping.subValue,
-        incomeUsd: record.payoutUsd,
-        rawData: safeRawData,
-        status: CommonStatus.confirmed,
-        importedBy: context.requestedBy,
-      },
-      create: {
-        source: CAKE_SOURCE,
-        externalRecordId: record.externalRecordId,
-        affiliateAccountId: context.affiliateAccountId,
-        employeeId: mappingResult.mapping.employeeId,
-        settlementMonth: context.settlementMonth,
-        subField: mappingResult.mapping.subField,
-        subValue: mappingResult.mapping.subValue,
-        incomeUsd: record.payoutUsd,
-        rawData: safeRawData,
-        status: CommonStatus.confirmed,
-        importedBy: context.requestedBy,
-      },
-    });
-    return true;
-  }
-
-  private async recordUnmatchedIncome(
-    record: NormalizedCakeRecord,
-    context: SyncAdapterContext,
-    reasonCode: string,
-    reasonMessage: string,
-  ) {
-    const primarySub = record.subCandidates[0];
-    await this.unmatchedEvents.recordUnmatchedEvent({
-      settlementMonth: context.settlementMonth,
-      sourceType: SyncTaskSourceType.affiliate_income,
-      taskType: SyncTaskType.affiliate_income,
-      platform: SyncTaskPlatform.cake,
-      affiliateAccountId: context.affiliateAccountId,
-      syncTaskId: context.taskId,
-      thirdPartyEventId: record.externalRecordId,
-      reasonCode,
-      reasonMessage,
-      subField: primarySub?.subField,
-      subValue: primarySub?.subValue,
-      amountUsd: record.currency === 'USD' && record.payoutField && record.payoutValid ? record.payoutUsd : null,
-      currency: record.currency,
-      occurredAt: record.occurredAt,
-      rawSafeData: buildCakeRawSafeData(record),
-    });
-  }
-
-  private async findMapping(
-    context: SyncAdapterContext,
-    candidates: Array<{ subField: string; subValue: string }>,
-  ): Promise<
-    | { kind: 'none' }
-    | { kind: 'conflict' }
-    | { kind: 'one'; mapping: CakeMapping }
-  > {
-    const mappings = await this.db().subIdMapping.findMany({
-      where: {
-        affiliateAccountId: context.affiliateAccountId,
-        effectiveMonth: context.settlementMonth,
-        status: CommonStatus.active,
-        OR: candidates.map((candidate) => ({ subField: candidate.subField, subValue: candidate.subValue })),
-      },
-      select: { subField: true, subValue: true, employeeId: true },
-    });
-    if (mappings.length === 0) return { kind: 'none' };
-    const employeeIds = new Set(mappings.map((mapping) => mapping.employeeId));
-    if (employeeIds.size > 1) return { kind: 'conflict' };
-    const selected =
-      candidates
-        .map((candidate) =>
-          mappings.find(
-            (mapping) => mapping.subField === candidate.subField && mapping.subValue === candidate.subValue,
-          ),
-        )
-        .find((mapping): mapping is CakeMapping => Boolean(mapping)) ?? mappings[0];
-    return { kind: 'one', mapping: selected };
   }
 
   private assertContext(context: SyncAdapterContext) {
@@ -418,90 +279,57 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
 }
 
 export function getCakeGmt8SettlementMonthWindow(settlementMonth: Date) {
-  const startInclusiveUtc = new Date(
-    Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth(), 1, -8, 0, 0, 0),
-  );
-  const endExclusiveUtc = new Date(
-    Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 1, -8, 0, 0, 0),
-  );
-  const endExclusiveDate = new Date(
-    Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 1),
-  );
+  const year = settlementMonth.getUTCFullYear();
+  const month = settlementMonth.getUTCMonth();
   return {
-    startInclusiveUtc,
-    endExclusiveUtc,
-    startDate: formatDate(settlementMonth),
-    endDate: formatDate(endExclusiveDate),
+    startInclusiveUtc: new Date(Date.UTC(year, month, 1, -8)),
+    endExclusiveUtc: new Date(Date.UTC(year, month + 1, 1, -8)),
+    startDate: `${formatDate(year, month + 1, 1)}T00:00:00`,
+    endDate: `${formatDate(year, month + 2, 1)}T00:00:00`,
   };
 }
 
-export function normalizeCakeRecord(raw: CakeConversionRecord): NormalizedCakeRecord {
-  const externalRecordId = firstNonBlank(
-    raw.conversion_id,
-    raw.conversionId,
-    raw.ConversionID,
-    raw.transaction_id,
-    raw.transactionId,
-    raw.id,
-  );
-  const rawCurrency = firstNonBlank(raw.currency, raw.currency_code, raw.currencyCode, raw.Currency);
-  const payout = firstNamedValue(raw, ['price', 'Price']);
-  const payoutUsd = parseDecimal(payout.value);
-  const rawTimestamp = firstValue(
-    raw.conversion_date,
-    raw.conversionDate,
-    raw.conversion_time,
-    raw.conversionTime,
-    raw.created_at,
-    raw.createdAt,
-  );
-  const timestampText = typeof rawTimestamp === 'string' ? rawTimestamp.trim() : '';
-  const timestampHasExplicitTimezone =
-    rawTimestamp instanceof Date || /(?:Z|[+-]\d{2}:\d{2})$/i.test(timestampText);
-  const occurredAt = timestampHasExplicitTimezone ? parseDate(rawTimestamp) : null;
-
-  return {
-    externalRecordId,
-    payoutUsd: payoutUsd ?? new Prisma.Decimal(0),
-    payoutField: payout.key,
-    payoutValid: payoutUsd !== null,
-    currency: (rawCurrency ?? 'USD').toUpperCase(),
-    occurredAt,
-    timestampHasExplicitTimezone,
-    disposition: firstNonBlank(raw.disposition, raw.Disposition, raw.status, raw.Status),
-    subCandidates: normalizeCakeSubCandidates(raw),
-    rawData: raw,
-  };
-}
-
-export function normalizeCakeSubCandidates(raw: CakeConversionRecord) {
-  const candidates: Array<{ subField: string; subValue: string }> = [];
-  for (let index = 1; index <= 5; index += 1) {
-    const canonicalField = `sub${index}`;
-    const official = firstNonBlank(raw[`subid_${index}`], raw[`Subid_${index}`], raw[`SubID_${index}`]);
-    if (official) {
-      candidates.push({ subField: canonicalField, subValue: official });
-      continue;
-    }
-    const aliases: Array<{ subField: string; value: unknown }> = [
-      { subField: canonicalField, value: raw[canonicalField] },
-      { subField: canonicalField, value: raw[`Sub${index}`] },
-      { subField: canonicalField, value: raw[`sub_${index}`] },
-      ...(index === 1
-        ? [
-            { subField: 'sub_id', value: raw.sub_id },
-            { subField: 'sub_id', value: raw.SubId },
-            { subField: 'subid', value: raw.subid },
-            { subField: 'subid', value: raw.Subid },
-          ]
-        : []),
-    ];
-    const alias = aliases
-      .map((candidate) => ({ subField: candidate.subField, subValue: asNonBlankString(candidate.value) }))
-      .find((candidate): candidate is { subField: string; subValue: string } => Boolean(candidate.subValue));
-    if (alias) candidates.push(alias);
+export function normalizeCakeSummaryRow(raw: CakeSubAffiliateSummaryRecord): CakeSummaryRow {
+  const subValue = firstNonBlank(raw.sub_id, raw.SubId, raw.subid, raw.SubID);
+  const rawRevenue = raw.revenue ?? raw.Revenue;
+  if (!(['string', 'number'].includes(typeof rawRevenue)) || String(rawRevenue).trim() === '') {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'CAKE SubAffiliateSummary row is missing revenue.');
   }
-  return candidates;
+  try {
+    const revenueUsd = new Prisma.Decimal(rawRevenue as string | number);
+    if (!revenueUsd.isFinite()) throw new Error('not finite');
+    return { subValue, revenueUsd };
+  } catch {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'CAKE SubAffiliateSummary row has invalid revenue.');
+  }
+}
+
+function aggregateRows(rawRows: CakeSubAffiliateSummaryRecord[]) {
+  const totals = new Map<string, CakeSummaryRow>();
+  for (const raw of rawRows) {
+    const row = normalizeCakeSummaryRow(raw);
+    const key = row.subValue ?? '';
+    const current = totals.get(key);
+    totals.set(key, current ? { ...row, revenueUsd: current.revenueUsd.plus(row.revenueUsd) } : row);
+  }
+  return [...totals.values()];
+}
+
+function monthlyExternalRecordId(context: SyncAdapterContext, subValue: string | null) {
+  const month = context.settlementMonth.toISOString().slice(0, 7);
+  const digest = createHash('sha256').update(subValue ?? '(blank)').digest('hex').slice(0, 24);
+  return `${CAKE_SOURCE}:sub-month:${context.affiliateAccountId}:${month}:${digest}`;
+}
+
+function safeRawData(row: CakeSummaryRow, context: SyncAdapterContext): Prisma.InputJsonObject {
+  return {
+    report: 'monthly_revenue_by_sub1',
+    settlementMonth: context.settlementMonth.toISOString().slice(0, 7),
+    subField: SUB_FIELD,
+    subValue: row.subValue,
+    revenueUsd: row.revenueUsd.toString(),
+    timezone: 'China Standard Time',
+  } as Prisma.InputJsonObject;
 }
 
 function parseCredentialPayload(payload: unknown): CakeCredentialPayload {
@@ -509,101 +337,22 @@ function parseCredentialPayload(payload: unknown): CakeCredentialPayload {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'CAKE credential payload is required.');
   }
   const record = payload as Record<string, unknown>;
-  const apiKey = asNonBlankString(record.apiKey);
-  const baseUrl = asNonBlankString(record.baseUrl);
+  const apiKey = firstNonBlank(record.apiKey);
+  const baseUrl = firstNonBlank(record.baseUrl);
   if (!apiKey) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'CAKE credential apiKey is required.');
   if (!baseUrl) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'CAKE credential baseUrl is required.');
-  return {
-    apiKey,
-    baseUrl,
-    conversionsPath: asNonBlankString(record.conversionsPath) ?? undefined,
-  };
-}
-
-function firstNamedValue(record: CakeConversionRecord, keys: string[]): { key: string | null; value: unknown } {
-  for (const key of keys) {
-    const value = record[key];
-    if (value !== undefined && value !== null && value !== '') return { key, value };
-  }
-  return { key: null, value: undefined };
+  return { apiKey, baseUrl, conversionsPath: firstNonBlank(record.conversionsPath) ?? undefined };
 }
 
 function firstNonBlank(...values: unknown[]): string | null {
   for (const value of values) {
-    const normalized = asNonBlankString(value);
-    if (normalized) return normalized;
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return null;
 }
 
-function firstValue(...values: unknown[]): unknown {
-  return values.find((value) => value !== undefined && value !== null);
-}
-
-function asNonBlankString(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function parseDecimal(value: unknown): Prisma.Decimal | null {
-  if (!(typeof value === 'number' || typeof value === 'string') || String(value).trim() === '') return null;
-  try {
-    return new Prisma.Decimal(value);
-  } catch {
-    return null;
-  }
-}
-
-function parseDate(value: unknown): Date | null {
-  if (!(typeof value === 'string' || value instanceof Date)) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function buildCakeStoredData(
-  record: NormalizedCakeRecord,
-  context: SyncAdapterContext,
-  syncedAt: string,
-): Prisma.InputJsonObject {
-  return compactJsonObject({
-    conversion_id: record.externalRecordId ?? undefined,
-    conversion_date: record.occurredAt?.toISOString(),
-    disposition: record.disposition ?? undefined,
-    payout_usd: record.payoutUsd.toString(),
-    payout_field: record.payoutField ?? undefined,
-    currency: record.currency,
-    sync_task_id: context.taskId,
-    synced_at: syncedAt,
-    ...Object.fromEntries(record.subCandidates.map((candidate) => [candidate.subField, candidate.subValue])),
-  });
-}
-
-function buildCakeRawSafeData(record: NormalizedCakeRecord): Prisma.InputJsonObject {
-  return compactJsonObject({
-    conversionId: record.externalRecordId ?? undefined,
-    disposition: record.disposition ?? undefined,
-    currency: record.currency,
-    payoutUsd: record.payoutField ? record.payoutUsd.toString() : undefined,
-    payoutField: record.payoutField ?? undefined,
-    conversionTime: record.occurredAt?.toISOString(),
-    ...Object.fromEntries(record.subCandidates.map((candidate) => [candidate.subField, candidate.subValue])),
-  });
-}
-
-function compactJsonObject(
-  value: Record<string, Prisma.InputJsonValue | undefined>,
-): Prisma.InputJsonObject {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, child]) => child !== undefined && child !== null),
-  ) as Prisma.InputJsonObject;
-}
-
-function formatDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function sanitizeErrorMessage(message: string, credential: CakeCredentialPayload): string {
-  let sanitized = message.replace(/([?&]api_key=)[^&\s]+/gi, '$1[REDACTED]');
-  sanitized = sanitized.split(credential.apiKey).join('[REDACTED]');
-  return sanitized;
+function formatDate(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }

@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { providerFetch } from '../provider-request-error';
 
 export const CAKE_DEFAULT_CONVERSIONS_PATH = 'Reports/Conversions';
+export const CAKE_DEFAULT_SUBAFFILIATE_SUMMARY_PATH = 'Reports/SubAffiliateSummary';
 export const CAKE_CAMPAIGN_SUMMARY_PATH = 'Reports/CampaignSummary';
 export const CAKE_DISPOSITION_TYPES_PATH = 'Lists/DispositionTypes';
 export const CAKE_CURRENCIES_PATH = 'Lists/Currencies';
@@ -36,6 +37,7 @@ export type CakeConversionRecord = Record<string, unknown>;
 export type CakeCampaignSummaryRecord = Record<string, unknown>;
 export type CakeDispositionTypeRecord = Record<string, unknown>;
 export type CakeCurrencyRecord = Record<string, unknown>;
+export type CakeSubAffiliateSummaryRecord = Record<string, unknown>;
 
 export type CakeConversionsResponse = {
   conversions: CakeConversionRecord[];
@@ -78,6 +80,34 @@ export class CakeClient {
     const raw = await response.json();
     return {
       conversions: extractConversions(raw),
+      rowCount: extractRowCount(raw),
+      httpStatus: typeof response.status === 'number' ? response.status : 200,
+      raw,
+    };
+  }
+
+  async getSubAffiliateSummary(input: {
+    credential: CakeCredentialPayload;
+    startDate: string;
+    endDate: string;
+    affiliateId: string;
+  }) {
+    const configuredPath = input.credential.conversionsPath;
+    const summaryPath = configuredPath
+      ? configuredPath.replace(/Reports\/Conversions$/i, CAKE_DEFAULT_SUBAFFILIATE_SUMMARY_PATH)
+      : CAKE_DEFAULT_SUBAFFILIATE_SUMMARY_PATH;
+    const url = this.buildAuthenticatedUrl(summaryPath, input.credential, input.affiliateId);
+    url.searchParams.set('start_date', input.startDate);
+    url.searchParams.set('end_date', input.endDate);
+    url.searchParams.set('offer_id', '0');
+    url.searchParams.set('response_format', 'json');
+    const response = await providerFetch(this.fetchImpl, 'CAKE', url, {
+      method: 'GET',
+      headers: { Accept: 'application/json, application/xml, text/xml' },
+    });
+    const raw = await readJsonOrSubAffiliateXml(response);
+    return {
+      rows: extractRows(raw) as CakeSubAffiliateSummaryRecord[],
       rowCount: extractRowCount(raw),
       httpStatus: typeof response.status === 'number' ? response.status : 200,
       raw,
@@ -177,8 +207,22 @@ function extractConversions(raw: unknown): CakeConversionRecord[] {
 function extractRows(raw: unknown): CakeConversionRecord[] {
   if (Array.isArray(raw)) return raw.filter(isRecord);
   if (!isRecord(raw)) return [];
-  if (Array.isArray(raw.data)) return raw.data.filter(isRecord);
-  if (isRecord(raw.data)) return [raw.data];
+  const candidates = [
+    raw.subAffiliates,
+    raw.SubAffiliates,
+    raw.sub_affiliates,
+    raw.SubAffiliate,
+    raw.rows,
+    raw.Rows,
+    isRecord(raw.data) ? raw.data.subAffiliates : undefined,
+    isRecord(raw.data) ? raw.data.SubAffiliate : undefined,
+    isRecord(raw.data) ? raw.data.rows : undefined,
+    raw.data,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate.filter(isRecord);
+    if (isRecord(candidate)) return [candidate];
+  }
   return [];
 }
 
@@ -190,4 +234,39 @@ function extractRowCount(raw: unknown): number | null {
 
 function isRecord(value: unknown): value is CakeConversionRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readJsonOrSubAffiliateXml(response: Response): Promise<unknown> {
+  if (typeof response.text !== 'function') return response.json();
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    const rows = [...body.matchAll(/<SubAffiliate(?:\s[^>]*)?>([\s\S]*?)<\/SubAffiliate>/gi)].map((match) => ({
+      sub_id: xmlValue(match[1], 'sub_id'),
+      impressions: xmlValue(match[1], 'impressions'),
+      clicks: xmlValue(match[1], 'clicks'),
+      conversions: xmlValue(match[1], 'conversions'),
+      conversion_rate: xmlValue(match[1], 'conversion_rate'),
+      revenue: xmlValue(match[1], 'revenue'),
+      epc: xmlValue(match[1], 'epc'),
+    }));
+    if (rows.length === 0 && !/<ArrayOfSubAffiliate(?:\s|>)/i.test(body)) {
+      throw new Error('CAKE SubAffiliateSummary returned an unsupported response format.');
+    }
+    return rows;
+  }
+}
+
+function xmlValue(block: string, tag: string) {
+  const match = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(block);
+  if (!match) return '';
+  return match[1]
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim();
 }

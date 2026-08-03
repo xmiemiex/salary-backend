@@ -12,6 +12,7 @@ import { CakeIncomeSyncAdapter } from './cake/cake-income-sync.adapter';
 import { CakeCalibrationService } from './cake/cake-calibration.service';
 import { EverflowClient } from './everflow/everflow-client';
 import { EverflowIncomeSyncAdapter } from './everflow/everflow-income-sync.adapter';
+import { EverflowCalibrationService } from './everflow/everflow-calibration.service';
 import { PhotonPayClient } from './photonpay/photonpay-client';
 import { PhotonPayCardSyncAdapter } from './photonpay/photonpay-card-sync.adapter';
 import { SyncTaskExecutionService } from './sync-task-execution.service';
@@ -39,6 +40,7 @@ import { SyncAutoExecutorScheduler } from './sync-auto-executor.scheduler';
     SyncAdapterResolver,
     EverflowClient,
     EverflowIncomeSyncAdapter,
+    EverflowCalibrationService,
     CakeClient,
     CakeCalibrationService,
     CakeIncomeSyncAdapter,

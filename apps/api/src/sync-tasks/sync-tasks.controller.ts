@@ -15,6 +15,7 @@ import {
   SyncTaskOperationsService,
 } from './sync-task-operations.service';
 import { CakeCalibrationInput, CakeCalibrationService } from './cake/cake-calibration.service';
+import { EverflowCalibrationInput, EverflowCalibrationService } from './everflow/everflow-calibration.service';
 
 @Controller('sync-tasks')
 export class SyncTasksController {
@@ -23,6 +24,7 @@ export class SyncTasksController {
     private readonly syncTaskExecution: SyncTaskExecutionService,
     private readonly syncTaskOperations: SyncTaskOperationsService,
     private readonly cakeCalibration: CakeCalibrationService,
+    private readonly everflowCalibration: EverflowCalibrationService,
   ) {}
 
   @Get()
@@ -67,6 +69,16 @@ export class SyncTasksController {
     @CurrentActor() actor: Actor,
   ) {
     return this.cakeCalibration.run(affiliateAccountId, body, actor);
+  }
+
+  @Post('everflow-calibration/:affiliateAccountId')
+  @RequirePermissions('api_config.manage')
+  calibrateEverflow(
+    @Param('affiliateAccountId') affiliateAccountId: string,
+    @Body() body: EverflowCalibrationInput,
+    @CurrentActor() actor: Actor,
+  ) {
+    return this.everflowCalibration.run(affiliateAccountId, body, actor);
   }
 
   @Post(':taskId/execute')

@@ -17,7 +17,6 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const AFFILIATE_PLATFORMS = [SyncTaskPlatform.everflow, SyncTaskPlatform.cake] as const;
 const CARD_PROVIDERS = [Provider.airwallex, Provider.photonpay] as const;
-const AFFILIATE_NOT_IMPLEMENTED_MESSAGE = '真实联盟收入同步接口未接入，本任务只记录请求，不拉取第三方数据。';
 const CARD_NOT_IMPLEMENTED_MESSAGE = '真实虚拟卡同步接口未接入，本任务只记录请求，不拉取第三方数据。';
 
 export type CreateAffiliateIncomeSyncTaskInput = {
@@ -104,8 +103,8 @@ export class SyncTasksService {
           platform,
           affiliateAccountId,
           settlementMonth,
-          status: SyncTaskStatus.not_implemented,
-          message: AFFILIATE_NOT_IMPLEMENTED_MESSAGE,
+          status: SyncTaskStatus.pending,
+          message: null,
           requestedBy: actor.userId,
           requestPayload: input as Prisma.InputJsonObject,
         },

@@ -1,34 +1,45 @@
+import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import {
+  AuditResult,
+  CommonStatus,
+  Prisma,
+  SyncExecutionErrorCategory,
+  SyncTaskPlatform,
+  SyncTaskSourceType,
+  SyncTaskType,
+} from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
 import { providerErrorCategory } from '../provider-request-error';
-import { EverflowClient, EverflowConversionRecord, EverflowCredentialPayload } from './everflow-client';
+import {
+  EverflowClient,
+  EverflowCredentialPayload,
+  EverflowSubRevenueRow,
+} from './everflow-client';
 
 const EVERFLOW_SOURCE = 'everflow';
-const GMT8_TIMEZONE_ID = 20;
-const PAGE_SIZE = 2000;
-const SUB_FIELDS = ['sub1', 'sub2', 'sub3', 'sub4', 'sub5', 'sub6', 'sub7', 'sub8', 'sub9', 'sub10'] as const;
+const SUB_FIELD = 'sub1';
+export const EVERFLOW_GMT8_TIMEZONE_ID = 20;
+export const EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION = 'everflow.monthly_sub_revenue.calibration.pass';
 
-type NormalizedEverflowRecord = {
-  externalRecordId: string | null;
-  incomeUsd: Prisma.Decimal;
-  currency: string | null;
-  occurredAt: Date | null;
-  subCandidates: Array<{ subField: string; subValue: string }>;
-  rawData: EverflowConversionRecord;
-};
-
+type Mapping = { employeeId: string };
 type EverflowAdapterPrisma = {
-  subIdMapping: {
-    findFirst(args: unknown): Promise<{ employeeId: string } | null>;
-  };
+  affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
+  auditLog: { findFirst(args: unknown): Promise<{ id: string; createdAt: Date } | null> };
+  subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
+    deleteMany(args: unknown): Promise<{ count: number }>;
   };
+};
+
+type MonthlyRow = {
+  subValue: string | null;
+  revenueUsd: Prisma.Decimal;
 };
 
 @Injectable()
@@ -46,45 +57,176 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
     const credential = parseCredentialPayload(context.credential.payload);
     const window = getGmt8SettlementMonthWindow(context.settlementMonth);
 
-    let successCount = 0;
-    let failedCount = 0;
-    let page = 1;
-
-    try {
-      while (true) {
-        const response = await this.client.searchAffiliateConversions({
-          credential,
-          from: window.from,
-          to: window.to,
-          timezoneId: GMT8_TIMEZONE_ID,
-          page,
-          pageSize: PAGE_SIZE,
-        });
-        const records = response.conversions ?? [];
-
-        for (const raw of records) {
-          const normalized = normalizeEverflowRecord(raw);
-          const result = await this.upsertIncomeRecord(normalized, context);
-          if (result) successCount += 1;
-          else failedCount += 1;
-        }
-
-        const paging = response.paging;
-        const totalCount = paging?.total_count ?? records.length;
-        const pageSize = paging?.page_size ?? PAGE_SIZE;
-        const currentPage = paging?.page ?? page;
-        if (currentPage * pageSize >= totalCount || records.length === 0) break;
-        page += 1;
-      }
-    } catch (error) {
-      failedCount += 1;
-      const errorMessage = error instanceof Error ? error.message : 'Everflow API request failed.';
-      return { ...this.result('failed', successCount, failedCount, window, errorMessage, context), errorCategory: providerErrorCategory(error) };
+    if (!(await this.hasCurrentCalibration(context.affiliateAccountId as string))) {
+      const message = 'Everflow monthly SUB revenue sync is blocked until current credentials pass read-only calibration.';
+      return this.result('failed', 0, 1, window, message, context, {
+        pulledCount: 0,
+        positiveRevenueCount: 0,
+        attributedCount: 0,
+        unmatchedCount: 0,
+        zeroRevenueCount: 0,
+        calibrationRequired: true,
+      }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
     }
 
-    const status = successCount > 0 && failedCount === 0 ? 'completed' : 'failed';
-    const message = `Everflow income sync finished: successCount=${successCount}, failedCount=${failedCount}.`;
-    return this.result(status, successCount, failedCount, window, message, context);
+    try {
+      const response = await this.client.getAffiliateSubRevenueSummary({
+        credential,
+        from: window.from,
+        to: window.to,
+        timezoneId: EVERFLOW_GMT8_TIMEZONE_ID,
+        subField: SUB_FIELD,
+      });
+      if (response.incomplete_results === true) {
+        return this.result('failed', 0, 1, window, 'Everflow returned incomplete aggregate results; no income was written.', context, {
+          pulledCount: response.table?.length ?? 0,
+          positiveRevenueCount: 0,
+          attributedCount: 0,
+          unmatchedCount: 0,
+          zeroRevenueCount: 0,
+          incompleteResults: true,
+        }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
+      }
+
+      const rows = aggregateRows(response.table ?? []);
+      let positiveRevenueCount = 0;
+      let attributedCount = 0;
+      let unmatchedCount = 0;
+      let zeroRevenueCount = 0;
+
+      for (const row of rows) {
+        const externalRecordId = monthlyExternalRecordId(EVERFLOW_SOURCE, context, row.subValue);
+        if (row.revenueUsd.isZero()) {
+          zeroRevenueCount += 1;
+          await this.db().incomeRecord.deleteMany({
+            where: { source: EVERFLOW_SOURCE, externalRecordId },
+          });
+          continue;
+        }
+        positiveRevenueCount += 1;
+        if (!row.subValue) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'Everflow monthly revenue row has no SUB1 value.');
+          continue;
+        }
+        const mappings = await this.db().subIdMapping.findMany({
+          where: {
+            affiliateAccountId: context.affiliateAccountId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            effectiveMonth: context.settlementMonth,
+            status: CommonStatus.active,
+          },
+          select: { employeeId: true },
+        });
+        const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
+        if (employeeIds.length === 0) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_NOT_MAPPED', 'Everflow SUB1 is not mapped to an employee.');
+          continue;
+        }
+        if (employeeIds.length !== 1) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'Everflow SUB1 maps to multiple employees.');
+          continue;
+        }
+
+        await this.db().incomeRecord.upsert({
+          where: { source_externalRecordId: { source: EVERFLOW_SOURCE, externalRecordId } },
+          create: {
+            settlementMonth: context.settlementMonth,
+            affiliateAccountId: context.affiliateAccountId,
+            employeeId: employeeIds[0],
+            source: EVERFLOW_SOURCE,
+            externalRecordId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            incomeUsd: row.revenueUsd,
+            rawData: safeRawData(row, context),
+            status: CommonStatus.confirmed,
+            importedBy: context.requestedBy ?? null,
+          },
+          update: {
+            settlementMonth: context.settlementMonth,
+            affiliateAccountId: context.affiliateAccountId,
+            employeeId: employeeIds[0],
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            incomeUsd: row.revenueUsd,
+            rawData: safeRawData(row, context),
+            status: CommonStatus.confirmed,
+            importedBy: context.requestedBy ?? null,
+          },
+        });
+        attributedCount += 1;
+      }
+
+      const message = `Everflow monthly SUB revenue sync completed: pulled=${response.table?.length ?? 0}, positive=${positiveRevenueCount}, attributed=${attributedCount}, unmatched=${unmatchedCount}, zero=${zeroRevenueCount}.`;
+      return this.result('completed', attributedCount, unmatchedCount, window, message, context, {
+        pulledCount: response.table?.length ?? 0,
+        aggregateRowCount: rows.length,
+        positiveRevenueCount,
+        attributedCount,
+        unmatchedCount,
+        zeroRevenueCount,
+        incompleteResults: false,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Everflow aggregate reporting request failed.';
+      return this.result('failed', 0, 1, window, message, context, {
+        pulledCount: 0,
+        positiveRevenueCount: 0,
+        attributedCount: 0,
+        unmatchedCount: 0,
+        zeroRevenueCount: 0,
+      }, providerErrorCategory(error));
+    }
+  }
+
+  private async hasCurrentCalibration(affiliateAccountId: string) {
+    const credential = await this.db().affiliateAccountCredential.findUnique({
+      where: { affiliateAccountId },
+      select: { updatedAt: true },
+    });
+    if (!credential) return false;
+    return Boolean(await this.db().auditLog.findFirst({
+      where: {
+        action: EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION,
+        objectType: 'affiliate_accounts',
+        objectId: affiliateAccountId,
+        result: AuditResult.success,
+        createdAt: { gte: credential.updatedAt },
+      },
+      select: { id: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    }));
+  }
+
+  private async recordUnmatched(
+    row: MonthlyRow,
+    externalRecordId: string,
+    context: SyncAdapterContext,
+    reasonCode: string,
+    reasonMessage: string,
+  ) {
+    await this.unmatchedEvents.recordUnmatchedEvent({
+      settlementMonth: context.settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.everflow,
+      affiliateAccountId: context.affiliateAccountId,
+      syncTaskId: context.taskId,
+      thirdPartyEventId: externalRecordId,
+      reasonCode,
+      reasonMessage,
+      subField: SUB_FIELD,
+      subValue: row.subValue,
+      amountUsd: row.revenueUsd,
+      rawSafeData: { subField: SUB_FIELD, subValue: row.subValue, amount: row.revenueUsd.toString(), currency: 'USD' },
+    });
   }
 
   private result(
@@ -94,6 +236,8 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
     window: ReturnType<typeof getGmt8SettlementMonthWindow>,
     message: string,
     context: SyncAdapterContext,
+    statistics: Record<string, unknown>,
+    errorCategory?: SyncExecutionErrorCategory,
   ): SyncAdapterResult {
     return {
       status,
@@ -101,113 +245,19 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
       failedCount,
       message,
       errorMessage: status === 'failed' ? message : null,
+      errorCategory,
       resultPayload: {
         adapterKey: this.adapterKey,
         source: EVERFLOW_SOURCE,
-        pulledThirdPartyData: true,
-        successCount,
-        failedCount,
+        sourceReport: 'affiliate.reporting.entity.table',
+        aggregation: 'monthly_revenue_by_sub1',
+        currency: 'USD',
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
-        everflowRequest: {
-          from: window.from,
-          to: window.to,
-          timezoneId: GMT8_TIMEZONE_ID,
-        },
+        request: { from: window.from, to: window.to, timezoneId: EVERFLOW_GMT8_TIMEZONE_ID, subField: SUB_FIELD },
+        ...statistics,
+        rawPayloadReturned: false,
       },
     };
-  }
-
-  private async upsertIncomeRecord(record: NormalizedEverflowRecord, context: SyncAdapterContext): Promise<boolean> {
-    if (!record.externalRecordId) {
-      await this.recordUnmatchedIncome(record, context, 'UNKNOWN', 'Everflow conversion is missing external record id.');
-      return false;
-    }
-    if (record.currency !== 'USD') {
-      await this.recordUnmatchedIncome(record, context, 'INVALID_CURRENCY', 'Everflow conversion currency is not USD.');
-      return false;
-    }
-    if (record.subCandidates.length === 0) {
-      await this.recordUnmatchedIncome(record, context, 'SUB_ID_MISSING', 'Everflow conversion has no SUB candidate.');
-      return false;
-    }
-
-    const mapping = await this.findMapping(context, record.subCandidates);
-    if (!mapping) {
-      await this.recordUnmatchedIncome(record, context, 'SUB_ID_NOT_MAPPED', 'Everflow conversion SUB is not mapped to an employee.');
-      return false;
-    }
-
-    await this.db().incomeRecord.upsert({
-      where: { source_externalRecordId: { source: EVERFLOW_SOURCE, externalRecordId: record.externalRecordId } },
-      update: {
-        affiliateAccountId: context.affiliateAccountId,
-        employeeId: mapping.employeeId,
-        settlementMonth: context.settlementMonth,
-        subField: mapping.subField,
-        subValue: mapping.subValue,
-        incomeUsd: record.incomeUsd,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
-        importedBy: context.requestedBy,
-      },
-      create: {
-        source: EVERFLOW_SOURCE,
-        externalRecordId: record.externalRecordId,
-        affiliateAccountId: context.affiliateAccountId,
-        employeeId: mapping.employeeId,
-        settlementMonth: context.settlementMonth,
-        subField: mapping.subField,
-        subValue: mapping.subValue,
-        incomeUsd: record.incomeUsd,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
-        importedBy: context.requestedBy,
-      },
-    });
-    return true;
-  }
-
-  private async recordUnmatchedIncome(
-    record: NormalizedEverflowRecord,
-    context: SyncAdapterContext,
-    reasonCode: string,
-    reasonMessage: string,
-  ) {
-    const primarySub = record.subCandidates[0];
-    await this.unmatchedEvents.recordUnmatchedEvent({
-      settlementMonth: context.settlementMonth,
-      sourceType: SyncTaskSourceType.affiliate_income,
-      taskType: SyncTaskType.affiliate_income,
-      platform: SyncTaskPlatform.everflow,
-      affiliateAccountId: context.affiliateAccountId,
-      syncTaskId: context.taskId,
-      thirdPartyEventId: record.externalRecordId,
-      reasonCode,
-      reasonMessage,
-      subField: primarySub?.subField,
-      subValue: primarySub?.subValue,
-      amountUsd: record.currency === 'USD' ? record.incomeUsd : null,
-      currency: record.currency,
-      occurredAt: record.occurredAt,
-      rawSafeData: buildEverflowRawSafeData(record),
-    });
-  }
-
-  private async findMapping(context: SyncAdapterContext, candidates: Array<{ subField: string; subValue: string }>) {
-    for (const candidate of candidates) {
-      const mapping = await this.db().subIdMapping.findFirst({
-        where: {
-          affiliateAccountId: context.affiliateAccountId,
-          subField: candidate.subField,
-          subValue: candidate.subValue,
-          effectiveMonth: context.settlementMonth,
-          status: CommonStatus.active,
-        },
-        select: { employeeId: true },
-      });
-      if (mapping) return { ...candidate, employeeId: mapping.employeeId };
-    }
-    return null;
   }
 
   private assertContext(context: SyncAdapterContext) {
@@ -228,84 +278,78 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
 }
 
 export function getGmt8SettlementMonthWindow(settlementMonth: Date) {
-  const startUtc = new Date(Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth(), 1, -8, 0, 0, 0));
-  const endUtc = new Date(Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 1, -8, 0, 0, 0));
-  const inclusiveToDate = new Date(Date.UTC(settlementMonth.getUTCFullYear(), settlementMonth.getUTCMonth() + 1, 0));
-
+  const year = settlementMonth.getUTCFullYear();
+  const month = settlementMonth.getUTCMonth();
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   return {
-    startInclusiveUtc: startUtc,
-    endExclusiveUtc: endUtc,
-    from: formatDate(settlementMonth),
-    to: formatDate(inclusiveToDate),
-    timezoneId: GMT8_TIMEZONE_ID,
+    startInclusiveUtc: new Date(Date.UTC(year, month, 1, -8)),
+    endExclusiveUtc: new Date(Date.UTC(year, month + 1, 1, -8)),
+    from: formatDate(year, month + 1, 1),
+    to: formatDate(year, month + 1, lastDay),
+    timezoneId: EVERFLOW_GMT8_TIMEZONE_ID,
   };
 }
 
-export function normalizeEverflowRecord(raw: EverflowConversionRecord): NormalizedEverflowRecord {
-  const externalRecordId = asNonBlankString(raw.conversion_id) ?? asNonBlankString(raw.transaction_id) ?? null;
-  const currency = asNonBlankString(raw.currency_id);
-  const revenue = raw.revenue;
-  const subCandidates = SUB_FIELDS.flatMap((subField) => {
-    const subValue = asNonBlankString(raw[subField]);
-    return subValue ? [{ subField, subValue }] : [];
-  });
+export function normalizeEverflowSummaryRow(row: EverflowSubRevenueRow): MonthlyRow {
+  const columns = row.columns ?? [];
+  const column = columns.find((item) => item.column_type?.toLowerCase() === SUB_FIELD) ?? columns[0];
+  const subValue = asNonBlank(column?.id) ?? asNonBlank(column?.label);
+  const rawRevenue = row.reporting?.revenue;
+  if (!(['string', 'number'].includes(typeof rawRevenue)) || String(rawRevenue).trim() === '') {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow aggregate row is missing reporting.revenue.');
+  }
+  try {
+    const revenueUsd = new Prisma.Decimal(rawRevenue as string | number);
+    if (!revenueUsd.isFinite()) throw new Error('not finite');
+    return { subValue, revenueUsd };
+  } catch {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow aggregate row has invalid reporting.revenue.');
+  }
+}
 
+function aggregateRows(rows: EverflowSubRevenueRow[]): MonthlyRow[] {
+  const totals = new Map<string, MonthlyRow>();
+  for (const raw of rows) {
+    const row = normalizeEverflowSummaryRow(raw);
+    const key = row.subValue ?? '';
+    const current = totals.get(key);
+    totals.set(key, current ? { ...row, revenueUsd: current.revenueUsd.plus(row.revenueUsd) } : row);
+  }
+  return [...totals.values()];
+}
+
+function monthlyExternalRecordId(source: string, context: SyncAdapterContext, subValue: string | null) {
+  const month = context.settlementMonth.toISOString().slice(0, 7);
+  const digest = createHash('sha256').update(subValue ?? '(blank)').digest('hex').slice(0, 24);
+  return `${source}:sub-month:${context.affiliateAccountId}:${month}:${digest}`;
+}
+
+function safeRawData(row: MonthlyRow, context: SyncAdapterContext): Prisma.InputJsonObject {
   return {
-    externalRecordId,
-    incomeUsd: new Prisma.Decimal(typeof revenue === 'number' || typeof revenue === 'string' ? revenue : 0),
-    currency,
-    occurredAt: parseDate(firstValue(raw.conversion_time, raw.conversionTime, raw.conversion_date, raw.conversionDate, raw.created_at, raw.createdAt)),
-    subCandidates,
-    rawData: raw,
-  };
+    report: 'monthly_revenue_by_sub1',
+    settlementMonth: context.settlementMonth.toISOString().slice(0, 7),
+    subField: SUB_FIELD,
+    subValue: row.subValue,
+    revenueUsd: row.revenueUsd.toString(),
+    timezone: 'Asia/Shanghai',
+  } as Prisma.InputJsonObject;
 }
 
 function parseCredentialPayload(payload: unknown): EverflowCredentialPayload {
-  if (!payload || typeof payload !== 'object') {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow credential payload is required.');
   }
   const record = payload as Record<string, unknown>;
-  const apiKey = asNonBlankString(record.apiKey);
+  const apiKey = asNonBlank(record.apiKey);
   if (!apiKey) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow credential apiKey is required.');
-
-  return {
-    apiKey,
-    baseUrl: asNonBlankString(record.baseUrl) ?? undefined,
-  };
+  return { apiKey, baseUrl: asNonBlank(record.baseUrl) ?? undefined };
 }
 
-function asNonBlankString(value: unknown): string | null {
+function asNonBlank(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function firstValue(...values: unknown[]): unknown {
-  return values.find((value) => value !== undefined && value !== null);
-}
-
-function parseDate(value: unknown): Date | null {
-  if (!(typeof value === 'string' || value instanceof Date)) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function buildEverflowRawSafeData(record: NormalizedEverflowRecord): Prisma.InputJsonObject {
-  const raw = record.rawData;
-  const safe: Record<string, Prisma.InputJsonValue | undefined> = {
-    conversionId: record.externalRecordId ?? undefined,
-    transactionId: asNonBlankString(raw.transaction_id) ?? undefined,
-    status: asNonBlankString(raw.status) ?? asNonBlankString(raw.conversion_status) ?? undefined,
-    currency: record.currency ?? undefined,
-    amount: record.incomeUsd.toString(),
-    conversionTime: record.occurredAt?.toISOString() ?? asNonBlankString(raw.conversion_time) ?? asNonBlankString(raw.conversionTime) ?? undefined,
-  };
-  for (const candidate of record.subCandidates) safe[candidate.subField] = candidate.subValue;
-  return compactJsonObject(safe);
-}
-
-function compactJsonObject(value: Record<string, Prisma.InputJsonValue | undefined>): Prisma.InputJsonObject {
-  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined && child !== null)) as Prisma.InputJsonObject;
-}
-
-function formatDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
+function formatDate(year: number, month: number, day: number) {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }

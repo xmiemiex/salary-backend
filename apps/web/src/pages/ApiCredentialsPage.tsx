@@ -91,8 +91,13 @@ function publicMaskedValue(value: unknown): string | undefined {
   return typeof value === 'string' && value && !value.includes('*') ? value : undefined;
 }
 
-function gmt8Today(): string {
-  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+function previousCompleteGmt8Month() {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const year = now.getUTCFullYear();
+  const monthIndex = now.getUTCMonth() - 1;
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+  return { settlementMonth: start.toISOString().slice(0, 7), startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
 }
 
 export function ApiCredentialsPage() {
@@ -218,18 +223,18 @@ export function ApiCredentialsPage() {
         body: JSON.stringify({ payload }),
       });
       messageApi.success('凭证已保存');
-      if (target.type === 'affiliate' && target.platform === 'cake') {
-        const date = gmt8Today();
+      if (target.type === 'affiliate' && (target.platform === 'cake' || target.platform === 'everflow')) {
+        const range = previousCompleteGmt8Month();
         try {
           const summary = await apiClient.request<Record<string, unknown>>(
-            `/sync-tasks/cake-calibration/${target.id}`,
+            `/sync-tasks/${target.platform}-calibration/${target.id}`,
             {
               method: 'POST',
-              body: JSON.stringify({ startDate: date, endDate: date }),
+              body: JSON.stringify(range),
             },
           );
           modalApi.info({
-            title: 'CAKE 只读连接校准完成',
+            title: `${target.platform === 'cake' ? 'CAKE' : 'Everflow'} 上月 SUB 收入只读校准`,
             width: 720,
             content: (
               <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 420, overflow: 'auto' }}>
@@ -238,7 +243,7 @@ export function ApiCredentialsPage() {
             ),
           });
         } catch (error) {
-          messageApi.warning(`凭证已保存，但 CAKE 只读连接校准失败：${errorMessage(error)}`);
+          messageApi.warning(`凭证已保存，但上月 SUB 收入只读校准失败：${errorMessage(error)}`);
         }
       }
       closeCredentialModal();
@@ -249,6 +254,22 @@ export function ApiCredentialsPage() {
       setSaving(false);
     }
   };
+
+  const calibrateAffiliate = useCallback(async (record: AffiliateCredentialRow) => {
+    try {
+      const summary = await apiClient.request<Record<string, unknown>>(
+        `/sync-tasks/${record.platform}-calibration/${record.affiliateAccountId}`,
+        { method: 'POST', body: JSON.stringify(previousCompleteGmt8Month()) },
+      );
+      modalApi.info({
+        title: `${record.platform === 'cake' ? 'CAKE' : 'Everflow'} 上月 SUB 收入只读校准`,
+        width: 720,
+        content: <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 420, overflow: 'auto' }}>{JSON.stringify(summary, null, 2)}</pre>,
+      });
+    } catch (error) {
+      messageApi.error(errorMessage(error));
+    }
+  }, [messageApi, modalApi]);
 
   const affiliateColumns = useMemo<ColumnsType<AffiliateCredentialRow>>(
     () => [
@@ -299,6 +320,13 @@ export function ApiCredentialsPage() {
                 {record.hasCredential ? '更新凭证' : '配置凭证'}
               </Button>
               <Button
+                size="small"
+                disabled={!record.hasCredential || record.status === 'disabled' || !['cake', 'everflow'].includes(record.platform)}
+                onClick={() => void calibrateAffiliate(record)}
+              >
+                校准上月 SUB 收入
+              </Button>
+              <Button
                 danger
                 size="small"
                 disabled={!record.hasCredential || record.status === 'disabled'}
@@ -319,7 +347,7 @@ export function ApiCredentialsPage() {
         },
       },
     ],
-    [disableCredential, openCredentialModal],
+    [calibrateAffiliate, disableCredential, openCredentialModal],
   );
 
   const cardProviderColumns = useMemo<ColumnsType<CardProviderCredentialRow>>(
