@@ -310,22 +310,57 @@ export function resolveEverflowGmt8Timezone(timezones: EverflowTimezone[]) {
     const timezoneId = Number(timezone.timezone_id);
     const name = [timezone.timezone_name, timezone.timezone].filter(Boolean).join(' / ').trim();
     const utcOffset = String(timezone.utc_offset ?? '').trim();
-    return Number.isInteger(timezoneId) && isGmt8Offset(utcOffset)
+    const offsetMinutes = parseUtcOffsetMinutes(utcOffset);
+    const ianaGmt8 = isStableGmt8Iana(timezone.timezone);
+    const gmt8Confirmed = offsetMinutes === 480 || (offsetMinutes === null && ianaGmt8);
+    return Number.isInteger(timezoneId) && gmt8Confirmed
       ? [{ timezoneId, name: name || `timezone:${timezoneId}`, utcOffset }]
       : [];
   });
-  const china = candidates.filter((timezone) => /china|shanghai|beijing|chongqing|hong kong/i.test(timezone.name));
-  if (china.length === 1) return china[0];
-  if (china.length > 1) {
-    const shanghai = china.filter((timezone) => /shanghai|china standard time/i.test(timezone.name));
-    return shanghai.length === 1 ? shanghai[0] : null;
-  }
-  return candidates.length === 1 ? candidates[0] : null;
+  return candidates.sort((left, right) => timezonePriority(left.name) - timezonePriority(right.name) || left.timezoneId - right.timezoneId)[0] ?? null;
 }
 
-function isGmt8Offset(value: string) {
+function timezonePriority(name: string) {
+  if (/asia\/shanghai/i.test(name)) return 0;
+  if (/china standard time/i.test(name)) return 1;
+  if (/china|beijing|chongqing/i.test(name)) return 2;
+  if (/hong kong/i.test(name)) return 3;
+  return 4;
+}
+
+function parseUtcOffsetMinutes(value: string): number | null {
   const normalized = value.replace(/\s/g, '').toUpperCase().replace(/^UTC|^GMT/, '');
-  return /^\+?0?8(?::?00)?$/.test(normalized);
+  if (!normalized) return null;
+  const clock = normalized.match(/^([+-]?)(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (clock) {
+    const sign = clock[1] === '-' ? -1 : 1;
+    return sign * (Number(clock[2]) * 60 + Number(clock[3]));
+  }
+  const compactClock = normalized.match(/^([+-]?)(0\d)(\d{2})$/);
+  if (compactClock) {
+    const sign = compactClock[1] === '-' ? -1 : 1;
+    return sign * (Number(compactClock[2]) * 60 + Number(compactClock[3]));
+  }
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return null;
+  if (Math.abs(numeric) <= 24) return numeric * 60;
+  if (Math.abs(numeric) <= 24 * 60) return numeric;
+  if (Math.abs(numeric) <= 24 * 60 * 60) return numeric / 60;
+  return null;
+}
+
+function isStableGmt8Iana(value: string | undefined) {
+  if (!value) return false;
+  try {
+    return ['2026-01-01T00:00:00Z', '2026-07-01T00:00:00Z'].every((iso) => {
+      const part = new Intl.DateTimeFormat('en', { timeZone: value, timeZoneName: 'longOffset' })
+        .formatToParts(new Date(iso))
+        .find((item) => item.type === 'timeZoneName')?.value;
+      return part === 'GMT+08:00';
+    });
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeEverflowSummaryRow(row: EverflowSubRevenueRow): MonthlyRow {

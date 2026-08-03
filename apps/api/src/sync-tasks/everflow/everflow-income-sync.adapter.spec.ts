@@ -63,15 +63,14 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     });
   });
 
-  it('resolves a real GMT+8 timezone without guessing among ambiguous metadata rows', () => {
+  it('resolves a real GMT+8 timezone from current or legacy offset formats without guessing an ID', () => {
     expect(resolveEverflowGmt8Timezone([
       { timezone_id: 20, timezone_name: 'Singapore', utc_offset: '+08:00' },
       { timezone_id: 75, timezone_name: 'China Standard Time', timezone: 'Asia/Shanghai', utc_offset: 'UTC+08:00' },
     ])).toMatchObject({ timezoneId: 75, utcOffset: 'UTC+08:00' });
-    expect(resolveEverflowGmt8Timezone([
-      { timezone_id: 20, timezone_name: 'Singapore', utc_offset: '+08:00' },
-      { timezone_id: 21, timezone_name: 'Perth', utc_offset: '+08:00' },
-    ])).toBeNull();
+    expect(resolveEverflowGmt8Timezone([{ timezone_id: 76, timezone_name: 'China', utc_offset: '28800' }])).toMatchObject({ timezoneId: 76 });
+    expect(resolveEverflowGmt8Timezone([{ timezone_id: 77, timezone: 'Asia/Shanghai', utc_offset: '' }])).toMatchObject({ timezoneId: 77 });
+    expect(resolveEverflowGmt8Timezone([{ timezone_id: 78, timezone_name: 'Los Angeles', utc_offset: '-08:00' }])).toBeNull();
   });
 
   it('writes one monthly record per mapped SUB and routes blank revenue to unmatched', async () => {
