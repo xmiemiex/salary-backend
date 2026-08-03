@@ -8,10 +8,10 @@ import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EverflowClient, EverflowCredentialPayload } from './everflow-client';
 import {
-  EVERFLOW_GMT8_TIMEZONE_ID,
   EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION,
   getGmt8SettlementMonthWindow,
   normalizeEverflowSummaryRow,
+  resolveEverflowGmt8Timezone,
 } from './everflow-income-sync.adapter';
 
 export type EverflowCalibrationInput = { settlementMonth?: string; startDate?: string; endDate?: string };
@@ -36,18 +36,25 @@ export class EverflowCalibrationService {
     const window = getGmt8SettlementMonthWindow(monthDate);
     const internal = await this.credentials.getAffiliateAccountCredentialPayload(account.id);
     const credential = parseCredential(internal.payload);
-    const [response, mappings] = await Promise.all([
-      this.client.getAffiliateSubRevenueSummary({ credential, from: window.from, to: window.to, timezoneId: EVERFLOW_GMT8_TIMEZONE_ID, subField: 'sub1' }),
+    const timezones = await this.client.getTimezones(credential);
+    const timezone = resolveEverflowGmt8Timezone(timezones.timezones ?? []);
+    if (!timezone) {
+      throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow metadata did not provide an unambiguous GMT+8 timezone; calibration remains fail-closed.');
+    }
+    const [response, offerResponse, mappings] = await Promise.all([
+      this.client.getAffiliateSubRevenueSummary({ credential, from: window.from, to: window.to, timezoneId: timezone.timezoneId, subField: 'sub1' }),
+      this.client.getAffiliateOfferRevenueSummary({ credential, from: window.from, to: window.to, timezoneId: timezone.timezoneId }),
       this.prisma.subIdMapping.findMany({
         where: { affiliateAccountId: account.id, effectiveMonth: monthDate, status: CommonStatus.active },
         select: { subField: true, subValue: true, employeeId: true },
       }),
     ]);
     const rows = (response.table ?? []).map(normalizeEverflowSummaryRow);
+    const offerRows = (offerResponse.table ?? []).map(normalizeEverflowSummaryRow);
     const rowRevenue = rows.reduce((total, row) => total.plus(row.revenueUsd), new Prisma.Decimal(0));
-    const summaryRevenue = decimalOrNull(response.summary?.revenue);
-    const totalsEqual = summaryRevenue !== null && summaryRevenue.equals(rowRevenue);
-    const complete = response.incomplete_results !== true;
+    const offerRevenue = offerRows.reduce((total, row) => total.plus(row.revenueUsd), new Prisma.Decimal(0));
+    const totalsEqual = offerRevenue.equals(rowRevenue);
+    const complete = response.incomplete_results !== true && offerResponse.incomplete_results !== true;
     const attribution = summarizeAttribution(rows, mappings);
     const writeGateEligible = complete && totalsEqual;
     const evidence = {
@@ -58,10 +65,13 @@ export class EverflowCalibrationService {
       accountName: account.accountName,
       accountCode: account.accountCode,
       report: '/v1/affiliates/reporting/entity/table',
-      request: { from: window.from, to: window.to, timezoneId: EVERFLOW_GMT8_TIMEZONE_ID, currencyId: 'USD', column: 'sub1' },
+      request: { from: window.from, to: window.to, timezoneId: timezone.timezoneId, currencyId: 'USD', column: 'sub1' },
+      timezone: { source: '/v1/meta/timezones', timezoneId: timezone.timezoneId, name: timezone.name, utcOffset: timezone.utcOffset, gmt8Confirmed: true },
+      httpStatuses: { timezoneMetadata: timezones.httpStatus, sub1Report: response.httpStatus, offerCrossCheck: offerResponse.httpStatus },
       returnedCount: rows.length,
       incompleteResults: response.incomplete_results ?? false,
-      revenue: { currency: 'USD', rowTotal: rowRevenue.toString(), summaryTotal: summaryRevenue?.toString() ?? null, totalsEqual },
+      offerCrossCheckIncompleteResults: offerResponse.incomplete_results ?? false,
+      revenue: { currency: 'USD', sub1Total: rowRevenue.toString(), offerTotal: offerRevenue.toString(), sameWindowTotalsEqual: totalsEqual },
       rows: rows.map((row) => ({ subField: 'sub1', subValue: row.subValue, revenue: row.revenueUsd.toString() })),
       attribution,
     };
@@ -100,11 +110,6 @@ function parseCredential(payload: unknown): EverflowCredentialPayload {
   const apiKey = nonBlank(value.apiKey);
   if (!apiKey) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Everflow API Key is required.');
   return { apiKey, baseUrl: nonBlank(value.baseUrl) ?? undefined };
-}
-
-function decimalOrNull(value: unknown) {
-  if (!(['string', 'number'].includes(typeof value)) || String(value).trim() === '') return null;
-  try { return new Prisma.Decimal(value as string | number); } catch { return null; }
 }
 
 function summarizeAttribution(

@@ -1,6 +1,6 @@
 import { CommonStatus, Prisma, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { EverflowClient, EVERFLOW_API_KEY_HEADER } from './everflow-client';
-import { EverflowIncomeSyncAdapter, getGmt8SettlementMonthWindow } from './everflow-income-sync.adapter';
+import { EverflowIncomeSyncAdapter, getGmt8SettlementMonthWindow, resolveEverflowGmt8Timezone } from './everflow-income-sync.adapter';
 
 const affiliateAccountId = '10000000-0000-0000-0000-000000000001';
 const employeeId = '30000000-0000-0000-0000-000000000001';
@@ -8,7 +8,7 @@ const settlementMonth = new Date(Date.UTC(2026, 6, 1));
 
 describe('EverflowClient aggregate reporting', () => {
   it('requests the affiliate entity table grouped by SUB1 in USD', async () => {
-    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue({ table: [], summary: { revenue: 0 } }) });
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200, json: jest.fn().mockResolvedValue({ table: [] }) });
     const client = new EverflowClient(fetchMock as never);
     await client.getAffiliateSubRevenueSummary({ credential: { apiKey: 'secret', baseUrl: 'https://example.test' }, from: '2026-07-01', to: '2026-07-31', timezoneId: 20, subField: 'sub1' });
     expect(fetchMock).toHaveBeenCalledWith(new URL('https://example.test/v1/affiliates/reporting/entity/table'), expect.objectContaining({
@@ -16,6 +16,21 @@ describe('EverflowClient aggregate reporting', () => {
     }));
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       from: '2026-07-01', to: '2026-07-31', timezone_id: 20, currency_id: 'USD', columns: [{ column: 'sub1' }], query: { filters: [] },
+    });
+  });
+
+  it('uses the official metadata endpoint and an independent offer grouping for calibration', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200, json: jest.fn().mockResolvedValue({ table: [] }) });
+    const client = new EverflowClient(fetchMock as never);
+    const credential = { apiKey: 'secret', baseUrl: 'https://example.test/v1' };
+    await client.getTimezones(credential);
+    await client.getAffiliateOfferRevenueSummary({ credential, from: '2026-07-01', to: '2026-07-31', timezoneId: 75 });
+    expect(fetchMock.mock.calls[0][0]).toEqual(new URL('https://example.test/v1/meta/timezones'));
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET', headers: { [EVERFLOW_API_KEY_HEADER]: 'secret' } });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      timezone_id: 75,
+      currency_id: 'USD',
+      columns: [{ column: 'offer' }],
     });
   });
 });
@@ -33,16 +48,30 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
       subIdMapping: { findMany: jest.fn().mockResolvedValue([{ employeeId }]) },
       incomeRecord: { upsert: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
-    client = { getAffiliateSubRevenueSummary: jest.fn() };
+    client = {
+      getTimezones: jest.fn().mockResolvedValue({ timezones: [{ timezone_id: 75, timezone_name: 'China Standard Time', timezone: 'Asia/Shanghai', utc_offset: '+08:00' }] }),
+      getAffiliateSubRevenueSummary: jest.fn(),
+    };
     unmatchedEvents = { recordUnmatchedEvent: jest.fn().mockResolvedValue({}) };
     adapter = new EverflowIncomeSyncAdapter(prisma, client, unmatchedEvents);
   });
 
   it('uses the complete GMT+8 calendar month and inclusive Everflow date fields', () => {
     expect(getGmt8SettlementMonthWindow(settlementMonth)).toMatchObject({
-      from: '2026-07-01', to: '2026-07-31', timezoneId: 20,
+      from: '2026-07-01', to: '2026-07-31',
       startInclusiveUtc: new Date('2026-06-30T16:00:00.000Z'), endExclusiveUtc: new Date('2026-07-31T16:00:00.000Z'),
     });
+  });
+
+  it('resolves a real GMT+8 timezone without guessing among ambiguous metadata rows', () => {
+    expect(resolveEverflowGmt8Timezone([
+      { timezone_id: 20, timezone_name: 'Singapore', utc_offset: '+08:00' },
+      { timezone_id: 75, timezone_name: 'China Standard Time', timezone: 'Asia/Shanghai', utc_offset: 'UTC+08:00' },
+    ])).toMatchObject({ timezoneId: 75, utcOffset: 'UTC+08:00' });
+    expect(resolveEverflowGmt8Timezone([
+      { timezone_id: 20, timezone_name: 'Singapore', utc_offset: '+08:00' },
+      { timezone_id: 21, timezone_name: 'Perth', utc_offset: '+08:00' },
+    ])).toBeNull();
   });
 
   it('writes one monthly record per mapped SUB and routes blank revenue to unmatched', async () => {
@@ -77,7 +106,7 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
   });
 
   function mockRows(table: Record<string, unknown>[]) {
-    client.getAffiliateSubRevenueSummary.mockResolvedValue({ table, summary: { revenue: 105 }, incomplete_results: false });
+    client.getAffiliateSubRevenueSummary.mockResolvedValue({ table, incomplete_results: false });
   }
 });
 

@@ -19,11 +19,11 @@ import {
   EverflowClient,
   EverflowCredentialPayload,
   EverflowSubRevenueRow,
+  EverflowTimezone,
 } from './everflow-client';
 
 const EVERFLOW_SOURCE = 'everflow';
 const SUB_FIELD = 'sub1';
-export const EVERFLOW_GMT8_TIMEZONE_ID = 20;
 export const EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION = 'everflow.monthly_sub_revenue.calibration.pass';
 
 type Mapping = { employeeId: string };
@@ -70,11 +70,23 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
     }
 
     try {
+      const timezones = await this.client.getTimezones(credential);
+      const timezone = resolveEverflowGmt8Timezone(timezones.timezones ?? []);
+      if (!timezone) {
+        return this.result('failed', 0, 1, window, 'Everflow metadata did not provide an unambiguous GMT+8 timezone; no income was written.', context, {
+          pulledCount: 0,
+          positiveRevenueCount: 0,
+          attributedCount: 0,
+          unmatchedCount: 0,
+          zeroRevenueCount: 0,
+          timezoneConfirmed: false,
+        }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
+      }
       const response = await this.client.getAffiliateSubRevenueSummary({
         credential,
         from: window.from,
         to: window.to,
-        timezoneId: EVERFLOW_GMT8_TIMEZONE_ID,
+        timezoneId: timezone.timezoneId,
         subField: SUB_FIELD,
       });
       if (response.incomplete_results === true) {
@@ -85,6 +97,7 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
           unmatchedCount: 0,
           zeroRevenueCount: 0,
           incompleteResults: true,
+          timezoneId: timezone.timezoneId,
         }, SyncExecutionErrorCategory.BUSINESS_REJECTED);
       }
 
@@ -173,6 +186,9 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
         unmatchedCount,
         zeroRevenueCount,
         incompleteResults: false,
+        timezoneId: timezone.timezoneId,
+        timezoneName: timezone.name,
+        timezoneUtcOffset: timezone.utcOffset,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Everflow aggregate reporting request failed.';
@@ -253,7 +269,7 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
         aggregation: 'monthly_revenue_by_sub1',
         currency: 'USD',
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
-        request: { from: window.from, to: window.to, timezoneId: EVERFLOW_GMT8_TIMEZONE_ID, subField: SUB_FIELD },
+        request: { from: window.from, to: window.to, timezoneId: statistics.timezoneId ?? null, subField: SUB_FIELD },
         ...statistics,
         rawPayloadReturned: false,
       },
@@ -286,8 +302,30 @@ export function getGmt8SettlementMonthWindow(settlementMonth: Date) {
     endExclusiveUtc: new Date(Date.UTC(year, month + 1, 1, -8)),
     from: formatDate(year, month + 1, 1),
     to: formatDate(year, month + 1, lastDay),
-    timezoneId: EVERFLOW_GMT8_TIMEZONE_ID,
   };
+}
+
+export function resolveEverflowGmt8Timezone(timezones: EverflowTimezone[]) {
+  const candidates = timezones.flatMap((timezone) => {
+    const timezoneId = Number(timezone.timezone_id);
+    const name = [timezone.timezone_name, timezone.timezone].filter(Boolean).join(' / ').trim();
+    const utcOffset = String(timezone.utc_offset ?? '').trim();
+    return Number.isInteger(timezoneId) && isGmt8Offset(utcOffset)
+      ? [{ timezoneId, name: name || `timezone:${timezoneId}`, utcOffset }]
+      : [];
+  });
+  const china = candidates.filter((timezone) => /china|shanghai|beijing|chongqing|hong kong/i.test(timezone.name));
+  if (china.length === 1) return china[0];
+  if (china.length > 1) {
+    const shanghai = china.filter((timezone) => /shanghai|china standard time/i.test(timezone.name));
+    return shanghai.length === 1 ? shanghai[0] : null;
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function isGmt8Offset(value: string) {
+  const normalized = value.replace(/\s/g, '').toUpperCase().replace(/^UTC|^GMT/, '');
+  return /^\+?0?8(?::?00)?$/.test(normalized);
 }
 
 export function normalizeEverflowSummaryRow(row: EverflowSubRevenueRow): MonthlyRow {

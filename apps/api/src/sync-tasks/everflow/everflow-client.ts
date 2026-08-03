@@ -33,8 +33,20 @@ export type EverflowSubRevenueRow = {
 
 export type EverflowSubRevenueResponse = {
   table?: EverflowSubRevenueRow[];
-  summary?: Record<string, unknown>;
   incomplete_results?: boolean;
+  httpStatus?: number;
+};
+
+export type EverflowTimezone = {
+  timezone_id?: number;
+  timezone_name?: string;
+  timezone?: string;
+  utc_offset?: string;
+};
+
+export type EverflowTimezonesResponse = {
+  timezones?: EverflowTimezone[];
+  httpStatus?: number;
 };
 
 type FetchLike = typeof fetch;
@@ -81,6 +93,35 @@ export class EverflowClient {
     timezoneId: number;
     subField: 'sub1';
   }): Promise<EverflowSubRevenueResponse> {
+    return this.getAffiliateRevenueSummary({ ...input, column: input.subField });
+  }
+
+  async getAffiliateOfferRevenueSummary(input: {
+    credential: EverflowCredentialPayload;
+    from: string;
+    to: string;
+    timezoneId: number;
+  }): Promise<EverflowSubRevenueResponse> {
+    return this.getAffiliateRevenueSummary({ ...input, column: 'offer' });
+  }
+
+  async getTimezones(credential: EverflowCredentialPayload): Promise<EverflowTimezonesResponse> {
+    const url = new URL('/v1/meta/timezones', normalizeBaseUrl(credential.baseUrl));
+    const response = await providerFetch(this.fetchImpl, 'Everflow', url, {
+      method: 'GET',
+      headers: { [EVERFLOW_API_KEY_HEADER]: credential.apiKey },
+    });
+    const payload = (await response.json()) as EverflowTimezonesResponse;
+    return { ...payload, httpStatus: response.status };
+  }
+
+  private async getAffiliateRevenueSummary(input: {
+    credential: EverflowCredentialPayload;
+    from: string;
+    to: string;
+    timezoneId: number;
+    column: 'sub1' | 'offer';
+  }): Promise<EverflowSubRevenueResponse> {
     const url = new URL('/v1/affiliates/reporting/entity/table', normalizeBaseUrl(input.credential.baseUrl));
     const response = await providerFetch(this.fetchImpl, 'Everflow', url, {
       method: 'POST',
@@ -93,12 +134,13 @@ export class EverflowClient {
         to: input.to,
         timezone_id: input.timezoneId,
         currency_id: 'USD',
-        columns: [{ column: input.subField }],
+        columns: [{ column: input.column }],
         query: { filters: [] },
       }),
     });
 
-    return (await response.json()) as EverflowSubRevenueResponse;
+    const payload = (await response.json()) as EverflowSubRevenueResponse;
+    return { ...payload, httpStatus: response.status };
   }
 }
 
