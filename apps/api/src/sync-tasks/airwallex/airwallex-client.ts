@@ -121,6 +121,7 @@ export class AirwallexClient {
   private authorizedHeaders(token: string, credential: AirwallexCredentialPayload): Record<string, string> {
     return {
       Accept: 'application/json',
+      'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       'x-api-version': credential.apiVersion ?? AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
     };

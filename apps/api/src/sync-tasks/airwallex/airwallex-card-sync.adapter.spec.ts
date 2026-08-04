@@ -53,6 +53,7 @@ describe('AirwallexClient', () => {
       method: 'GET',
       headers: expect.objectContaining({
         Authorization: 'Bearer bearer-token',
+        'Content-Type': 'application/json',
         'x-api-version': AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
       }),
     });
