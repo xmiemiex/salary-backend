@@ -20,12 +20,13 @@ import { CakeClient, CakeCredentialPayload, CakeSubAffiliateSummaryRecord } from
 const CAKE_SOURCE = 'cake';
 const SUB_FIELD = 'sub1';
 export const CAKE_MONTHLY_SUB_CALIBRATION_ACTION = 'cake.monthly_sub_revenue.calibration.pass';
+export const CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION = 'cake.monthly_sub_revenue.calibration.read';
 
 type CakeSummaryRow = { subValue: string | null; revenueUsd: Prisma.Decimal };
 type Mapping = { employeeId: string };
 type CakeAdapterPrisma = {
   affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
-  auditLog: { findFirst(args: unknown): Promise<{ id: string; createdAt: Date } | null> };
+  auditLog: { findFirst(args: unknown): Promise<{ id: string; action: string; createdAt: Date } | null> };
   subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
@@ -183,17 +184,18 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       select: { updatedAt: true },
     });
     if (!credential) return false;
-    return Boolean(await this.db().auditLog.findFirst({
+    const calibration = await this.db().auditLog.findFirst({
       where: {
-        action: CAKE_MONTHLY_SUB_CALIBRATION_ACTION,
+        action: { in: [CAKE_MONTHLY_SUB_CALIBRATION_ACTION, CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION] },
         objectType: 'affiliate_accounts',
         objectId: affiliateAccountId,
         result: AuditResult.success,
         createdAt: { gte: credential.updatedAt },
       },
-      select: { id: true, createdAt: true },
+      select: { id: true, action: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-    }));
+    });
+    return calibration?.action === CAKE_MONTHLY_SUB_CALIBRATION_ACTION;
   }
 
   private async recordUnmatched(

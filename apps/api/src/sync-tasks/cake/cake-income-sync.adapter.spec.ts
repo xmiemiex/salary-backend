@@ -44,7 +44,7 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
   beforeEach(() => {
     prisma = {
       affiliateAccountCredential: { findUnique: jest.fn().mockResolvedValue({ updatedAt: new Date('2026-08-03T00:00:00Z') }) },
-      auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', createdAt: new Date('2026-08-03T00:01:00Z') }) },
+      auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', action: 'cake.monthly_sub_revenue.calibration.pass', createdAt: new Date('2026-08-03T00:01:00Z') }) },
       subIdMapping: { findMany: jest.fn().mockResolvedValue([{ employeeId }]) },
       incomeRecord: { upsert: jest.fn().mockResolvedValue({ id: 'income-1' }), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
@@ -88,6 +88,17 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     expect(result.status).toBe('failed');
     expect(client.getSubAffiliateSummary).not.toHaveBeenCalled();
     expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the newest calibration is a read-only mismatch even if an older pass exists', async () => {
+    prisma.auditLog.findFirst.mockResolvedValue({ id: 'audit-2', action: 'cake.monthly_sub_revenue.calibration.read', createdAt: new Date('2026-08-04T00:01:00Z') });
+    const result = await adapter.execute(context());
+    expect(result.status).toBe('failed');
+    expect(client.getSubAffiliateSummary).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: { createdAt: 'desc' },
+      where: expect.objectContaining({ action: { in: expect.arrayContaining(['cake.monthly_sub_revenue.calibration.pass', 'cake.monthly_sub_revenue.calibration.read']) } }),
+    }));
   });
 
   it('uses a stable idempotency key across repeated runs', async () => {

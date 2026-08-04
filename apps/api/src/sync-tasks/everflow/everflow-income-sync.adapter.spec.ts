@@ -44,7 +44,7 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
   beforeEach(() => {
     prisma = {
       affiliateAccountCredential: { findUnique: jest.fn().mockResolvedValue({ updatedAt: new Date('2026-08-03T00:00:00Z') }) },
-      auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', createdAt: new Date('2026-08-03T00:01:00Z') }) },
+      auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', action: 'everflow.monthly_sub_revenue.calibration.pass', createdAt: new Date('2026-08-03T00:01:00Z') }) },
       subIdMapping: { findMany: jest.fn().mockResolvedValue([{ employeeId }]) },
       incomeRecord: { upsert: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
@@ -101,6 +101,14 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     prisma.auditLog.findFirst.mockResolvedValue(null);
     const result = await adapter.execute(context());
     expect(result.status).toBe('failed');
+    expect(client.getAffiliateSubRevenueSummary).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the newest Everflow calibration did not pass', async () => {
+    prisma.auditLog.findFirst.mockResolvedValue({ id: 'audit-2', action: 'everflow.monthly_sub_revenue.calibration.read', createdAt: new Date('2026-08-04T00:01:00Z') });
+    const result = await adapter.execute(context());
+    expect(result.status).toBe('failed');
+    expect(client.getTimezones).not.toHaveBeenCalled();
     expect(client.getAffiliateSubRevenueSummary).not.toHaveBeenCalled();
   });
 

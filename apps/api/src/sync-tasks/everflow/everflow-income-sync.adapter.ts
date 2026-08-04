@@ -25,11 +25,12 @@ import {
 const EVERFLOW_SOURCE = 'everflow';
 const SUB_FIELD = 'sub1';
 export const EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION = 'everflow.monthly_sub_revenue.calibration.pass';
+export const EVERFLOW_MONTHLY_SUB_CALIBRATION_READ_ACTION = 'everflow.monthly_sub_revenue.calibration.read';
 
 type Mapping = { employeeId: string };
 type EverflowAdapterPrisma = {
   affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
-  auditLog: { findFirst(args: unknown): Promise<{ id: string; createdAt: Date } | null> };
+  auditLog: { findFirst(args: unknown): Promise<{ id: string; action: string; createdAt: Date } | null> };
   subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
@@ -208,17 +209,18 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
       select: { updatedAt: true },
     });
     if (!credential) return false;
-    return Boolean(await this.db().auditLog.findFirst({
+    const calibration = await this.db().auditLog.findFirst({
       where: {
-        action: EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION,
+        action: { in: [EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION, EVERFLOW_MONTHLY_SUB_CALIBRATION_READ_ACTION] },
         objectType: 'affiliate_accounts',
         objectId: affiliateAccountId,
         result: AuditResult.success,
         createdAt: { gte: credential.updatedAt },
       },
-      select: { id: true, createdAt: true },
+      select: { id: true, action: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-    }));
+    });
+    return calibration?.action === EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION;
   }
 
   private async recordUnmatched(

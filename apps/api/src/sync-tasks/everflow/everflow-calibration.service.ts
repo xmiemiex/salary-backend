@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { EverflowClient, EverflowCredentialPayload } from './everflow-client';
 import {
   EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION,
+  EVERFLOW_MONTHLY_SUB_CALIBRATION_READ_ACTION,
   getGmt8SettlementMonthWindow,
   normalizeEverflowSummaryRow,
   resolveEverflowGmt8Timezone,
@@ -78,7 +79,7 @@ export class EverflowCalibrationService {
     await this.audit.success({
       actorUserId: actor.userId,
       actorRole: actor.roleCode,
-      action: writeGateEligible ? EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION : 'everflow.monthly_sub_revenue.calibration.read',
+      action: writeGateEligible ? EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION : EVERFLOW_MONTHLY_SUB_CALIBRATION_READ_ACTION,
       objectType: 'affiliate_accounts',
       objectId: account.id,
       afterData: evidence,

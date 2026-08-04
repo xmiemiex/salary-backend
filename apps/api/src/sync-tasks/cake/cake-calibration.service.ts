@@ -7,7 +7,11 @@ import { Actor } from '../../auth/auth.types';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CakeClient, CakeCredentialPayload } from './cake-client';
-import { CAKE_MONTHLY_SUB_CALIBRATION_ACTION, normalizeCakeSummaryRow } from './cake-income-sync.adapter';
+import {
+  CAKE_MONTHLY_SUB_CALIBRATION_ACTION,
+  CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION,
+  normalizeCakeSummaryRow,
+} from './cake-income-sync.adapter';
 
 export type CakeCalibrationInput = { startDate?: string; endDate?: string; settlementMonth?: string };
 
@@ -53,6 +57,7 @@ export class CakeCalibrationService {
     ]);
 
     const rows = summary.rows.map(normalizeCakeSummaryRow);
+    const aggregatedRows = aggregateRows(rows);
     const summaryRevenue = rows.reduce((total, row) => total.plus(row.revenueUsd), new Prisma.Decimal(0));
     const campaignRevenue = sumDecimal(campaignSummary.rows.map((row) => row.revenue));
     const currencyEvidence = resolveCurrencyEvidence(campaignSummary.rows, currencies.rows);
@@ -60,8 +65,10 @@ export class CakeCalibrationService {
     const campaignComplete = campaignSummary.rowCount === null || campaignSummary.rowCount <= campaignSummary.rows.length;
     const totalsEqual = campaignRevenue !== null && campaignRevenue.equals(summaryRevenue);
     const usdConfirmed = currencyEvidence.names.length > 0 && currencyEvidence.names.every((name) => /(^|\b)(USD|US Dollar)(\b|$)/i.test(name));
-    const attribution = summarizeAttribution(rows, mappings);
-    const writeGateEligible = summaryComplete && campaignComplete && totalsEqual && usdConfirmed;
+    const attribution = summarizeAttribution(aggregatedRows, mappings);
+    const duplicateSubValues = duplicateKeys(rows);
+    const acceptanceBaseline = task96AcceptanceBaseline(account.accountCode, range.startDate.slice(0, 7), aggregatedRows);
+    const writeGateEligible = summaryComplete && campaignComplete && totalsEqual && usdConfirmed && acceptanceBaseline.matches !== false;
     const evidence = {
       readOnly: true,
       rawPayloadReturned: false,
@@ -75,6 +82,8 @@ export class CakeCalibrationService {
       requestRange: { startInclusive: `${range.startDate}T00:00:00`, endExclusive: `${range.endExclusiveDate}T00:00:00` },
       httpStatuses: [summary.httpStatus, campaignSummary.httpStatus, currencies.httpStatus],
       returnedCount: rows.length,
+      uniqueSubCount: aggregatedRows.length,
+      duplicateSubValues,
       providerRowCount: summary.rowCount,
       summaryComplete,
       campaignSummaryComplete: campaignComplete,
@@ -85,14 +94,15 @@ export class CakeCalibrationService {
         sameWindowTotalsEqual: totalsEqual,
       },
       currencyEvidence,
-      rows: rows.map((row) => ({ subField: 'sub1', subValue: row.subValue, revenue: row.revenueUsd.toString() })),
+      rows: aggregatedRows.map((row) => ({ subField: 'sub1', subValue: row.subValue, revenue: row.revenueUsd.toString() })),
       attribution,
+      acceptanceBaseline,
     };
 
     await this.audit.success({
       actorUserId: actor.userId,
       actorRole: actor.roleCode,
-      action: writeGateEligible ? CAKE_MONTHLY_SUB_CALIBRATION_ACTION : 'cake.monthly_sub_revenue.calibration.read',
+      action: writeGateEligible ? CAKE_MONTHLY_SUB_CALIBRATION_ACTION : CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION,
       objectType: 'affiliate_accounts',
       objectId: account.id,
       afterData: evidence,
@@ -171,6 +181,60 @@ function summarizeAttribution(
     else unmatchedPositiveCount += 1;
   }
   return { configuredSub1MappingCount: mappings.filter((mapping) => mapping.subField === 'sub1').length, attributedPositiveCount, unmatchedPositiveCount, blankPositiveCount, zeroRevenueCount };
+}
+
+function aggregateRows(rows: Array<{ subValue: string | null; revenueUsd: Prisma.Decimal }>) {
+  const totals = new Map<string, { subValue: string | null; revenueUsd: Prisma.Decimal }>();
+  for (const row of rows) {
+    const key = row.subValue ?? '';
+    const current = totals.get(key);
+    totals.set(key, current ? { ...row, revenueUsd: current.revenueUsd.plus(row.revenueUsd) } : row);
+  }
+  return [...totals.values()];
+}
+
+function duplicateKeys(rows: Array<{ subValue: string | null }>) {
+  const counts = new Map<string, number>();
+  rows.forEach((row) => counts.set(row.subValue ?? '', (counts.get(row.subValue ?? '') ?? 0) + 1));
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([subValue, count]) => ({ subValue: subValue || null, count }));
+}
+
+function task96AcceptanceBaseline(
+  affiliateId: string,
+  month: string,
+  rows: Array<{ subValue: string | null; revenueUsd: Prisma.Decimal }>,
+) {
+  if (affiliateId !== '329' || month !== '2026-07') return { applicable: false, matches: null, differences: [] };
+  const expected = new Map<string, Prisma.Decimal>([
+    ['ZW', new Prisma.Decimal(77710)],
+    ['YDF', new Prisma.Decimal(2600)],
+    ['MSY', new Prisma.Decimal(585)],
+    ['DAN', new Prisma.Decimal(4420)],
+    ['RRR', new Prisma.Decimal(0)],
+    ['PEI', new Prisma.Decimal(0)],
+    ['JKY', new Prisma.Decimal(0)],
+    ['', new Prisma.Decimal(195)],
+  ]);
+  const actual = new Map(rows.map((row) => [row.subValue ?? '', row.revenueUsd]));
+  const keys = [...new Set([...expected.keys(), ...actual.keys()])].sort();
+  const differences = keys.flatMap((key) => {
+    const expectedRevenue = expected.get(key);
+    const actualRevenue = actual.get(key);
+    if (expectedRevenue !== undefined && actualRevenue !== undefined && expectedRevenue.equals(actualRevenue)) return [];
+    return [{
+      subValue: key || null,
+      expectedRevenue: expectedRevenue?.toString() ?? null,
+      actualRevenue: actualRevenue?.toString() ?? null,
+      delta: expectedRevenue !== undefined && actualRevenue !== undefined ? actualRevenue.minus(expectedRevenue).toString() : null,
+    }];
+  });
+  return {
+    applicable: true,
+    source: 'task96_confirmed_2026_07_business_baseline',
+    expectedTotalRevenue: '85510',
+    matches: differences.length === 0,
+    differences,
+  };
 }
 
 function nonBlank(value: unknown): string | null {
