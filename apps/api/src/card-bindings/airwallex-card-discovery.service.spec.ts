@@ -1,4 +1,6 @@
 import { AirwallexCardDiscoveryService } from './airwallex-card-discovery.service';
+import { SyncExecutionErrorCategory } from '@prisma/client';
+import { ProviderRequestError } from '../sync-tasks/provider-request-error';
 
 describe('AirwallexCardDiscoveryService', () => {
   const credentialSecret = 'airwallex-secret-that-must-not-leak';
@@ -82,13 +84,28 @@ describe('AirwallexCardDiscoveryService', () => {
   });
 
   it('keeps cards discoverable but returns no employee suggestion when cardholder access is unavailable', async () => {
-    client.listCardholders.mockRejectedValue(new Error('permission denied'));
+    client.listCardholders.mockRejectedValue(
+      new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'must not leak', 403),
+    );
 
     const result = await service.discover();
 
     expect(result.cardCount).toBe(2);
     expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('Cardholders 只读权限');
     expect(result.cards.every((card) => card.suggestedEmployeeId === null)).toBe(true);
-    expect(JSON.stringify(result)).not.toContain('permission denied');
+    expect(JSON.stringify(result)).not.toContain('must not leak');
+  });
+
+  it('returns a safe actionable error when Airwallex rejects card discovery', async () => {
+    client.listCards.mockRejectedValue(
+      new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'provider payload must not leak', 403),
+    );
+
+    await expect(service.discover()).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining('Cards 只读权限'),
+    });
+    await expect(service.discover()).rejects.not.toThrow('provider payload must not leak');
   });
 });

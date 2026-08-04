@@ -9,6 +9,7 @@ import {
   AirwallexCredentialPayload,
   AirwallexTransactionRecord,
 } from '../sync-tasks/airwallex/airwallex-client';
+import { ProviderRequestError } from '../sync-tasks/provider-request-error';
 
 const PAGE_SIZE = 200;
 const FIRST_CARD_CREATED_AT = new Date('2000-01-01T00:00:00.000Z');
@@ -46,14 +47,19 @@ export class AirwallexCardDiscoveryService {
   async discover() {
     const internalCredential = await this.credentials.getCardProviderCredentialPayload(Provider.airwallex);
     const credential = parseCredential(internalCredential.payload);
-    const cards = await this.loadAllCards(credential);
+    let cards: AirwallexTransactionRecord[];
+    try {
+      cards = await this.loadAllCards(credential);
+    } catch (error) {
+      throw discoveryError(error, 'cards');
+    }
     const warnings: string[] = [];
     let cardholders: AirwallexTransactionRecord[] = [];
 
     try {
       cardholders = await this.loadAllCardholders(credential);
-    } catch {
-      warnings.push('Airwallex 持卡人接口不可用；卡片已返回，但无法显示持卡人姓名和邮箱。');
+    } catch (error) {
+      warnings.push(discoveryWarning(error, 'cardholders'));
     }
 
     const employees = await this.prisma.employee.findMany({
@@ -205,4 +211,34 @@ function firstString(...values: unknown[]): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function discoveryError(error: unknown, resource: 'cards'): AppError {
+  if (!(error instanceof ProviderRequestError)) {
+    return new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex 卡片发现失败；未返回或保存任何卡片数据。');
+  }
+  const message =
+    error.category === 'CREDENTIAL_INVALID'
+      ? 'Airwallex 拒绝了当前凭证或该凭证缺少 Cards 只读权限。'
+      : error.category === 'RATE_LIMITED'
+        ? 'Airwallex Cards 接口触发限流，请稍后重试。'
+        : error.category === 'PROVIDER_5XX'
+          ? 'Airwallex Cards 服务暂时不可用，请稍后重试。'
+          : error.category === 'TIMEOUT' || error.category === 'NETWORK_ERROR'
+            ? '无法连接 Airwallex Cards 服务，请稍后重试。'
+            : 'Airwallex 拒绝了卡片列表请求；请检查 Cards 只读权限和 API 版本兼容性。';
+  return new AppError(ERROR_CODES.VALIDATION_ERROR, message, { resource, category: error.category });
+}
+
+function discoveryWarning(error: unknown, resource: 'cardholders'): string {
+  if (!(error instanceof ProviderRequestError)) {
+    return 'Airwallex 持卡人接口不可用；卡片已返回，但无法显示持卡人姓名和邮箱。';
+  }
+  if (error.category === 'CREDENTIAL_INVALID') {
+    return 'Airwallex 凭证缺少 Cardholders 只读权限；卡片已返回，但无法显示持卡人姓名和邮箱。';
+  }
+  if (error.category === 'RATE_LIMITED') {
+    return 'Airwallex Cardholders 接口触发限流；卡片已返回，但持卡人信息暂不可用。';
+  }
+  return `Airwallex Cardholders 接口不可用（${error.category}）；卡片已返回，但持卡人信息暂不可用。`;
 }
