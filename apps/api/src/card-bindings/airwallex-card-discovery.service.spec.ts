@@ -60,6 +60,10 @@ describe('AirwallexCardDiscoveryService', () => {
     const result = await service.discover();
 
     expect(client.listCards).toHaveBeenCalledWith(expect.objectContaining({ page: 0, pageSize: 200 }));
+    const cardCalls = client.listCards.mock.calls.map(([input]) => input);
+    expect(cardCalls.length).toBeGreaterThan(1);
+    expect(cardCalls.every((input) => input.to.getTime() >= input.from.getTime())).toBe(true);
+    expect(cardCalls.every((input) => input.to.getTime() - input.from.getTime() <= 366 * 24 * 60 * 60 * 1_000)).toBe(true);
     expect(client.listCardholders).toHaveBeenCalledWith(expect.objectContaining({ page: 0, pageSize: 200 }));
     expect(result.cards).toEqual(
       expect.arrayContaining([

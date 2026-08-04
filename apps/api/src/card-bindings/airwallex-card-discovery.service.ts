@@ -12,7 +12,7 @@ import {
 import { ProviderRequestError } from '../sync-tasks/provider-request-error';
 
 const PAGE_SIZE = 200;
-const FIRST_CARD_CREATED_AT = new Date('2000-01-01T00:00:00.000Z');
+const FIRST_CARD_CREATED_AT = new Date('2018-01-01T00:00:00.000Z');
 const MAX_PAGES = 1_000;
 
 type EmployeeReference = {
@@ -81,20 +81,33 @@ export class AirwallexCardDiscoveryService {
   }
 
   private async loadAllCards(credential: AirwallexCredentialPayload) {
-    const records: AirwallexTransactionRecord[] = [];
-    const to = new Date(Date.now() + 24 * 60 * 60 * 1_000);
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-      const response = await this.client.listCards({
-        credential,
-        page,
-        pageSize: PAGE_SIZE,
-        from: FIRST_CARD_CREATED_AT,
-        to,
-      });
-      records.push(...response.cards);
-      if (!response.hasMore || response.cards.length === 0) return records;
+    const recordsById = new Map<string, AirwallexTransactionRecord>();
+    const finalTo = new Date();
+    for (let from = new Date(FIRST_CARD_CREATED_AT); from <= finalTo; from = nextMillisecond(yearWindowEnd(from, finalTo))) {
+      const to = yearWindowEnd(from, finalTo);
+      let windowComplete = false;
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const response = await this.client.listCards({
+          credential,
+          page,
+          pageSize: PAGE_SIZE,
+          from,
+          to,
+        });
+        for (const card of response.cards) {
+          const cardId = firstString(card.card_id, card.id);
+          if (cardId) recordsById.set(cardId, card);
+        }
+        if (!response.hasMore || response.cards.length === 0) {
+          windowComplete = true;
+          break;
+        }
+      }
+      if (!windowComplete) {
+        throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex card pagination exceeded the safety limit.');
+      }
     }
-    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex card pagination exceeded the safety limit.');
+    return [...recordsById.values()];
   }
 
   private async loadAllCardholders(credential: AirwallexCredentialPayload) {
@@ -211,6 +224,15 @@ function firstString(...values: unknown[]): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function yearWindowEnd(from: Date, finalTo: Date): Date {
+  const end = new Date(Date.UTC(from.getUTCFullYear() + 1, from.getUTCMonth(), from.getUTCDate()) - 1);
+  return end < finalTo ? end : finalTo;
+}
+
+function nextMillisecond(value: Date): Date {
+  return new Date(value.getTime() + 1);
 }
 
 function discoveryError(error: unknown, resource: 'cards'): AppError {
