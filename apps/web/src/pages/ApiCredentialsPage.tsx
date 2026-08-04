@@ -27,7 +27,7 @@ type CardProviderCredentialRow = {
 
 type CredentialTarget =
   | { type: 'affiliate'; id: string; title: string; platform: string; accountCode: string; maskedPayload?: unknown }
-  | { type: 'cardProvider'; id: string; title: string };
+  | { type: 'cardProvider'; id: string; title: string; maskedPayload?: unknown };
 
 type PayloadField = {
   key?: string;
@@ -35,6 +35,7 @@ type PayloadField = {
 };
 
 type CredentialFormValues = {
+  clientId?: string;
   apiKey?: string;
   baseUrl?: string;
   conversionsPath?: string;
@@ -157,7 +158,7 @@ export function ApiCredentialsPage() {
           conversionsPath: publicMaskedValue(masked.conversionsPath),
         });
       } else {
-        form.setFieldsValue({ fields: DEFAULT_FIELDS });
+        form.setFieldsValue(nextTarget.id === 'airwallex' ? { clientId: '', apiKey: '', baseUrl: '' } : { fields: DEFAULT_FIELDS });
       }
       setTarget(nextTarget);
     },
@@ -206,7 +207,13 @@ export function ApiCredentialsPage() {
               ? { conversionsPath: values.conversionsPath.trim() }
               : {}),
           }
-        : normalizePayloadFields(values);
+        : target.id === 'airwallex'
+          ? {
+              clientId: values.clientId?.trim() ?? '',
+              apiKey: values.apiKey?.trim() ?? '',
+              ...(values.baseUrl?.trim() ? { baseUrl: values.baseUrl.trim() } : {}),
+            }
+          : normalizePayloadFields(values);
     if (Object.keys(payload).length === 0) {
       messageApi.error('请至少填写一个 payload 字段。');
       return;
@@ -381,7 +388,7 @@ export function ApiCredentialsPage() {
           <Space>
             <Button
               size="small"
-              onClick={() => openCredentialModal({ type: 'cardProvider', id: record.provider, title: record.provider })}
+              onClick={() => openCredentialModal({ type: 'cardProvider', id: record.provider, title: record.provider, maskedPayload: record.maskedPayload })}
             >
               {record.hasCredential ? '更新凭证' : '配置凭证'}
             </Button>
@@ -494,6 +501,37 @@ export function ApiCredentialsPage() {
                   <Input placeholder="Reports/Conversions" />
                 </Form.Item>
               ) : null}
+            </>
+          ) : target?.id === 'airwallex' ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message="Airwallex 管理 API 凭证"
+                description="配置一次后，系统会读取账户下全部卡片和清算交易。API Key 仅加密保存；更新凭证时需重新完整输入 Client ID 和 API Key。"
+                style={{ marginBottom: 16 }}
+              />
+              <Form.Item
+                name="clientId"
+                label="Client ID"
+                rules={[{ required: true, whitespace: true, message: '请填写 Airwallex Client ID' }]}
+              >
+                <Input autoComplete="off" placeholder="Airwallex Client ID" />
+              </Form.Item>
+              <Form.Item
+                name="apiKey"
+                label="API Key"
+                rules={[{ required: true, whitespace: true, message: '请填写 Airwallex API Key' }]}
+              >
+                <Input.Password autoComplete="new-password" placeholder="安全输入 Airwallex API Key" />
+              </Form.Item>
+              <Form.Item
+                name="baseUrl"
+                label="API Base URL（高级，可选）"
+                extra="留空使用 Airwallex 官方生产地址 https://api.airwallex.com。"
+              >
+                <Input autoComplete="url" placeholder="https://api.airwallex.com" />
+              </Form.Item>
             </>
           ) : (
           <Form.List

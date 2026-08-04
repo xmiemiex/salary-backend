@@ -1,6 +1,8 @@
 import { CommonStatus, Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import {
   AIRWALLEX_API_KEY_HEADER,
+  AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
+  AIRWALLEX_DEFAULT_CARDS_PATH,
   AIRWALLEX_CLIENT_ID_HEADER,
   AIRWALLEX_DEFAULT_TRANSACTIONS_PATH,
   AirwallexClient,
@@ -12,7 +14,7 @@ const employeeId = '30000000-0000-0000-0000-000000000001';
 const settlementMonth = new Date(Date.UTC(2026, 5, 1));
 
 describe('AirwallexClient', () => {
-  it('authenticates with Airwallex headers and requests clearing card transactions with official query fields', async () => {
+  it('authenticates with Airwallex headers and requests all transaction events with official query fields', async () => {
     const fetchMock = jest
       .fn()
       .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ token: 'bearer-token' }) })
@@ -41,16 +43,45 @@ describe('AirwallexClient', () => {
     );
     const url = fetchMock.mock.calls[1][0] as URL;
     expect(`${url.origin}${url.pathname}`).toBe(`https://airwallex.example.test${AIRWALLEX_DEFAULT_TRANSACTIONS_PATH}`);
-    expect(url.searchParams.get('from_created_date')).toBe('2026-05-31T16:00:00.000Z');
-    expect(url.searchParams.get('to_created_date')).toBe('2026-06-30T16:00:00.000Z');
-    expect(url.searchParams.get('transaction_type')).toBe('CLEARING');
+    expect(url.searchParams.get('from_created_at')).toBe('2026-05-31T16:00:00.000Z');
+    expect(url.searchParams.get('to_created_at')).toBe('2026-06-30T16:00:00.000Z');
+    expect(url.searchParams.has('transaction_type')).toBe(false);
     expect(url.searchParams.has('status')).toBe(false);
     expect(url.searchParams.get('page_num')).toBe('2');
     expect(url.searchParams.get('page_size')).toBe('200');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({
       method: 'GET',
-      headers: expect.objectContaining({ Authorization: 'Bearer bearer-token' }),
+      headers: expect.objectContaining({
+        Authorization: 'Bearer bearer-token',
+        'x-api-version': AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
+      }),
     });
+  });
+
+  it('discovers all cards using an explicit creation range instead of the Airwallex 30-day default', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ token: 'bearer-token' }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ has_more: false, items: [{ card_id: 'card-1' }] }),
+      });
+    const client = new AirwallexClient(fetchMock as never);
+
+    const result = await client.listCards({
+      credential: { clientId: 'client-id', apiKey: 'api-key', baseUrl: 'https://airwallex.example.test' },
+      page: 0,
+      pageSize: 200,
+      from: new Date('2000-01-01T00:00:00.000Z'),
+      to: new Date('2026-08-05T00:00:00.000Z'),
+    });
+
+    const url = fetchMock.mock.calls[1][0] as URL;
+    expect(`${url.origin}${url.pathname}`).toBe(`https://airwallex.example.test${AIRWALLEX_DEFAULT_CARDS_PATH}`);
+    expect(url.searchParams.get('from_created_at')).toBe('2000-01-01T00:00:00.000Z');
+    expect(url.searchParams.get('to_created_at')).toBe('2026-08-05T00:00:00.000Z');
+    expect(url.searchParams.get('page_num')).toBe('0');
+    expect(result).toEqual({ cards: [{ card_id: 'card-1' }], hasMore: false });
   });
 });
 
@@ -113,6 +144,7 @@ describe('AirwallexCardSyncAdapter', () => {
         },
         from: new Date('2026-05-31T16:00:00.000Z'),
         to: new Date('2026-07-10T16:00:00.000Z'),
+        page: 0,
       }),
     );
     expect(result.resultPayload).toMatchObject({
@@ -164,6 +196,52 @@ describe('AirwallexCardSyncAdapter', () => {
     expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('plain-api-key');
     expect(JSON.stringify(result)).not.toContain('plain-client-id');
+  });
+
+  it('stores clearing spend as a positive cost when Airwallex returns a negative billing amount', async () => {
+    mockTransactions([
+      {
+        transaction_id: 'txn-negative',
+        card_id: 'card-1',
+        status: 'APPROVED',
+        transaction_type: 'CLEARING',
+        transaction_date: '2026-06-15T12:00:00.000Z',
+        billing_amount: '-12.34',
+        billing_currency: 'USD',
+      },
+    ]);
+    prisma.cardBinding.findFirst.mockResolvedValue({ employeeId });
+
+    await adapter.execute(context());
+
+    expect(prisma.cardSpendEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ spendUsd: new Prisma.Decimal('12.34') }),
+      }),
+    );
+  });
+
+  it('stores refunds as negative spend so monthly card cost is not overstated', async () => {
+    mockTransactions([
+      {
+        transaction_id: 'txn-refund',
+        card_id: 'card-1',
+        status: 'APPROVED',
+        transaction_type: 'REFUND',
+        transaction_date: '2026-06-20T12:00:00.000Z',
+        billing_amount: '5.00',
+        billing_currency: 'USD',
+      },
+    ]);
+    prisma.cardBinding.findFirst.mockResolvedValue({ employeeId });
+
+    await adapter.execute(context());
+
+    expect(prisma.cardSpendEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ spendUsd: new Prisma.Decimal('-5') }),
+      }),
+    );
   });
 
   it('writes a June transaction even when its Airwallex created_date is in July within the request delay window', async () => {
@@ -251,7 +329,6 @@ describe('AirwallexCardSyncAdapter', () => {
         transaction_id: 'txn-1',
         card_id: 'card-1',
         status: 'CLEARED',
-        transaction_type: 'AUTHORIZATION',
         transaction_date: '2026-06-15T12:00:00.000Z',
         billing_amount: '12.34',
         billing_currency: 'USD',
@@ -276,7 +353,7 @@ describe('AirwallexCardSyncAdapter', () => {
 
     const result = await adapter.execute(context());
 
-    expect(result.status).toBe('failed');
+    expect(result.status).toBe('completed');
     expect(result.successCount).toBe(0);
     expect(result.failedCount).toBe(0);
     expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();

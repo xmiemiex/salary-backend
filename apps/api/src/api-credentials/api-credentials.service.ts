@@ -164,7 +164,7 @@ export class ApiCredentialsService {
 
   async upsertCardProvider(providerInput: string, input: UpsertApiCredentialInput, actor: Actor) {
     const provider = normalizeCardProvider(providerInput);
-    const payload = validatePayload(input?.payload);
+    const payload = provider === Provider.airwallex ? validateAirwallexCredentialPayload(input?.payload) : validatePayload(input?.payload);
     const maskedPayload = maskPayload(payload);
     const encryptedPayload = this.crypto.encryptJson(payload);
     const before = await this.db().cardProviderCredential.findUnique({ where: { provider } });
@@ -312,6 +312,36 @@ function validateAffiliateCredentialPayload(account: AffiliateAccountRecord, pay
   };
 }
 
+function validateAirwallexCredentialPayload(payloadInput: unknown): Record<string, unknown> {
+  const payload = validatePayload(payloadInput);
+  const clientId = requiredString(payload.clientId ?? payload.client_id, 'clientId');
+  const apiKey = requiredString(payload.apiKey ?? payload.api_key ?? payload.secret, 'apiKey');
+  const baseUrl = optionalString(payload.baseUrl ?? payload.base_url, 'baseUrl');
+  const transactionsPath = optionalApiPath(payload.transactionsPath ?? payload.transactions_path, 'transactionsPath');
+  const cardsPath = optionalApiPath(payload.cardsPath ?? payload.cards_path, 'cardsPath');
+  const cardholdersPath = optionalApiPath(payload.cardholdersPath ?? payload.cardholders_path, 'cardholdersPath');
+  const apiVersion = optionalString(payload.apiVersion ?? payload.api_version, 'apiVersion');
+  if (apiVersion && !/^\d{4}-\d{2}-\d{2}$/.test(apiVersion)) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'apiVersion must use YYYY-MM-DD format.');
+  }
+  const settlementDelayDays = optionalInteger(payload.settlementDelayDays, 'settlementDelayDays', 0, 31);
+  rejectUnexpectedKeys(payload, [
+    'clientId', 'client_id', 'apiKey', 'api_key', 'secret', 'baseUrl', 'base_url',
+    'transactionsPath', 'transactions_path', 'cardsPath', 'cards_path',
+    'cardholdersPath', 'cardholders_path', 'apiVersion', 'api_version', 'settlementDelayDays',
+  ]);
+  return {
+    clientId,
+    apiKey,
+    ...(baseUrl ? { baseUrl: validateHttpsUrl(baseUrl, 'baseUrl') } : {}),
+    ...(transactionsPath ? { transactionsPath } : {}),
+    ...(cardsPath ? { cardsPath } : {}),
+    ...(cardholdersPath ? { cardholdersPath } : {}),
+    ...(apiVersion ? { apiVersion } : {}),
+    ...(settlementDelayDays !== undefined ? { settlementDelayDays } : {}),
+  };
+}
+
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} is required.`);
@@ -325,6 +355,24 @@ function optionalString(value: unknown, field: string): string | undefined {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be a non-blank string when provided.`);
   }
   return value.trim();
+}
+
+function optionalApiPath(value: unknown, field: string): string | undefined {
+  const path = optionalString(value, field);
+  if (!path) return undefined;
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('://')) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be an absolute API path on the configured Airwallex host.`);
+  }
+  return path;
+}
+
+function optionalInteger(value: unknown, field: string, minimum: number, maximum: number): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
 }
 
 function validateHttpsUrl(value: string, field: string): string {

@@ -4,6 +4,9 @@ import { SyncExecutionErrorCategory } from '@prisma/client';
 
 export const AIRWALLEX_DEFAULT_BASE_URL = 'https://api.airwallex.com';
 export const AIRWALLEX_DEFAULT_TRANSACTIONS_PATH = '/api/v1/issuing/transactions';
+export const AIRWALLEX_DEFAULT_CARDS_PATH = '/api/v1/issuing/cards';
+export const AIRWALLEX_DEFAULT_CARDHOLDERS_PATH = '/api/v1/issuing/cardholders';
+export const AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION = '2024-02-22';
 export const AIRWALLEX_FETCH = 'AIRWALLEX_FETCH';
 export const AIRWALLEX_CLIENT_ID_HEADER = 'x-client-id';
 export const AIRWALLEX_API_KEY_HEADER = 'x-api-key';
@@ -13,6 +16,9 @@ export type AirwallexCredentialPayload = {
   apiKey: string;
   baseUrl?: string;
   transactionsPath?: string;
+  cardsPath?: string;
+  cardholdersPath?: string;
+  apiVersion?: string;
   settlementDelayDays?: number;
 };
 
@@ -21,6 +27,16 @@ export type AirwallexTransactionRecord = Record<string, unknown>;
 export type AirwallexTransactionsResponse = {
   transactions: AirwallexTransactionRecord[];
   raw: unknown;
+  hasMore: boolean;
+};
+
+export type AirwallexCardsResponse = {
+  cards: AirwallexTransactionRecord[];
+  hasMore: boolean;
+};
+
+export type AirwallexCardholdersResponse = {
+  cardholders: AirwallexTransactionRecord[];
   hasMore: boolean;
 };
 
@@ -39,24 +55,74 @@ export class AirwallexClient {
   }): Promise<AirwallexTransactionsResponse> {
     const token = await this.login(input.credential);
     const url = new URL(input.credential.transactionsPath ?? AIRWALLEX_DEFAULT_TRANSACTIONS_PATH, normalizeBaseUrl(input.credential.baseUrl));
-    url.searchParams.set('from_created_date', input.from.toISOString());
-    url.searchParams.set('to_created_date', input.to.toISOString());
-    url.searchParams.set('transaction_type', 'CLEARING');
+    url.searchParams.set('from_created_at', input.from.toISOString());
+    url.searchParams.set('to_created_at', input.to.toISOString());
     url.searchParams.set('page_num', String(input.page));
     url.searchParams.set('page_size', String(input.pageSize));
 
     const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
       method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: this.authorizedHeaders(token, input.credential),
     });
     const raw = await response.json();
     return {
       transactions: extractTransactions(raw),
       raw,
       hasMore: hasMore(raw, input.page, input.pageSize),
+    };
+  }
+
+  async listCards(input: {
+    credential: AirwallexCredentialPayload;
+    page: number;
+    pageSize: number;
+    from: Date;
+    to: Date;
+  }): Promise<AirwallexCardsResponse> {
+    const token = await this.login(input.credential);
+    const url = new URL(input.credential.cardsPath ?? AIRWALLEX_DEFAULT_CARDS_PATH, normalizeBaseUrl(input.credential.baseUrl));
+    url.searchParams.set('from_created_at', input.from.toISOString());
+    url.searchParams.set('to_created_at', input.to.toISOString());
+    url.searchParams.set('page_num', String(input.page));
+    url.searchParams.set('page_size', String(input.pageSize));
+
+    const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
+      method: 'GET',
+      headers: this.authorizedHeaders(token, input.credential),
+    });
+    const raw = await response.json();
+    return {
+      cards: extractItems(raw),
+      hasMore: hasMore(raw, input.page, input.pageSize),
+    };
+  }
+
+  async listCardholders(input: {
+    credential: AirwallexCredentialPayload;
+    page: number;
+    pageSize: number;
+  }): Promise<AirwallexCardholdersResponse> {
+    const token = await this.login(input.credential);
+    const url = new URL(input.credential.cardholdersPath ?? AIRWALLEX_DEFAULT_CARDHOLDERS_PATH, normalizeBaseUrl(input.credential.baseUrl));
+    url.searchParams.set('page_num', String(input.page));
+    url.searchParams.set('page_size', String(input.pageSize));
+
+    const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
+      method: 'GET',
+      headers: this.authorizedHeaders(token, input.credential),
+    });
+    const raw = await response.json();
+    return {
+      cardholders: extractItems(raw),
+      hasMore: hasMore(raw, input.page, input.pageSize),
+    };
+  }
+
+  private authorizedHeaders(token: string, credential: AirwallexCredentialPayload): Record<string, string> {
+    return {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'x-api-version': credential.apiVersion ?? AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
     };
   }
 
@@ -104,11 +170,17 @@ function extractTransactions(raw: unknown): AirwallexTransactionRecord[] {
   return [];
 }
 
+function extractItems(raw: unknown): AirwallexTransactionRecord[] {
+  if (!isRecord(raw) || !Array.isArray(raw.items)) return [];
+  return raw.items.filter(isRecord);
+}
+
 function hasMore(raw: unknown, page: number, pageSize: number): boolean {
   if (!isRecord(raw)) return false;
+  if (typeof raw.has_more === 'boolean') return raw.has_more;
   const total = firstNumber(raw.total_count, raw.total, isRecord(raw.page) ? raw.page.total_count : undefined);
   const items = extractTransactions(raw);
-  if (typeof total === 'number') return page * pageSize < total;
+  if (typeof total === 'number') return (page + 1) * pageSize < total;
   return items.length >= pageSize;
 }
 

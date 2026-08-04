@@ -39,6 +39,25 @@ type FieldConfig = {
   create?: boolean;
   edit?: boolean;
   render?: (record: BaseRecord) => string;
+  airwallexCardDiscovery?: boolean;
+};
+
+type AirwallexDiscoveredCard = {
+  cardId: string;
+  last4?: string | null;
+  nickname?: string | null;
+  cardStatus?: string | null;
+  cardholderName?: string | null;
+  cardholderEmail?: string | null;
+  suggestedEmployeeCode?: string | null;
+  suggestedEmployeeName?: string | null;
+  mappingHint: string;
+};
+
+type AirwallexDiscoveryResponse = {
+  cardCount: number;
+  cards: AirwallexDiscoveredCard[];
+  warnings?: string[];
 };
 
 type PageConfig = {
@@ -126,11 +145,19 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
     title: '虚拟卡绑定',
     endpoint: '/card-bindings',
     defaultCreateValues: { status: 'active' },
+    notice: 'Airwallex 凭证会拉取账户下全部卡交易；此处只负责把 Airwallex 返回的卡片/持卡人映射到后台员工。未映射或持卡人不唯一的卡不会自动归属员工。',
     fields: [
       { name: 'provider', label: '卡服务商', type: 'select', options: PROVIDER_OPTIONS, required: true, filter: true },
-      { name: 'cardId', label: '卡 ID', required: true },
-      { name: 'effectiveMonth', label: '生效月份', type: 'month', required: true, filter: true },
-      { name: 'employeeId', label: '员工 ID', required: true, filter: true },
+      {
+        name: 'cardId',
+        label: 'Airwallex 卡片 / 使用人',
+        type: 'select',
+        required: true,
+        airwallexCardDiscovery: true,
+        help: '选择从 Airwallex 只读接口发现的卡片；PhotonPay 暂保留卡 ID 输入。',
+      },
+      { name: 'effectiveMonth', label: '生效月份', type: 'month', required: true, filter: true, help: '用于支持卡片更换使用人；同步该月份花费时采用此映射。' },
+      { name: 'employeeId', label: '后台员工', type: 'select', optionSource: 'employees', required: true, filter: true },
       { name: 'status', label: '状态', type: 'select', options: STATUS_OPTIONS, filter: true },
     ],
   },
@@ -377,14 +404,15 @@ type FieldControlProps = {
   value?: string | number | bigint | readonly string[];
   onChange?: (...args: unknown[]) => void;
   disabled?: boolean;
+  selectedProvider?: unknown;
 };
 
-function FieldControl({ field, onValueChange, onChange, ...formControlProps }: FieldControlProps) {
+function FieldControl({ field, onValueChange, onChange, selectedProvider, ...formControlProps }: FieldControlProps) {
   const handleChange = (...args: unknown[]) => {
     onChange?.(...args);
     onValueChange?.();
   };
-  if (field.type === 'select') {
+  if (field.type === 'select' && (!field.airwallexCardDiscovery || selectedProvider === 'airwallex')) {
     return (
       <Select
         {...formControlProps}
@@ -427,6 +455,22 @@ export function buildEmployeeOptions(employees: BaseRecord[]) {
     value: employee.id,
     label: `${String(employee.employeeCode ?? '')} / ${String(employee.name ?? '')}${employee.status === 'disabled' ? '（已禁用）' : ''}`,
   }));
+}
+
+export function buildAirwallexCardOptions(cards: AirwallexDiscoveredCard[]) {
+  return cards.map((card) => {
+    const holder = [card.cardholderName, card.cardholderEmail].filter(Boolean).join(' / ') || '未返回持卡人';
+    const cardText = [card.last4 ? `****${card.last4}` : null, card.nickname, card.cardStatus].filter(Boolean).join(' / ');
+    const suggestion = card.suggestedEmployeeCode
+      ? `；建议员工 ${card.suggestedEmployeeCode} / ${card.suggestedEmployeeName ?? ''}`
+      : card.mappingHint === 'multiple_cardholders'
+        ? '；多人持卡，必须人工确认'
+        : '；未找到唯一员工邮箱匹配';
+    return {
+      value: card.cardId,
+      label: `${holder} / ${cardText || `卡 ${card.cardId.slice(-8)}`}${suggestion}`,
+    };
+  });
 }
 
 function PerformanceGroupMembersForm() {
@@ -500,7 +544,10 @@ export function BaseDataPage({ path }: { path: string }) {
     affiliateAccounts: [],
     employees: [],
   });
+  const [airwallexCardOptions, setAirwallexCardOptions] = useState<{ label: string; value: string }[]>([]);
+  const [loadingAirwallexCards, setLoadingAirwallexCards] = useState(false);
   const selectedAffiliatePlatform = Form.useWatch('platform', form);
+  const selectedCardProvider = Form.useWatch('provider', form);
   const [messageApi, messageHolder] = message.useMessage();
   const [modalApi, modalHolder] = Modal.useModal();
 
@@ -551,9 +598,28 @@ export function BaseDataPage({ path }: { path: string }) {
   }, [config.fields, messageApi]);
 
   const fieldOptions = useCallback(
-    (field: FieldConfig) => field.optionSource ? referenceOptions[field.optionSource] : field.options ?? [],
-    [referenceOptions],
+    (field: FieldConfig) => field.airwallexCardDiscovery ? airwallexCardOptions : field.optionSource ? referenceOptions[field.optionSource] : field.options ?? [],
+    [airwallexCardOptions, referenceOptions],
   );
+
+  const loadAirwallexCards = useCallback(async () => {
+    setLoadingAirwallexCards(true);
+    try {
+      const response = await apiClient.request<AirwallexDiscoveryResponse>('/card-bindings/airwallex/discovery');
+      setAirwallexCardOptions(buildAirwallexCardOptions(response.cards));
+      response.warnings?.forEach((warning) => messageApi.warning(warning));
+    } catch (error) {
+      setAirwallexCardOptions([]);
+      messageApi.error(`Airwallex 卡片加载失败：${errorMessage(error)}`);
+    } finally {
+      setLoadingAirwallexCards(false);
+    }
+  }, [messageApi]);
+
+  useEffect(() => {
+    if (!open || path !== '/card-bindings' || selectedCardProvider !== 'airwallex') return;
+    void loadAirwallexCards();
+  }, [loadAirwallexCards, open, path, selectedCardProvider]);
 
   useEffect(() => {
     if (!open) return;
@@ -769,7 +835,7 @@ export function BaseDataPage({ path }: { path: string }) {
         confirmLoading={saving}
         okText="提交"
         cancelText="取消"
-        width={config.customForm === 'performanceGroup' ? 760 : 560}
+        width={config.customForm === 'performanceGroup' || path === '/card-bindings' ? 760 : 560}
         onOk={() => void submit()}
         onCancel={() => {
           setOpen(false);
@@ -797,6 +863,8 @@ export function BaseDataPage({ path }: { path: string }) {
               >
                 <FieldControl
                   field={{ ...field, label, options: fieldOptions(field) }}
+                  selectedProvider={selectedCardProvider}
+                  disabled={field.airwallexCardDiscovery && selectedCardProvider === 'airwallex' && loadingAirwallexCards}
                   onValueChange={() => {
                     queueMicrotask(() => {
                       void form.validateFields([field.name]).catch(() => undefined);

@@ -53,7 +53,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
 
     let successCount = 0;
     let failedCount = 0;
-    let page = 1;
+    let page = 0;
 
     try {
       while (true) {
@@ -69,12 +69,12 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
           const record = normalizeAirwallexTransaction(raw);
           if (!isSettled(record)) continue;
           if (!record.transactionAt) {
-            await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex clearing transaction is missing transactionAt.');
+            await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex settled card transaction is missing transactionAt.');
             failedCount += 1;
             continue;
           }
           if (!isInsideSettlementWindow(record.transactionAt, window)) {
-            await this.recordUnmatchedCardSpend(record, context, 'OUTSIDE_SETTLEMENT_WINDOW', 'Airwallex clearing transactionAt is outside the GMT+8 settlement window.');
+            await this.recordUnmatchedCardSpend(record, context, 'OUTSIDE_SETTLEMENT_WINDOW', 'Airwallex settled card transactionAt is outside the GMT+8 settlement window.');
             failedCount += 1;
             continue;
           }
@@ -93,7 +93,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       return { ...this.result('failed', successCount, failedCount, window, errorMessage, context), errorCategory: providerErrorCategory(error) };
     }
 
-    const status = successCount > 0 && failedCount === 0 ? 'completed' : 'failed';
+    const status = failedCount === 0 ? 'completed' : 'failed';
     const message = `Airwallex card spend sync finished: successCount=${successCount}, failedCount=${failedCount}.`;
     return this.result(status, successCount, failedCount, window, message, context);
   }
@@ -134,19 +134,19 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
 
   private async upsertCardSpendEvent(record: NormalizedAirwallexTransaction, context: SyncAdapterContext): Promise<boolean> {
     if (!record.externalEventId) {
-      await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex clearing transaction is missing external event id.');
+      await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex settled card transaction is missing external event id.');
       return false;
     }
     if (!record.cardId) {
-      await this.recordUnmatchedCardSpend(record, context, 'CARD_ID_MISSING', 'Airwallex clearing transaction is missing cardId.');
+      await this.recordUnmatchedCardSpend(record, context, 'CARD_ID_MISSING', 'Airwallex settled card transaction is missing cardId.');
       return false;
     }
     if (!record.transactionAt) {
-      await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex clearing transaction is missing transactionAt.');
+      await this.recordUnmatchedCardSpend(record, context, 'UNKNOWN', 'Airwallex settled card transaction is missing transactionAt.');
       return false;
     }
     if (record.currency !== 'USD') {
-      await this.recordUnmatchedCardSpend(record, context, 'INVALID_CURRENCY', 'Airwallex clearing transaction currency is not USD.');
+      await this.recordUnmatchedCardSpend(record, context, 'INVALID_CURRENCY', 'Airwallex settled card transaction currency is not USD.');
       return false;
     }
 
@@ -261,17 +261,19 @@ export function getAirwallexRequestAndSettlementWindows(settlementMonth: Date, s
 
 export function normalizeAirwallexTransaction(raw: AirwallexTransactionRecord): NormalizedAirwallexTransaction {
   const amount = firstValue(raw.billing_amount, raw.transaction_amount, raw.amount, raw.settlement_amount);
+  const transactionType = firstNonBlank(raw.transaction_type, raw.transactionType);
+  const unsignedAmount = new Prisma.Decimal(typeof amount === 'number' || typeof amount === 'string' ? amount : 0).abs();
   return {
     externalEventId: firstNonBlank(raw.id, raw.transaction_id, raw.transactionId),
     cardId: firstNonBlank(raw.card_id, raw.cardId, recordField(raw.card, 'id'), recordField(raw.card, 'card_id')),
     cardLast4: firstNonBlank(raw.cardLast4, raw.card_last4, raw.last4, recordField(raw.card, 'last4'), recordField(raw.card, 'cardLast4'), recordField(raw.card, 'card_last4')),
     cardEmail: firstNonBlank(raw.cardEmail, raw.card_email, raw.email, recordField(raw.card, 'email'), recordField(raw.card, 'cardEmail'), recordField(raw.card, 'card_email')),
     transactionAt: parseDate(firstValue(raw.transaction_date, raw.transactionDate, raw.transaction_at, raw.transactionAt)),
-    amount: new Prisma.Decimal(typeof amount === 'number' || typeof amount === 'string' ? amount : 0),
+    amount: normalizeCode(transactionType) === 'REFUND' ? unsignedAmount.negated() : unsignedAmount,
     currency: firstNonBlank(raw.billing_currency, raw.transaction_currency, raw.currency, raw.settlement_currency)?.toUpperCase() ?? null,
     settledAt: parseDate(firstValue(raw.settled_at, raw.settledAt, raw.posted_date, raw.postedDate)),
     sourceStatus: firstNonBlank(raw.status, raw.transaction_status, raw.transactionStatus),
-    transactionType: firstNonBlank(raw.transaction_type, raw.transactionType),
+    transactionType,
     sourceUpdatedAt: parseDate(firstValue(raw.updated_at, raw.updatedAt)),
     rawData: raw,
   };
@@ -286,22 +288,26 @@ function parseCredentialPayload(payload: unknown): AirwallexCredentialPayload {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex credential payload is required.');
   }
   const record = payload as Record<string, unknown>;
-  const clientId = asNonBlankString(record.clientId);
-  const apiKey = asNonBlankString(record.apiKey);
+  const clientId = asNonBlankString(record.clientId) ?? asNonBlankString(record.client_id);
+  const apiKey = asNonBlankString(record.apiKey) ?? asNonBlankString(record.api_key) ?? asNonBlankString(record.secret);
   if (!clientId) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex credential clientId is required.');
   if (!apiKey) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'Airwallex credential apiKey is required.');
 
   return {
     clientId,
     apiKey,
-    baseUrl: asNonBlankString(record.baseUrl) ?? undefined,
-    transactionsPath: asNonBlankString(record.transactionsPath) ?? undefined,
+    baseUrl: asNonBlankString(record.baseUrl) ?? asNonBlankString(record.base_url) ?? undefined,
+    transactionsPath: asNonBlankString(record.transactionsPath) ?? asNonBlankString(record.transactions_path) ?? undefined,
+    cardsPath: asNonBlankString(record.cardsPath) ?? asNonBlankString(record.cards_path) ?? undefined,
+    cardholdersPath: asNonBlankString(record.cardholdersPath) ?? asNonBlankString(record.cardholders_path) ?? undefined,
+    apiVersion: asNonBlankString(record.apiVersion) ?? asNonBlankString(record.api_version) ?? undefined,
     settlementDelayDays: parseSettlementDelayDays(record.settlementDelayDays),
   };
 }
 
 function isSettled(record: NormalizedAirwallexTransaction): boolean {
-  return normalizeCode(record.transactionType) === 'CLEARING' || normalizeCode(record.sourceStatus) === 'CLEARED';
+  const transactionType = normalizeCode(record.transactionType);
+  return transactionType === 'CLEARING' || transactionType === 'REFUND' || (!transactionType && normalizeCode(record.sourceStatus) === 'CLEARED');
 }
 
 function isInsideSettlementWindow(date: Date | null, window: ReturnType<typeof getAirwallexGmt8SettlementMonthWindow>): boolean {

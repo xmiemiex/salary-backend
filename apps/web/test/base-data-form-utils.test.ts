@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   buildAffiliateAccountOptions,
+  buildAirwallexCardOptions,
   buildEmployeeOptions,
   normalizePayload,
 } from '../src/pages/BaseDataPages';
@@ -12,6 +13,24 @@ assert.deepEqual(
   ]),
   [{ value: 'cake-account', label: 'CAKE / Blitzads / 329' }],
 );
+
+const [airwallexCardOption] = buildAirwallexCardOptions([
+  {
+    cardId: 'airwallex-card-1234',
+    last4: '1234',
+    nickname: 'Meta Ads',
+    cardStatus: 'ACTIVE',
+    cardholderName: 'ZW',
+    cardholderEmail: 'zw@example.test',
+    suggestedEmployeeCode: '01',
+    suggestedEmployeeName: 'ZW',
+    mappingHint: 'unique_email_match',
+  },
+]);
+assert.equal(airwallexCardOption.value, 'airwallex-card-1234');
+assert.match(airwallexCardOption.label, /ZW \/ zw@example\.test/);
+assert.match(airwallexCardOption.label, /\*\*\*\*1234 \/ Meta Ads \/ ACTIVE/);
+assert.match(airwallexCardOption.label, /01 \/ ZW/);
 
 assert.deepEqual(
   buildEmployeeOptions([
@@ -32,6 +51,7 @@ assert.deepEqual(normalizePayload({ email: 'new@example.test' }, emailField, tru
 const page = readFileSync(new URL('../src/pages/BaseDataPages.tsx', import.meta.url), 'utf8');
 assert.match(page, /name: 'affiliateAccountId'.+type: 'select'.+optionSource: 'affiliateAccounts'/);
 assert.match(page, /name: 'employeeId'.+type: 'select'.+optionSource: 'employees'/);
+assert.match(page, /name: 'cardId',[\s\S]+airwallexCardDiscovery: true/);
 assert.match(page, /\['sub1', 'sub2', 'sub3', 'sub4', 'sub5'\]/);
 
 console.log('base data form utility tests passed');
