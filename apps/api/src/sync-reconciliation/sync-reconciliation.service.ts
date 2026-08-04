@@ -135,13 +135,15 @@ export class SyncReconciliationService {
       '平台',
       '联盟账号名称',
       'Affiliate ID/账号编码',
+      '结算月份',
       'external conversion ID',
       'sales/conversion time GMT+8',
       'SUB字段',
       'SUB值',
-      'payout USD',
+      'Revenue USD',
       'disposition/status',
       '匹配员工',
+      '匹配状态',
       '最近同步时间',
     ];
     const rows = records.map((record) => {
@@ -160,6 +162,7 @@ export class SyncReconciliationService {
         normalizeAffiliatePlatform(record.affiliateAccount?.platform ?? record.source),
         record.affiliateAccount?.accountName ?? '',
         record.affiliateAccount?.accountCode ?? '',
+        formatDate(record.settlementMonth).slice(0, 7),
         record.externalRecordId ?? '',
         occurredAt ? formatGmt8DateTime(occurredAt) : '',
         record.subField ?? '',
@@ -167,6 +170,7 @@ export class SyncReconciliationService {
         decimalToString(record.incomeUsd),
         safeRawString(record.rawData, ['disposition', 'status', 'conversion_status', 'conversionStatus']) ?? '',
         record.employee ? `${record.employee.name} (${record.employee.id})` : '',
+        record.employee ? 'matched' : 'unmatched',
         formatGmt8DateTime(syncedAt),
       ];
     });

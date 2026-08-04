@@ -333,13 +333,19 @@ describe('SyncReconciliationService', () => {
 
     expect(result.filename).toBe('affiliate-payout-2026-06.csv');
     expect(result.exportedCount).toBe(1);
+    expect(result.csv).toContain('结算月份');
+    expect(result.csv).toContain('Revenue USD');
+    expect(result.csv).toContain('匹配状态');
     expect(result.csv).toContain('sales/conversion time GMT+8');
     expect(result.csv).toContain('2026-06-01 00:00:00 +08:00');
-    expect(result.csv).toContain('"cake","Blitzads","329","cake-cv-1"');
+    expect(result.csv).toContain('"cake","Blitzads","329","2026-06","cake-cv-1"');
     expect(result.csv).toContain('"sub1","alice-sub","12.34","Approved","Alice');
+    expect(result.csv).toContain('matched');
     expect(result.csv).not.toContain('must-not-export');
     expect(result.csv).not.toContain('apiKey');
     expect(result.csv).not.toContain('rawPayload');
+    expect(result.csv).not.toContain('Authorization');
+    expect(result.csv).not.toContain('127.0.0.1');
   });
 });
 
