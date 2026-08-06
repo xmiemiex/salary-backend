@@ -86,8 +86,10 @@ wait_for_health() {
 
 rollback_on_error() {
   local exit_code=$?
+  local failure_line="${BASH_LINENO[0]:-unknown}"
   trap - ERR
   cleanup_private_files
+  echo "TASK96_FAILURE_LINE=${failure_line}" >&2
   if [[ "$completed" -eq 0 && ( "$services_changed" -eq 1 || "$operational_files_changed" -eq 1 ) ]]; then
     echo "TASK96_AUTOMATIC_ROLLBACK=triggered exit=$exit_code" >&2
     if [[ -n "$old_tag" ]]; then write_release_tag "$old_tag" || true; fi
@@ -110,6 +112,7 @@ TASK96_RELEASE_TAG=${release_tag}
 TASK96_COMMIT=${commit}
 TASK96_AUTOMATIC_ROLLBACK=triggered
 TASK96_FAILURE_EXIT=${exit_code}
+TASK96_FAILURE_LINE=${failure_line}
 EOF
   else
     echo "TASK96_AUTOMATIC_ROLLBACK=not_required exit=$exit_code" >&2
@@ -119,6 +122,7 @@ TASK96_RELEASE_TAG=${release_tag}
 TASK96_COMMIT=${commit}
 TASK96_AUTOMATIC_ROLLBACK=not_required
 TASK96_FAILURE_EXIT=${exit_code}
+TASK96_FAILURE_LINE=${failure_line}
 EOF
   fi
   chown salaryops:salaryops "$result_file"
@@ -134,7 +138,17 @@ if tar -tzf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   echo 'TASK96_ARCHIVE_PATH_SAFETY=fail' >&2
   exit 1
 fi
-[[ ! -e "$release_dir" ]]
+
+old_tag="$(read_release_tag)"
+old_release_dir="$(release_dir_for_tag "$old_tag")"
+[[ -d "$old_release_dir" ]]
+if [[ -e "$release_dir" ]]; then
+  [[ "$old_tag" != "$release_tag" ]]
+  stale_release_dir="${rollback_dir}/stale-${release_tag}"
+  [[ ! -e "$stale_release_dir" ]]
+  mv -T -- "$release_dir" "$stale_release_dir"
+  echo "TASK96_STALE_RELEASE_MOVED=${stale_release_dir}"
+fi
 install -d -o root -g salaryapp -m 0750 "$release_dir"
 tar -xzf "$archive" -C "$release_dir"
 find "$release_dir" -xdev -type f \( -name '.env' -o -name '*.csv' -o -name '*.log' \) -print -quit | grep -q . && {
@@ -145,9 +159,6 @@ printf '%s\n' "$commit" >"$release_dir/TASK96_COMMIT"
 chown root:salaryapp "$release_dir/TASK96_COMMIT"
 chmod 0640 "$release_dir/TASK96_COMMIT"
 
-old_tag="$(read_release_tag)"
-old_release_dir="$(release_dir_for_tag "$old_tag")"
-[[ -d "$old_release_dir" ]]
 cmp -s "$old_release_dir/prisma/schema.prisma" "$release_dir/prisma/schema.prisma"
 diff -qr "$old_release_dir/prisma/migrations" "$release_dir/prisma/migrations" >"$evidence_dir/migration-diff.log"
 echo 'TASK96_SCHEMA_AND_MIGRATIONS=unchanged'
