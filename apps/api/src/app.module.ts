@@ -31,6 +31,7 @@ import { SystemHealthModule } from './system-health/system-health.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { BackupRecoveryModule } from './backup-recovery/backup-recovery.module';
 import { ReleaseGateModule } from './release-gate/release-gate.module';
+import { CakeIncomeAdjustmentsModule } from './cake-income-adjustments/cake-income-adjustments.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { ReleaseGateModule } from './release-gate/release-gate.module';
     SystemHealthModule,
     AlertsModule,
     ReleaseGateModule,
+    CakeIncomeAdjustmentsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AppExceptionFilter },

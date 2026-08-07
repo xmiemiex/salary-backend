@@ -38,6 +38,7 @@ export type SettlementPreflightAuditSnapshot = {
     missingExchangeRate: boolean;
     draftManualRecordCount: number;
     runningOrPendingSyncTaskCount: number;
+    staleCakeAdjustmentCount: number;
     isLocked: boolean;
   };
   acknowledgedWarningCodes: string[];

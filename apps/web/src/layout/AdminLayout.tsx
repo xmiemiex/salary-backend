@@ -1,7 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd';
 import type { Actor } from '../types/session';
-import { hasAnyPermission } from '../lib/permissions';
-import { ADMIN_MENU, type AdminMenuItem } from '../navigation/menu';
+import { ADMIN_MENU, isAdminMenuItemVisible, type AdminMenuItem } from '../navigation/menu';
 import { ApiCredentialsPage } from '../pages/ApiCredentialsPage';
 import { BaseDataPage, hasBaseDataPage } from '../pages/BaseDataPages';
 import { DataSyncPage } from '../pages/DataSyncPage';
@@ -18,6 +17,7 @@ import { SystemHealthPage } from '../pages/SystemHealthPage';
 import { AlertsPage } from '../pages/AlertsPage';
 import { BackupRecoveryPage } from '../pages/BackupRecoveryPage';
 import { ReleaseGatePage } from '../pages/ReleaseGatePage';
+import { CakeIncomeAdjustmentsPage } from '../pages/CakeIncomeAdjustmentsPage';
 import { NotificationBell } from './NotificationBell';
 
 type AdminLayoutProps = {
@@ -29,7 +29,7 @@ type AdminLayoutProps = {
 };
 
 export function getVisibleMenu(actor: Actor): AdminMenuItem[] {
-  return ADMIN_MENU.filter((item) => !item.permissions || hasAnyPermission(actor, item.permissions));
+  return ADMIN_MENU.filter((item) => isAdminMenuItemVisible(item, actor));
 }
 
 export function AdminLayout({ actor, currentPath, onNavigate, onLogout, onCurrentSessionInvalidated }: AdminLayoutProps) {
@@ -94,6 +94,8 @@ export function AdminLayout({ actor, currentPath, onNavigate, onLogout, onCurren
               <ApiCredentialsPage />
             ) : currentItem.path === '/data-sync' ? (
               <DataSyncPage />
+            ) : currentItem.path === '/cake-income-adjustments' ? (
+              <CakeIncomeAdjustmentsPage />
             ) : currentItem.path === '/sync-reconciliation' ? (
               <SyncReconciliationPage />
             ) : currentItem.path === '/sync-unmatched-events' ? (

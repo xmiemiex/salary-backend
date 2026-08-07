@@ -250,6 +250,7 @@ describe('SettlementGenerationService', () => {
         missingExchangeRate: false,
         draftManualRecordCount: 0,
         runningOrPendingSyncTaskCount: 0,
+        staleCakeAdjustmentCount: 0,
         isLocked: false,
       },
     };

@@ -8,6 +8,10 @@ import {
   SyncUnmatchedEventStatus,
 } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
+import {
+  CAKE_ADJUSTMENT_SOURCE,
+  isStaleCakeAdjustment,
+} from '../cake-income-adjustments/cake-income-adjustment.utils';
 import { AppError } from '../common/app-error';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -37,6 +41,7 @@ export type SettlementPreflightResult = {
     missingExchangeRate: boolean;
     draftManualRecordCount: number;
     runningOrPendingSyncTaskCount: number;
+    staleCakeAdjustmentCount: number;
     isLocked: boolean;
   };
 };
@@ -114,6 +119,7 @@ export class SettlementPreflightService {
       unmatchedBySourceAndReason,
       manualDraftCounts,
       syncTaskCounts,
+      cakeAdjustmentRows,
     ] = await Promise.all([
       this.prisma.monthlySettlement.findUnique({
         where: { settlementMonth },
@@ -161,6 +167,14 @@ export class SettlementPreflightService {
         _count: { _all: true },
         orderBy: { status: 'asc' },
       }),
+      this.prisma.incomeRecord.findMany({
+        where: {
+          settlementMonth,
+          source: CAKE_ADJUSTMENT_SOURCE,
+          status: { not: CommonStatus.disabled },
+        },
+        select: { id: true, rawData: true },
+      }),
     ]);
 
     const isLocked = settlement?.status === SettlementStatus.locked;
@@ -173,6 +187,7 @@ export class SettlementPreflightService {
     const runningOrPendingSyncTaskCount =
       countByStatus(syncTaskCounts, SyncTaskStatus.pending) + countByStatus(syncTaskCounts, SyncTaskStatus.running);
     const failedSyncTaskCount = countByStatus(syncTaskCounts, SyncTaskStatus.failed);
+    const staleCakeAdjustmentCount = cakeAdjustmentRows.filter((row) => isStaleCakeAdjustment(row.rawData)).length;
 
     const checks: SettlementPreflightCheck[] = [
       this.buildLockedCheck(isLocked),
@@ -181,6 +196,7 @@ export class SettlementPreflightService {
       this.buildProviderFeeRateCheck(missingProviderFeeRates),
       this.buildManualDraftCheck(draftManualRecordCount, manualDraftCounts),
       this.buildSyncTaskCheck(runningOrPendingSyncTaskCount, failedSyncTaskCount),
+      this.buildStaleCakeAdjustmentCheck(staleCakeAdjustmentCount),
     ];
 
     const severity = maxSeverity(checks.map((check) => check.severity));
@@ -196,6 +212,7 @@ export class SettlementPreflightService {
         missingExchangeRate,
         draftManualRecordCount,
         runningOrPendingSyncTaskCount,
+        staleCakeAdjustmentCount,
         isLocked,
       },
     };
@@ -376,6 +393,24 @@ export class SettlementPreflightService {
       message: 'Pending, running, or failed sync tasks may mean source data still needs review.',
       count,
       details: { runningOrPendingCount, failedCount },
+    };
+  }
+
+  private buildStaleCakeAdjustmentCheck(count: number): SettlementPreflightCheck {
+    if (count === 0) {
+      return {
+        code: 'STALE_CAKE_INCOME_ADJUSTMENTS',
+        severity: 'ok',
+        message: 'No CAKE monthly SUB revenue adjustments require reconfirmation.',
+        count,
+      };
+    }
+
+    return {
+      code: 'STALE_CAKE_INCOME_ADJUSTMENTS',
+      severity: 'blocking',
+      message: 'CAKE API base revenue changed; stale monthly SUB adjustments must be reconfirmed or disabled before settlement generation.',
+      count,
     };
   }
 }

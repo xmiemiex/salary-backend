@@ -3,7 +3,17 @@ export type AdminMenuItem = {
   title: string;
   path: string;
   permissions?: string[];
+  roles?: string[];
 };
+
+export function isAdminMenuItemVisible(
+  item: AdminMenuItem,
+  actor: { roleCode: string; permissions: string[] },
+) {
+  const roleAllowed = !item.roles || item.roles.includes(actor.roleCode);
+  const permissionAllowed = !item.permissions || item.permissions.some((permission) => actor.permissions.includes(permission));
+  return roleAllowed && permissionAllowed;
+}
 
 export const ADMIN_MENU: AdminMenuItem[] = [
   { key: 'dashboard', title: '运营总览', path: '/dashboard' },
@@ -28,6 +38,13 @@ export const ADMIN_MENU: AdminMenuItem[] = [
     permissions: ['card_provider_fee_rate.manage'],
   },
   { key: 'manual-income-records', title: '手动收入', path: '/manual-income-records', permissions: ['income.import'] },
+  {
+    key: 'cake-income-adjustments',
+    title: 'CAKE SUB 收入调整',
+    path: '/cake-income-adjustments',
+    permissions: ['income.import'],
+    roles: ['super_admin'],
+  },
   {
     key: 'data-sync',
     title: '数据同步',

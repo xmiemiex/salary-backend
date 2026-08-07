@@ -14,6 +14,8 @@ import { optionalNonBlank, requireNonBlank } from '../base-data/base-data.utils'
 import { AppError } from '../common/app-error';
 import { PrismaService } from '../prisma/prisma.service';
 
+type UnmatchedPrismaClient = PrismaService | Prisma.TransactionClient;
+
 const AFFILIATE_PLATFORMS = [SyncTaskPlatform.everflow, SyncTaskPlatform.cake] as const;
 const CARD_PROVIDERS = [Provider.airwallex, Provider.photonpay] as const;
 const SOURCE_TYPES = [SyncTaskSourceType.affiliate_income, SyncTaskSourceType.card_spend] as const;
@@ -183,10 +185,13 @@ export class SyncUnmatchedEventsService {
     };
   }
 
-  async recordUnmatchedEvent(input: RecordUnmatchedEventInput) {
+  async recordUnmatchedEvent(
+    input: RecordUnmatchedEventInput,
+    prisma: UnmatchedPrismaClient = this.prisma,
+  ) {
     const data = validateRecordInput(input);
     if (data.thirdPartyEventId) {
-      const existing = await this.prisma.syncUnmatchedEvent.findUnique({
+      const existing = await prisma.syncUnmatchedEvent.findUnique({
         where: {
           sourceType_taskType_thirdPartyEventId: {
             sourceType: data.sourceType,
@@ -198,7 +203,7 @@ export class SyncUnmatchedEventsService {
       });
       if (existing) {
         if (existing.status !== SyncUnmatchedEventStatus.open) return toDto(existing);
-        const updated = await this.prisma.syncUnmatchedEvent.update({
+        const updated = await prisma.syncUnmatchedEvent.update({
           where: { id: existing.id },
           data,
           include: includeRelations(),
@@ -207,7 +212,7 @@ export class SyncUnmatchedEventsService {
       }
     }
 
-    const created = await this.prisma.syncUnmatchedEvent.create({ data, include: includeRelations() });
+    const created = await prisma.syncUnmatchedEvent.create({ data, include: includeRelations() });
     return toDto(created);
   }
 

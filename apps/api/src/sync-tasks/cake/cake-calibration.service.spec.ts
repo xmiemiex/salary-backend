@@ -49,20 +49,21 @@ describe('CakeCalibrationService', () => {
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'cake.monthly_sub_revenue.calibration.read' }));
   });
 
-  it('keeps the July 2026 affiliate 329 write gate closed and returns a sanitized diff when the confirmed baseline differs', async () => {
+  it('opens the default-timezone write gate when API reports agree while preserving the CST comparison as evidence', async () => {
     client.getSubAffiliateSummary.mockResolvedValue({
-      rows: [{ sub_id: 'ZW', revenue: '77385' }, { sub_id: 'YDF', revenue: '3055' }, { sub_id: 'DAN', revenue: '4485' }, { sub_id: '', revenue: '195' }],
-      rowCount: 4,
+      rows: [{ sub_id: 'ZW', revenue: '77385' }, { sub_id: 'YDF', revenue: '3055' }, { sub_id: 'MSY', revenue: '585' }, { sub_id: 'DAN', revenue: '4485' }, { sub_id: '', revenue: '195' }],
+      rowCount: 5,
       httpStatus: 200,
     });
-    client.getCampaignSummary.mockResolvedValue({ rows: [{ revenue: '81120', currency_id: 1, currency_symbol: '$' }], rowCount: 1, httpStatus: 200 });
+    client.getCampaignSummary.mockResolvedValue({ rows: [{ revenue: '85705', currency_id: 1, currency_symbol: '$' }], rowCount: 1, httpStatus: 200 });
     const result = await service.run('account-1', { settlementMonth: '2026-07' }, actor);
-    expect(result.writeGateEligible).toBe(false);
+    expect(result.writeGateEligible).toBe(true);
     expect(result.acceptanceBaseline).toMatchObject({ applicable: true, matches: false });
     expect(result.acceptanceBaseline.differences).toEqual(expect.arrayContaining([
       expect.objectContaining({ subValue: 'ZW', expectedRevenue: '77710', actualRevenue: '77385', delta: '-325' }),
       expect.objectContaining({ subValue: 'YDF', expectedRevenue: '2600', actualRevenue: '3055', delta: '455' }),
     ]));
-    expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'cake.monthly_sub_revenue.calibration.read' }));
+    expect(result.timezone).toMatchObject({ providerTimezone: 'cake_system_default', verifiedAsChinaStandardTime: false, manualCstAdjustmentRequired: true });
+    expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: CAKE_MONTHLY_SUB_CALIBRATION_ACTION }));
   });
 });

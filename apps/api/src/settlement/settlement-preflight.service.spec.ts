@@ -34,6 +34,7 @@ describe('SettlementPreflightService', () => {
         historicalNegativeProfit?: number;
       };
       syncTaskCounts?: unknown[];
+      cakeAdjustmentRows?: unknown[];
     } = {},
   ) {
     const manualDraftCounts = overrides.manualDraftCounts ?? {};
@@ -59,6 +60,7 @@ describe('SettlementPreflightService', () => {
       },
       incomeRecord: {
         count: jest.fn().mockResolvedValue(manualDraftCounts.manualIncome ?? 0),
+        findMany: jest.fn().mockResolvedValue(overrides.cakeAdjustmentRows ?? []),
       },
       manualCardSpendEntry: {
         count: jest.fn().mockResolvedValue(manualDraftCounts.manualCardSpend ?? 0),
@@ -102,6 +104,7 @@ describe('SettlementPreflightService', () => {
           missingExchangeRate: false,
           draftManualRecordCount: 0,
           runningOrPendingSyncTaskCount: 0,
+          staleCakeAdjustmentCount: 0,
           isLocked: false,
         },
       }),
@@ -260,6 +263,20 @@ describe('SettlementPreflightService', () => {
     );
   });
 
+  it('blocks settlement while a CAKE adjustment is stale', async () => {
+    const { service } = createHarness({
+      cakeAdjustmentRows: [{ id: 'adjustment-1', rawData: {
+        kind: 'cake_sub_revenue_adjustment', basis: 'manual_china_standard_time',
+        providerTimezone: 'cake_system_default', settlementTimezone: 'Asia/Shanghai',
+        baseRevenueUsd: '77385', targetRevenueUsd: '77710', adjustmentUsd: '325', reason: 'Portal核对', stale: true,
+      } }],
+    });
+    const result = await service.check(settlementMonth);
+    expect(result.canGenerate).toBe(false);
+    expect(result.summary.staleCakeAdjustmentCount).toBe(1);
+    expect(checkByCode(result, 'STALE_CAKE_INCOME_ADJUSTMENTS')).toEqual(expect.objectContaining({ severity: 'blocking', count: 1 }));
+  });
+
   it('returns highest severity and blocks generation when warnings and blocking checks both exist', async () => {
     const { service } = createHarness({
       exchangeRate: null,
@@ -300,6 +317,7 @@ describe('SettlementPreflightService', () => {
         missingExchangeRate: true,
         draftManualRecordCount: 0,
         runningOrPendingSyncTaskCount: 0,
+        staleCakeAdjustmentCount: 0,
         isLocked: false,
       },
     });

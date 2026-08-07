@@ -10,6 +10,12 @@ import {
   SyncTaskType,
 } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
+import { AuditService } from '../../audit/audit.service';
+import {
+  CAKE_ADJUSTMENT_SOURCE,
+  cakeAdjustmentExternalRecordId,
+  readCakeAdjustmentMetadata,
+} from '../../cake-income-adjustments/cake-income-adjustment.utils';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
@@ -19,7 +25,7 @@ import { CakeClient, CakeCredentialPayload, CakeSubAffiliateSummaryRecord } from
 
 const CAKE_SOURCE = 'cake';
 const SUB_FIELD = 'sub1';
-export const CAKE_MONTHLY_SUB_CALIBRATION_ACTION = 'cake.monthly_sub_revenue.calibration.pass';
+export const CAKE_MONTHLY_SUB_CALIBRATION_ACTION = 'cake.monthly_sub_revenue.default_timezone.calibration.pass';
 export const CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION = 'cake.monthly_sub_revenue.calibration.read';
 
 type CakeSummaryRow = { subValue: string | null; revenueUsd: Prisma.Decimal };
@@ -31,6 +37,13 @@ type CakeAdapterPrisma = {
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
     deleteMany(args: unknown): Promise<{ count: number }>;
+    findUnique(args: unknown): Promise<{
+      id: string;
+      status: CommonStatus;
+      incomeUsd: Prisma.Decimal;
+      rawData: Prisma.JsonValue;
+    } | null>;
+    update(args: unknown): Promise<unknown>;
   };
 };
 
@@ -42,13 +55,14 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     private readonly prisma: PrismaService,
     private readonly client: CakeClient,
     private readonly unmatchedEvents: SyncUnmatchedEventsService,
+    private readonly audit: AuditService,
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
     this.assertContext(context);
     const credential = parseCredentialPayload(context.credential.payload);
     const affiliateId = context.affiliateAccountCode as string;
-    const window = getCakeGmt8SettlementMonthWindow(context.settlementMonth);
+    const window = getCakeProviderDefaultSettlementMonthWindow(context.settlementMonth);
 
     if (!(await this.hasCurrentCalibration(context.affiliateAccountId as string))) {
       const message = 'CAKE monthly SubAffiliate revenue sync is blocked until current credentials pass read-only calibration.';
@@ -87,45 +101,50 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       let unmatchedCount = 0;
       let zeroRevenueCount = 0;
 
-      for (const row of rows) {
-        const externalRecordId = monthlyExternalRecordId(context, row.subValue);
-        if (row.revenueUsd.isZero()) {
-          zeroRevenueCount += 1;
-          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
-          continue;
-        }
-        positiveRevenueCount += 1;
-        if (!row.subValue) {
-          unmatchedCount += 1;
-          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
-          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'CAKE SubAffiliateSummary revenue row has no SUB1 value.');
-          continue;
-        }
-        const mappings = await this.db().subIdMapping.findMany({
-          where: {
-            affiliateAccountId: context.affiliateAccountId,
-            subField: SUB_FIELD,
-            subValue: row.subValue,
-            effectiveMonth: context.settlementMonth,
-            status: CommonStatus.active,
-          },
-          select: { employeeId: true },
-        });
-        const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
-        if (employeeIds.length === 0) {
-          unmatchedCount += 1;
-          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
-          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_NOT_MAPPED', 'CAKE SUB1 is not mapped to an employee.');
-          continue;
-        }
-        if (employeeIds.length !== 1) {
-          unmatchedCount += 1;
-          await this.db().incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
-          await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'CAKE SUB1 maps to multiple employees.');
-          continue;
-        }
+      await this.prisma.$transaction(async (transaction) => {
+        const db = transaction as unknown as CakeAdapterPrisma;
+        for (const row of rows) {
+          const externalRecordId = monthlyExternalRecordId(context, row.subValue);
+          if (row.revenueUsd.isZero()) {
+            zeroRevenueCount += 1;
+            await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+            await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
+            continue;
+          }
+          positiveRevenueCount += 1;
+          if (!row.subValue) {
+            unmatchedCount += 1;
+            await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+            await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'CAKE SubAffiliateSummary revenue row has no SUB1 value.', transaction);
+            continue;
+          }
+          const mappings = await db.subIdMapping.findMany({
+            where: {
+              affiliateAccountId: context.affiliateAccountId,
+              subField: SUB_FIELD,
+              subValue: row.subValue,
+              effectiveMonth: context.settlementMonth,
+              status: CommonStatus.active,
+            },
+            select: { employeeId: true },
+          });
+          const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
+          if (employeeIds.length === 0) {
+            unmatchedCount += 1;
+            await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+            await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
+            await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_NOT_MAPPED', 'CAKE SUB1 is not mapped to an employee.', transaction);
+            continue;
+          }
+          if (employeeIds.length !== 1) {
+            unmatchedCount += 1;
+            await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+            await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
+            await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'CAKE SUB1 maps to multiple employees.', transaction);
+            continue;
+          }
 
-        await this.db().incomeRecord.upsert({
+          await db.incomeRecord.upsert({
           where: { source_externalRecordId: { source: CAKE_SOURCE, externalRecordId } },
           create: {
             settlementMonth: context.settlementMonth,
@@ -151,9 +170,11 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
             status: CommonStatus.confirmed,
             importedBy: context.requestedBy ?? null,
           },
-        });
-        attributedCount += 1;
-      }
+          });
+          await this.markAdjustmentStaleWhenBaseChanges(context, row, false, db, transaction);
+          attributedCount += 1;
+        }
+      });
 
       const message = `CAKE monthly SubAffiliate revenue sync completed: pulled=${response.rows.length}, positive=${positiveRevenueCount}, attributed=${attributedCount}, unmatched=${unmatchedCount}, zero=${zeroRevenueCount}.`;
       return this.result('completed', attributedCount, unmatchedCount, window, message, context, {
@@ -204,6 +225,7 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
     context: SyncAdapterContext,
     reasonCode: string,
     reasonMessage: string,
+    transaction?: Prisma.TransactionClient,
   ) {
     await this.unmatchedEvents.recordUnmatchedEvent({
       settlementMonth: context.settlementMonth,
@@ -219,14 +241,89 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       subValue: row.subValue,
       amountUsd: row.revenueUsd,
       rawSafeData: { subField: SUB_FIELD, subValue: row.subValue, amount: row.revenueUsd.toString(), currency: 'USD' },
+    }, transaction);
+  }
+
+  private async markAdjustmentStaleWhenBaseChanges(
+    context: SyncAdapterContext,
+    row: CakeSummaryRow,
+    baseUnavailable = false,
+    db: CakeAdapterPrisma = this.db(),
+    transaction?: Prisma.TransactionClient,
+  ) {
+    if (!row.subValue) return;
+    const externalRecordId = cakeAdjustmentExternalRecordId(
+      context.affiliateAccountId as string,
+      context.settlementMonth,
+      row.subValue,
+    );
+    const adjustment = await db.incomeRecord.findUnique({
+      where: { source_externalRecordId: { source: CAKE_ADJUSTMENT_SOURCE, externalRecordId } },
     });
+    if (!adjustment || adjustment.status === CommonStatus.disabled) return;
+    const metadata = readCakeAdjustmentMetadata(adjustment.rawData);
+    if (!metadata) return;
+    const previousBase = new Prisma.Decimal(metadata.baseRevenueUsd);
+    if (!baseUnavailable && previousBase.equals(row.revenueUsd)) return;
+
+    const targetRevenue = new Prisma.Decimal(metadata.targetRevenueUsd);
+    const recalculatedAdjustment = targetRevenue.minus(row.revenueUsd);
+    const staleMetadata = {
+      ...metadata,
+      baseRevenueUsd: row.revenueUsd.toString(),
+      adjustmentUsd: recalculatedAdjustment.toString(),
+      beforeRevenueUsd: row.revenueUsd.toString(),
+      afterRevenueUsd: targetRevenue.toString(),
+      stale: true,
+      staleReason: baseUnavailable ? 'cake_base_unavailable' as const : 'cake_base_revenue_changed' as const,
+      previousBaseRevenueUsd: previousBase.toString(),
+      currentBaseRevenueUsd: row.revenueUsd.toString(),
+    };
+    const after = await db.incomeRecord.update({
+      where: { id: adjustment.id },
+      data: {
+        incomeUsd: recalculatedAdjustment,
+        rawData: staleMetadata as unknown as Prisma.InputJsonObject,
+        status: CommonStatus.draft,
+        importedBy: context.requestedBy ?? null,
+      },
+    });
+    await this.audit.success({
+      actorUserId: context.requestedBy ?? undefined,
+      action: baseUnavailable
+        ? 'cake_income_adjustment.base_unavailable_stale'
+        : 'cake_income_adjustment.base_changed_stale',
+      objectType: 'income_records',
+      objectId: adjustment.id,
+      settlementMonth: context.settlementMonth,
+      beforeData: {
+        status: adjustment.status,
+        baseRevenueUsd: previousBase.toString(),
+        adjustmentUsd: adjustment.incomeUsd.toString(),
+      },
+      afterData: {
+        status: CommonStatus.draft,
+        baseRevenueUsd: row.revenueUsd.toString(),
+        adjustmentUsd: recalculatedAdjustment.toString(),
+        stale: true,
+      },
+      changedFields: ['incomeUsd', 'rawData', 'status'],
+      requestPayload: {
+        syncTaskId: context.taskId,
+        affiliateAccountId: context.affiliateAccountId,
+        settlementMonth: context.settlementMonth.toISOString().slice(0, 7),
+        subField: SUB_FIELD,
+        subValue: row.subValue,
+      },
+    }, transaction);
+    return after;
   }
 
   private result(
     status: 'completed' | 'failed',
     successCount: number,
     failedCount: number,
-    window: ReturnType<typeof getCakeGmt8SettlementMonthWindow>,
+    window: ReturnType<typeof getCakeProviderDefaultSettlementMonthWindow>,
     message: string,
     context: SyncAdapterContext,
     statistics: Record<string, unknown>,
@@ -251,7 +348,10 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
           affiliateId: context.affiliateAccountCode,
           startDate: window.startDate,
           endDate: window.endDate,
-          timezone: 'China Standard Time',
+          providerTimezone: 'cake_system_default',
+          requestedSettlementTimezone: 'Asia/Shanghai',
+          explicitTimezoneSupported: false,
+          manualCstAdjustmentRequired: true,
           boundary: '[start,end)',
         },
         ...statistics,
@@ -280,14 +380,14 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
   }
 }
 
-export function getCakeGmt8SettlementMonthWindow(settlementMonth: Date) {
+export function getCakeProviderDefaultSettlementMonthWindow(settlementMonth: Date) {
   const year = settlementMonth.getUTCFullYear();
   const month = settlementMonth.getUTCMonth();
   return {
-    startInclusiveUtc: new Date(Date.UTC(year, month, 1, -8)),
-    endExclusiveUtc: new Date(Date.UTC(year, month + 1, 1, -8)),
     startDate: `${formatDate(year, month + 1, 1)}T00:00:00`,
     endDate: `${formatDate(year, month + 2, 1)}T00:00:00`,
+    providerTimezone: 'cake_system_default' as const,
+    requestedSettlementTimezone: 'Asia/Shanghai' as const,
   };
 }
 
@@ -330,7 +430,10 @@ function safeRawData(row: CakeSummaryRow, context: SyncAdapterContext): Prisma.I
     subField: SUB_FIELD,
     subValue: row.subValue,
     revenueUsd: row.revenueUsd.toString(),
-    timezone: 'China Standard Time',
+    providerTimezone: 'cake_system_default',
+    requestedSettlementTimezone: 'Asia/Shanghai',
+    explicitTimezoneSupported: false,
+    manualCstAdjustmentRequired: true,
   } as Prisma.InputJsonObject;
 }
 

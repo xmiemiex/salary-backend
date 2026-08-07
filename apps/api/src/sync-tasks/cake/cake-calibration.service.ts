@@ -68,7 +68,7 @@ export class CakeCalibrationService {
     const attribution = summarizeAttribution(aggregatedRows, mappings);
     const duplicateSubValues = duplicateKeys(rows);
     const acceptanceBaseline = task96AcceptanceBaseline(account.accountCode, range.startDate.slice(0, 7), aggregatedRows);
-    const writeGateEligible = summaryComplete && campaignComplete && totalsEqual && usdConfirmed && acceptanceBaseline.matches !== false;
+    const writeGateEligible = summaryComplete && campaignComplete && totalsEqual && usdConfirmed;
     const evidence = {
       readOnly: true,
       rawPayloadReturned: false,
@@ -78,7 +78,13 @@ export class CakeCalibrationService {
       affiliateId: account.accountCode,
       affiliateIdSource: 'affiliate_accounts.account_code',
       report: 'Reports/SubAffiliateSummary',
-      timezone: 'China Standard Time',
+      timezone: {
+        providerTimezone: 'cake_system_default',
+        requestedSettlementTimezone: 'Asia/Shanghai',
+        explicitTimezoneSupported: false,
+        verifiedAsChinaStandardTime: false,
+        manualCstAdjustmentRequired: true,
+      },
       requestRange: { startInclusive: `${range.startDate}T00:00:00`, endExclusive: `${range.endExclusiveDate}T00:00:00` },
       httpStatuses: [summary.httpStatus, campaignSummary.httpStatus, currencies.httpStatus],
       returnedCount: rows.length,

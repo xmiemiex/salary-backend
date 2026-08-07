@@ -452,6 +452,7 @@ export class SettlementGenerationService {
         missingExchangeRate: result.summary.missingExchangeRate,
         draftManualRecordCount: result.summary.draftManualRecordCount,
         runningOrPendingSyncTaskCount: result.summary.runningOrPendingSyncTaskCount,
+        staleCakeAdjustmentCount: result.summary.staleCakeAdjustmentCount,
         isLocked: result.summary.isLocked,
       },
       acknowledgedWarningCodes: result.severity === 'warning'
