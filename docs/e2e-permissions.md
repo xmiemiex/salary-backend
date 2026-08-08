@@ -30,6 +30,7 @@ pnpm e2e:permissions
 - `E2E_API_PORT`，默认 `3100`
 - `E2E_WEB_PORT`，默认 `5174`
 - `E2E_BROWSER_CHANNEL`，默认 `msedge`；如果本机没有 Edge，会回退到 Playwright Chromium
+- `E2E_SKIP_DB_MIGRATE=1`，仅限已经由发布门禁确认 migration 无漂移的生产回归；设置后不会执行 migration 命令
 
 ## PostgreSQL
 
@@ -62,6 +63,7 @@ pnpm db:wait
 - 同步规划：income-only 用户可 preview；无 `manual_card_spend.manage` 不能 generate；preview 不写任务、不写审计。
 - 自动执行与同步任务：manual pending 任务不会被自动 worker 领取；income-only 用户不能执行 card_spend。
 - 运行台与异常处置：income-only 用户可看运行台，但 card_spend retry/cancel 按钮 disabled；直接 API 返回 403；锁账月份 retry 返回 409。
+- CAKE SUB收入调整：真实 `super_admin + income.import` 可访问页面并完成草稿、确认、停用；非super_admin、缺少 `income.import`、未认证请求分别返回403/403/401，且403不清除当前session。
 
 ## 任务59遗留验收点
 

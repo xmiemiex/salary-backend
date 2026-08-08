@@ -157,8 +157,10 @@ $webProcess = $null
 try {
   pnpm db:wait
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  pnpm db:migrate
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  if ($env:E2E_SKIP_DB_MIGRATE -ne '1') {
+    pnpm db:migrate
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
 
   $apiOut = Join-Path $logDir 'api.out.log'
   $apiErr = Join-Path $logDir 'api.err.log'
@@ -174,8 +176,17 @@ try {
   $env:E2E_API_URL = "http://127.0.0.1:$($env:API_PORT)"
   $env:E2E_WEB_URL = "http://127.0.0.1:$($env:WEB_PORT)"
   $env:E2E_LOG_DIR = $logDir
-  $outputLines = @(pnpm exec tsx scripts/e2e-permissions.ts 2>&1)
-  $exitCode = $LASTEXITCODE
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Windows PowerShell wraps native stderr lines in ErrorRecord objects. Keep
+    # collecting the complete Playwright stack instead of terminating on the
+    # first stderr line so the evidence remains diagnostic.
+    $ErrorActionPreference = 'Continue'
+    $outputLines = @(& pnpm exec tsx scripts/e2e-permissions.ts 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   $outputLines | ForEach-Object { Write-Output $_ }
   exit $exitCode
 } finally {

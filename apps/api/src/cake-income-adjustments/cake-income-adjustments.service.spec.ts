@@ -142,8 +142,8 @@ describe('CakeIncomeAdjustmentsService', () => {
       subValue: 'ZW', employeeId, employee: { employeeCode: '01', name: 'ZW', status: CommonStatus.active },
     }]);
     const result = await service.exportCsv({ affiliateAccountId: accountId, settlementMonth: '2026-07' }, actor);
-    expect(result.csv).toContain('API Default Timezone Revenue USD,Proposed Adjustment USD,Confirmed Adjustment USD,Preview Final Revenue USD,Settlement Final Revenue USD');
-    expect(result.csv).toContain('77385,0,0,77385,77385');
+    expect(result.csv).toContain('API Default Timezone Revenue USD,China Standard Time Actual Revenue USD,Proposed Adjustment USD,Confirmed Adjustment USD,Preview Final Revenue USD,Settlement Final Revenue USD');
+    expect(result.csv).toContain('77385,77385,0,0,77385,77385');
     expect(result.csv).not.toMatch(/api.?key|authorization|raw.?payload/i);
   });
 });

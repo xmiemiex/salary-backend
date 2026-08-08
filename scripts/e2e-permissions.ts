@@ -84,6 +84,7 @@ async function main() {
     const backupManage = await login(fixture.users.backupManage.username);
     const releaseRead = await login(fixture.users.releaseRead.username);
     const releaseRun = await login(fixture.users.releaseRun.username);
+    const cakeSuper = await login(fixture.users.cakeSuper.username);
     const low = await login(fixture.users.low.username);
     checks.push('auth: test users logged in through real API/browser without tripping rate limits');
 
@@ -107,6 +108,9 @@ async function main() {
 
     await assertOperations(high, incomeOnly, fixture.tasks.cardFailed.id, fixture.tasks.lockedFailed.id);
     checks.push('task59: operations retry/cancel denied and locked retry rejected');
+
+    await assertCakeAdjustmentPermissions(cakeSuper, incomeOnly, low, fixture);
+    checks.push('task96: CAKE adjustment requires super_admin plus income.import in page and direct API');
 
     await assertAuditCenter(high, auditRead, auditExport, low, fixture.auditLogIds.injection);
     checks.push('task61: audit center read/export permissions, CSV safety, and 403 session retention');
@@ -179,6 +183,15 @@ async function seedFixture() {
     releaseRead: await createRole('release_read', ['release_gate.read']),
     releaseRun: await createRole('release_run', ['release_gate.read', 'release_gate.run']),
   };
+  const superAdminRole = await prisma.role.findUnique({
+    where: { code: 'super_admin' },
+    include: { permissions: { include: { permission: true } } },
+  });
+  assert(superAdminRole?.status === CommonStatus.active, 'active super_admin role is required for permissions E2E');
+  assert(
+    superAdminRole.permissions.some((row) => row.permission.code === 'income.import'),
+    'super_admin must include income.import for CAKE adjustment E2E',
+  );
   const users = {
     high: await createUser('high', roles.high.id, passwordHash, employee.id),
     adminRead: await createUser('admin_read', roles.adminRead.id, passwordHash, employee.id),
@@ -191,7 +204,42 @@ async function seedFixture() {
     backupManage: await createUser('backup_manage', roles.backupManage.id, passwordHash, employee.id),
     releaseRead: await createUser('release_read', roles.releaseRead.id, passwordHash, employee.id),
     releaseRun: await createUser('release_run', roles.releaseRun.id, passwordHash, employee.id),
+    cakeSuper: await createUser('cake_super', superAdminRole.id, passwordHash, employee.id),
   };
+  const cakeAccount = await prisma.affiliateAccount.create({
+    data: {
+      platform: 'cake',
+      accountCode: `${runPrefix}_cake_329`,
+      accountName: `${runPrefix} cake account`,
+      status: CommonStatus.active,
+    },
+  });
+  const cakeMapping = await prisma.subIdMapping.create({
+    data: {
+      affiliateAccountId: cakeAccount.id,
+      subField: 'sub1',
+      subValue: 'E2E',
+      effectiveMonth: unlockedMonth,
+      employeeId: employee.id,
+      status: CommonStatus.active,
+      createdBy: users.cakeSuper.id,
+    },
+  });
+  const cakeBaseIncome = await prisma.incomeRecord.create({
+    data: {
+      settlementMonth: unlockedMonth,
+      affiliateAccountId: cakeAccount.id,
+      employeeId: employee.id,
+      source: 'cake',
+      externalRecordId: `${runPrefix}_cake_base`,
+      subField: 'sub1',
+      subValue: 'E2E',
+      incomeUsd: '10',
+      rawData: { providerTimezone: 'cake_system_default', localOnly: true },
+      status: CommonStatus.confirmed,
+      importedBy: users.cakeSuper.id,
+    },
+  });
   const otherSession = await prisma.adminSession.create({
     data: {
       adminUserId: users.high.id,
@@ -256,6 +304,10 @@ async function seedFixture() {
     employeeId: employee.id,
     affiliateAccountId: affiliateAccount.id,
     affiliateCredentialId: affiliateCredential.id,
+    cakeAccountId: cakeAccount.id,
+    cakeMappingId: cakeMapping.id,
+    cakeBaseIncomeId: cakeBaseIncome.id,
+    cakeAdjustmentIds: [] as string[],
     otherSessionId: otherSession.id,
     roleIds: Object.values(roles).map((role) => role.id),
     userIds: Object.values(users).map((user) => user.id),
@@ -267,6 +319,69 @@ async function seedFixture() {
     restoreDrillIds: [] as string[],
     createdAlertIds: [] as string[],
   };
+}
+
+async function assertCakeAdjustmentPermissions(
+  cakeSuper: LoginResult,
+  incomeOnly: LoginResult,
+  low: LoginResult,
+  fixture: Fixture,
+) {
+  const monthText = fixture.unlockedMonth.toISOString().slice(0, 7);
+  const query = `/cake-income-adjustments?affiliateAccountId=${encodeURIComponent(fixture.cakeAccountId)}&settlementMonth=${monthText}`;
+  assert((await rawApi(query)).status === 401, 'unauthenticated CAKE adjustment list must return 401');
+  await expectStatus(incomeOnly.token, query, 403);
+  await expectStatus(low.token, query, 403);
+  await expectMeAlive(incomeOnly.token, incomeOnly.actor.userId);
+  await expectMeAlive(low.token, low.actor.userId);
+
+  const initial = objectPayload(await expectStatus(cakeSuper.token, query, 200));
+  assert(initial.summary?.baseRevenueUsd === '10', 'super_admin CAKE adjustment base Revenue mismatch');
+  assert(initial.summary?.confirmedAdjustmentCount === 0, 'CAKE adjustment E2E must start without adjustments');
+
+  const browser = await launchBrowser();
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${webUrl}/login`);
+    await page.evaluate(({ token, actor }) => {
+      window.sessionStorage.setItem('salary_admin_session_token', token);
+      window.sessionStorage.setItem('salary_admin_actor', JSON.stringify(actor));
+    }, { token: cakeSuper.token, actor: cakeSuper.actor });
+    await page.goto(`${webUrl}/cake-income-adjustments`);
+    await page.getByRole('heading', { name: 'CAKE SUB 月度收入调整' }).waitFor({ timeout: 20_000 });
+    await page
+      .locator('.ant-select-selection-item')
+      .filter({ hasText: `${runPrefix} cake account / ${runPrefix}_cake_329` })
+      .waitFor({ timeout: 20_000 });
+    await page.locator('input[type="month"]').fill(monthText);
+    await page.getByText('E2E', { exact: true }).waitFor({ timeout: 20_000 });
+    assertNoSensitiveTerms('CAKE adjustment page text', await page.locator('body').innerText());
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+
+  const body = {
+    affiliateAccountId: fixture.cakeAccountId,
+    settlementMonth: monthText,
+    subValue: 'E2E',
+    actualRevenueUsd: '11',
+    reason: `${runPrefix} CAKE adjustment permission E2E`,
+  };
+  await expectStatus(incomeOnly.token, '/cake-income-adjustments', 403, { method: 'POST', body });
+  await expectStatus(low.token, '/cake-income-adjustments', 403, { method: 'POST', body });
+  const draft = objectPayload(await expectStatus(cakeSuper.token, '/cake-income-adjustments', 201, { method: 'POST', body }));
+  assert(draft.status === CommonStatus.draft && draft.incomeUsd === '1', 'super_admin could not create CAKE adjustment draft');
+  fixture.cakeAdjustmentIds.push(draft.id);
+  const confirmed = objectPayload(await expectStatus(cakeSuper.token, `/cake-income-adjustments/${draft.id}/confirm`, 200, { method: 'PATCH' }));
+  assert(confirmed.status === CommonStatus.confirmed, 'super_admin could not confirm CAKE adjustment');
+  const disabled = objectPayload(await expectStatus(cakeSuper.token, `/cake-income-adjustments/${draft.id}/disable`, 200, { method: 'PATCH' }));
+  assert(disabled.status === CommonStatus.disabled, 'super_admin could not disable CAKE adjustment');
+  const auditCount = await prisma.auditLog.count({
+    where: { objectId: draft.id, action: { in: ['cake_income_adjustment.save_draft', 'cake_income_adjustment.confirm', 'cake_income_adjustment.disable'] } },
+  });
+  assert(auditCount === 3, `CAKE adjustment E2E expected 3 audits, got ${auditCount}`);
 }
 
 async function ensurePermissionCatalog() {
@@ -1144,8 +1259,10 @@ async function cleanupFixture(fixture: Fixture | null, startedAt: Date) {
   await prisma.syncUnmatchedEvent.deleteMany({ where: { syncTaskId: { in: taskIds } } });
   await prisma.syncTask.deleteMany({ where: { id: { in: taskIds } } });
   await prisma.monthlySettlement.deleteMany({ where: { settlementMonth: { in: [fixture.lockedMonth] } } });
+  await prisma.incomeRecord.deleteMany({ where: { affiliateAccountId: fixture.cakeAccountId } });
+  await prisma.subIdMapping.deleteMany({ where: { affiliateAccountId: fixture.cakeAccountId } });
   await prisma.affiliateAccountCredential.deleteMany({ where: { id: fixture.affiliateCredentialId } });
-  await prisma.affiliateAccount.deleteMany({ where: { id: fixture.affiliateAccountId } });
+  await prisma.affiliateAccount.deleteMany({ where: { id: { in: [fixture.affiliateAccountId, fixture.cakeAccountId] } } });
   await prisma.adminUserRole.deleteMany({ where: { OR: [{ adminUserId: { in: fixture.userIds } }, { roleId: { in: fixture.roleIds } }] } });
   await prisma.rolePermission.deleteMany({ where: { roleId: { in: fixture.roleIds } } });
   await prisma.adminUser.deleteMany({ where: { id: { in: fixture.userIds } } });
@@ -1174,6 +1291,7 @@ async function cleanupFixture(fixture: Fixture | null, startedAt: Date) {
   const remaining = await prisma.adminUser.count({ where: { username: { startsWith: runPrefix } } })
     + await prisma.role.count({ where: { code: { startsWith: runPrefix } } })
     + await prisma.syncTask.count({ where: { id: { in: taskIds } } })
+    + await prisma.incomeRecord.count({ where: { id: { in: [fixture.cakeBaseIncomeId, ...fixture.cakeAdjustmentIds] } } })
     + await prisma.backupRecord.count({ where: { backupKey: { startsWith: runPrefix } } })
     + await prisma.restoreDrillRecord.count({ where: { drillKey: { startsWith: runPrefix } } })
     + await prisma.auditLog.count({ where: { actorUserId: { in: fixture.userIds } } })

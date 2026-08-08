@@ -144,6 +144,25 @@ describe('manual settlement input services', () => {
     expect(prisma.incomeRecord.create).not.toHaveBeenCalled();
   });
 
+  it('rejects negative ordinary manual income on create and update', async () => {
+    const { manualIncome, prisma } = createHarness();
+    await expect(
+      manualIncome.create({ settlementMonth: '2026-05-01', source: 'manual', incomeUsd: '-1' }, actor),
+    ).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
+    expect(prisma.incomeRecord.create).not.toHaveBeenCalled();
+
+    prisma.incomeRecord.findUnique.mockResolvedValue({
+      id: 'income-1',
+      settlementMonth,
+      employeeId: actor.userId,
+      status: CommonStatus.draft,
+    });
+    await expect(manualIncome.update('income-1', { incomeUsd: '-0.01' }, actor)).rejects.toMatchObject({
+      code: ERROR_CODES.VALIDATION_ERROR,
+    });
+    expect(prisma.incomeRecord.update).not.toHaveBeenCalled();
+  });
+
   it('rejects manual income confirm when employeeId is empty', async () => {
     const { manualIncome, prisma } = createHarness();
     prisma.incomeRecord.findUnique.mockResolvedValue({

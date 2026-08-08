@@ -174,10 +174,12 @@ export class ManualIncomeRecordsService {
   }
 
   private validateCreate(input: CreateManualIncomeRecordInput) {
+    const incomeUsd = parseDecimalString(input.incomeUsd, 'incomeUsd');
+    this.assertNonNegativeIncome(incomeUsd);
     return {
       settlementMonth: parseMonthStart(input.settlementMonth, 'settlementMonth'),
       source: requireNonBlank(input.source, 'source'),
-      incomeUsd: parseDecimalString(input.incomeUsd, 'incomeUsd'),
+      incomeUsd,
       employeeId: optionalNonBlank(input.employeeId, 'employeeId'),
       affiliateAccountId: optionalNonBlank(input.affiliateAccountId, 'affiliateAccountId'),
       subField: optionalNonBlank(input.subField, 'subField'),
@@ -192,7 +194,11 @@ export class ManualIncomeRecordsService {
     const data: Record<string, unknown> = {};
     if (input.settlementMonth !== undefined) data.settlementMonth = parseMonthStart(input.settlementMonth, 'settlementMonth');
     if (input.source !== undefined) data.source = requireNonBlank(input.source, 'source');
-    if (input.incomeUsd !== undefined) data.incomeUsd = parseDecimalString(input.incomeUsd, 'incomeUsd');
+    if (input.incomeUsd !== undefined) {
+      const incomeUsd = parseDecimalString(input.incomeUsd, 'incomeUsd');
+      this.assertNonNegativeIncome(incomeUsd);
+      data.incomeUsd = incomeUsd;
+    }
     if (input.employeeId !== undefined) data.employeeId = optionalNonBlank(input.employeeId, 'employeeId') ?? null;
     if (input.affiliateAccountId !== undefined) data.affiliateAccountId = optionalNonBlank(input.affiliateAccountId, 'affiliateAccountId') ?? null;
     if (input.subField !== undefined) data.subField = optionalNonBlank(input.subField, 'subField') ?? null;
@@ -201,6 +207,15 @@ export class ManualIncomeRecordsService {
     if (input.rawData !== undefined) data.rawData = input.rawData;
     if (input.status !== undefined) data.status = assertOptionalStatus(input.status, INCOME_STATUSES);
     return data;
+  }
+
+  private assertNonNegativeIncome(incomeUsd: Prisma.Decimal): void {
+    if (incomeUsd.isNegative()) {
+      throw new AppError(
+        ERROR_CODES.VALIDATION_ERROR,
+        '普通手动收入不能为负数；CAKE月度SUB差额只能通过专用调整功能录入。',
+      );
+    }
   }
 
   private assertConfirmedHasEmployee(status: CommonStatus, employeeId?: string | null): void {

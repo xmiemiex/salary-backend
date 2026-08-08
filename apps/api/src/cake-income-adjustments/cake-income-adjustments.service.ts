@@ -288,13 +288,15 @@ export class CakeIncomeAdjustmentsService {
     const payload = await this.list(query, actor);
     const headers = [
       'Platform', 'Affiliate Account', 'Affiliate ID', 'Settlement Month', 'SUB Field', 'SUB Value',
-      'API Default Timezone Revenue USD', 'Proposed Adjustment USD', 'Confirmed Adjustment USD',
+      'API Default Timezone Revenue USD', 'China Standard Time Actual Revenue USD',
+      'Proposed Adjustment USD', 'Confirmed Adjustment USD',
       'Preview Final Revenue USD', 'Settlement Final Revenue USD', 'Employee Code',
       'Employee Name', 'Status', 'Reason', 'Updated At',
     ];
     const rows = payload.items.map((item) => [
       'cake', payload.account.accountName ?? '', payload.account.accountCode, payload.settlementMonth,
-      item.subField, item.subValue, item.baseRevenueUsd, item.adjustmentUsd, item.confirmedAdjustmentUsd,
+      item.subField, item.subValue, item.baseRevenueUsd, item.actualRevenueUsd ?? item.baseRevenueUsd,
+      item.adjustmentUsd, item.confirmedAdjustmentUsd,
       item.previewRevenueUsd, item.finalRevenueUsd,
       item.employeeCode ?? '', item.employeeName ?? '', item.status ?? 'none', item.reason ?? '', item.updatedAt?.toISOString() ?? '',
     ]);
