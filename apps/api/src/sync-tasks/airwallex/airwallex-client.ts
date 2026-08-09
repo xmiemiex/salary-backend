@@ -3,7 +3,7 @@ import { ProviderRequestError, providerFetch } from '../provider-request-error';
 import { SyncExecutionErrorCategory } from '@prisma/client';
 
 export const AIRWALLEX_DEFAULT_BASE_URL = 'https://api.airwallex.com';
-export const AIRWALLEX_DEFAULT_TRANSACTIONS_PATH = '/api/v1/issuing/card_transactions';
+export const AIRWALLEX_DEFAULT_TRANSACTIONS_PATH = '/api/v1/issuing/transactions';
 export const AIRWALLEX_DEFAULT_CARDS_PATH = '/api/v1/issuing/cards';
 export const AIRWALLEX_DEFAULT_CARDHOLDERS_PATH = '/api/v1/issuing/cardholders';
 export const AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION = '2024-02-22';
@@ -27,7 +27,7 @@ export type AirwallexTransactionRecord = Record<string, unknown>;
 export type AirwallexTransactionsResponse = {
   transactions: AirwallexTransactionRecord[];
   hasMore: boolean;
-  nextPage: string | null;
+  nextPage: number | null;
 };
 
 export type AirwallexCardsResponse = {
@@ -52,14 +52,14 @@ export class AirwallexClient {
     credential: AirwallexCredentialPayload;
     from: Date;
     to: Date;
-    page?: string | number | null;
+    page: number;
     pageSize: number;
   }): Promise<AirwallexTransactionsResponse> {
     const token = await this.login(input.credential);
     const url = new URL(input.credential.transactionsPath ?? AIRWALLEX_DEFAULT_TRANSACTIONS_PATH, normalizeBaseUrl(input.credential.baseUrl));
     url.searchParams.set('from_created_at', input.from.toISOString());
     url.searchParams.set('to_created_at', input.to.toISOString());
-    if (input.page) url.searchParams.set('page', String(input.page));
+    url.searchParams.set('page_num', String(input.page));
     url.searchParams.set('page_size', String(input.pageSize));
 
     const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
@@ -67,11 +67,9 @@ export class AirwallexClient {
       headers: this.authorizedHeaders(token, input.credential),
     });
     const raw = await response.json();
-    const nextPage = firstString(
-      isRecord(raw) ? raw.page_after : undefined,
-      isRecord(raw) && isRecord(raw.meta) ? raw.meta.page_after : undefined,
-    );
-    return { transactions: extractTransactions(raw), hasMore: Boolean(nextPage), nextPage };
+    const transactions = extractTransactions(raw);
+    const more = hasMore(raw, input.page, input.pageSize, transactions);
+    return { transactions, hasMore: more, nextPage: more ? input.page + 1 : null };
   }
 
   async listCards(input: {

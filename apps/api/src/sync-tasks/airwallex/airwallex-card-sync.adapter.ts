@@ -53,7 +53,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
     let successCount = 0;
     let failedCount = 0;
     const transactionSyncStartedAt = new Date();
-    let page: string | null = null;
+    let page = 0;
     let cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null = null;
 
     try {
@@ -82,9 +82,8 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
           else failedCount += 1;
         }
 
-        if (!response.hasMore || response.transactions.length === 0) break;
+        if (!response.hasMore || response.transactions.length === 0 || response.nextPage === null) break;
         page = response.nextPage;
-        if (!page) break;
       }
     } catch (error) {
       failedCount += 1;

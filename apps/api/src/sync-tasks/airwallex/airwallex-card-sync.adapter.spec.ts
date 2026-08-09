@@ -25,7 +25,7 @@ describe('AirwallexClient', () => {
       credential: { clientId: 'client-id', apiKey: 'api-key', baseUrl: 'https://airwallex.example.test' },
       from: new Date('2026-05-31T16:00:00.000Z'),
       to: new Date('2026-06-30T16:00:00.000Z'),
-      page: 'cursor-2',
+      page: 2,
       pageSize: 200,
     });
 
@@ -47,7 +47,8 @@ describe('AirwallexClient', () => {
     expect(url.searchParams.get('to_created_at')).toBe('2026-06-30T16:00:00.000Z');
     expect(url.searchParams.has('transaction_type')).toBe(false);
     expect(url.searchParams.has('status')).toBe(false);
-    expect(url.searchParams.get('page')).toBe('cursor-2');
+    expect(url.searchParams.get('page_num')).toBe('2');
+    expect(url.searchParams.has('page')).toBe(false);
     expect(url.searchParams.get('page_size')).toBe('200');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({
       method: 'GET',
@@ -153,7 +154,7 @@ describe('AirwallexCardSyncAdapter', () => {
         }),
         from: new Date('2026-05-31T16:00:00.000Z'),
         to: new Date('2026-07-10T16:00:00.000Z'),
-        page: null,
+        page: 0,
       }),
     );
     expect(result.resultPayload).toMatchObject({
@@ -457,7 +458,7 @@ describe('AirwallexCardSyncAdapter', () => {
   });
 
   function mockTransactions(transactions: Record<string, unknown>[]) {
-    client.listCardTransactions.mockResolvedValue({ transactions, raw: { items: transactions }, hasMore: false });
+    client.listCardTransactions.mockResolvedValue({ transactions, hasMore: false, nextPage: null });
   }
 });
 
