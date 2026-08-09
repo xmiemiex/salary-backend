@@ -168,6 +168,7 @@ export class SyncTaskExecutionService {
           message: result.message,
           errorMessage: result.errorMessage,
           resultPayload: result.resultPayload as Prisma.InputJsonObject,
+          lastErrorCategory: result.errorCategory ?? null,
         },
         include: {
           affiliateAccount: {
@@ -184,7 +185,7 @@ export class SyncTaskExecutionService {
         objectId: finishedTask.id,
         settlementMonth: finishedTask.settlementMonth,
         afterData: auditAfterData(finishedTask),
-        changedFields: ['status', 'startedAt', 'finishedAt', 'successCount', 'failedCount', 'message', 'errorMessage'],
+        changedFields: ['status', 'startedAt', 'finishedAt', 'successCount', 'failedCount', 'message', 'errorMessage', 'lastErrorCategory'],
         requestPayload: auditRequestPayload(finishedTask),
         ipAddress: actor.ipAddress,
         userAgent: actor.userAgent,

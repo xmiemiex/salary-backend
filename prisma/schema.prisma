@@ -44,6 +44,12 @@ enum Provider {
   photonpay
 }
 
+enum ProviderCardMatchStatus {
+  matched
+  unmatched
+  conflict
+}
+
 enum AuditResult {
   success
   failure
@@ -205,6 +211,7 @@ model Employee {
   affiliateAccounts               AffiliateAccount[]
   subIdMappings                   SubIdMapping[]
   cardBindings                    CardBinding[]
+  providerCards                   ProviderCard[]
   incomeRecords                   IncomeRecord[]
   cardSpendEvents                 CardSpendEvent[]
   manualCardSpendEntries          ManualCardSpendEntry[]
@@ -287,6 +294,35 @@ model CardBinding {
   @@unique([provider, cardId, effectiveMonth])
   @@index([employeeId, effectiveMonth])
   @@map("card_bindings")
+}
+
+/// Canonical provider card inventory. Only allowlisted, masked card metadata is persisted.
+/// Legacy CardBinding rows remain unchanged for historical audit compatibility.
+model ProviderCard {
+  id                        String                  @id @default(uuid()) @db.Uuid
+  provider                  Provider
+  cardId                    String                  @map("card_id") @db.VarChar(128)
+  cardholderId              String?                 @map("cardholder_id") @db.VarChar(128)
+  cardholderEmailNormalized String?                 @map("cardholder_email_normalized") @db.VarChar(255)
+  maskedCardNumber          String?                 @map("masked_card_number") @db.VarChar(32)
+  nickname                  String?                 @db.VarChar(255)
+  providerStatus            String?                 @map("provider_status") @db.VarChar(64)
+  employeeId                String?                 @map("employee_id") @db.Uuid
+  matchStatus               ProviderCardMatchStatus @default(unmatched) @map("match_status")
+  unmatchedReasonCode       String?                 @map("unmatched_reason_code") @db.VarChar(64)
+  lastCardSyncedAt          DateTime?                @map("last_card_synced_at")
+  lastTransactionSyncedAt   DateTime?                @map("last_transaction_synced_at")
+  lastTransactionSyncStatus String?                 @map("last_transaction_sync_status") @db.VarChar(64)
+  sourceCreatedAt           DateTime?                @map("source_created_at")
+  sourceUpdatedAt           DateTime?                @map("source_updated_at")
+  createdAt                 DateTime                 @default(now()) @map("created_at")
+  updatedAt                 DateTime                 @updatedAt @map("updated_at")
+  employee                  Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, cardId])
+  @@index([provider, matchStatus])
+  @@index([employeeId])
+  @@map("provider_cards")
 }
 
 model IncomeRecord {

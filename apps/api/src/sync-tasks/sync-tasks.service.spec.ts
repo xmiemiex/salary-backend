@@ -155,13 +155,14 @@ describe('SyncTasksService', () => {
     expect(audit.failure).toHaveBeenCalledWith(expect.objectContaining({ failureReason: ERROR_CODES.MONTH_LOCKED }));
   });
 
-  it('creates card spend placeholder task with not_implemented status', async () => {
+  it('creates executable card spend task with pending status', async () => {
     prisma.syncTask.create.mockResolvedValue(
       syncTask({
         sourceType: SyncTaskSourceType.card_spend,
         taskType: SyncTaskType.airwallex_card,
         platform: SyncTaskPlatform.airwallex,
         provider: Provider.airwallex,
+        status: SyncTaskStatus.pending,
       }),
     );
 
@@ -174,11 +175,11 @@ describe('SyncTasksService', () => {
           taskType: SyncTaskType.airwallex_card,
           platform: SyncTaskPlatform.airwallex,
           provider: Provider.airwallex,
-          status: SyncTaskStatus.not_implemented,
+          status: SyncTaskStatus.pending,
         }),
       }),
     );
-    expect(task.status).toBe(SyncTaskStatus.not_implemented);
+    expect(task.status).toBe(SyncTaskStatus.pending);
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'sync_task.create.airwallex_card' }));
   });
 

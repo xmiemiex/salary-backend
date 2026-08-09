@@ -109,6 +109,27 @@ describe('SyncUnmatchedEventsService', () => {
     expect(JSON.stringify(result)).not.toContain('ciphertext');
   });
 
+  it('automatically resolves an open reconciliation event after a successful idempotent re-sync', async () => {
+    prisma.syncUnmatchedEvent.findUnique.mockResolvedValue({ id: 'unmatched-1', status: SyncUnmatchedEventStatus.open });
+    prisma.syncUnmatchedEvent.update.mockResolvedValue({});
+    const result = await service.resolveAfterSuccessfulImport({
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      thirdPartyEventId: 'txn-1',
+      employeeId,
+      resolvedBy: actor.userId,
+    });
+    expect(result).toBe(true);
+    expect(prisma.syncUnmatchedEvent.update).toHaveBeenCalledWith({
+      where: { id: 'unmatched-1' },
+      data: expect.objectContaining({
+        status: SyncUnmatchedEventStatus.resolved,
+        resolvedEmployeeId: employeeId,
+        resolvedBy: actor.userId,
+      }),
+    });
+  });
+
   it('creates card_spend unmatched events', async () => {
     prisma.syncUnmatchedEvent.findUnique.mockResolvedValue(null);
 

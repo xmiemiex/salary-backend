@@ -164,7 +164,9 @@ export class ApiCredentialsService {
 
   async upsertCardProvider(providerInput: string, input: UpsertApiCredentialInput, actor: Actor) {
     const provider = normalizeCardProvider(providerInput);
-    const payload = provider === Provider.airwallex ? validateAirwallexCredentialPayload(input?.payload) : validatePayload(input?.payload);
+    const payload = provider === Provider.airwallex
+      ? validateAirwallexCredentialPayload(input?.payload)
+      : validatePhotonPayCredentialPayload(input?.payload);
     const maskedPayload = maskPayload(payload);
     const encryptedPayload = this.crypto.encryptJson(payload);
     const before = await this.db().cardProviderCredential.findUnique({ where: { provider } });
@@ -338,6 +340,33 @@ function validateAirwallexCredentialPayload(payloadInput: unknown): Record<strin
     ...(cardsPath ? { cardsPath } : {}),
     ...(cardholdersPath ? { cardholdersPath } : {}),
     ...(apiVersion ? { apiVersion } : {}),
+    ...(settlementDelayDays !== undefined ? { settlementDelayDays } : {}),
+  };
+}
+
+function validatePhotonPayCredentialPayload(payloadInput: unknown): Record<string, unknown> {
+  const payload = validatePayload(payloadInput);
+  const appId = requiredString(payload.appId ?? payload.app_id ?? payload.apiKey, 'appId');
+  const appSecret = requiredString(payload.appSecret ?? payload.app_secret ?? payload.secret, 'appSecret');
+  const baseUrl = optionalString(payload.baseUrl ?? payload.base_url, 'baseUrl');
+  const tokenPath = optionalApiPath(payload.tokenPath ?? payload.token_path, 'tokenPath');
+  const cardsPath = optionalApiPath(payload.cardsPath ?? payload.cards_path, 'cardsPath');
+  const cardDetailPath = optionalApiPath(payload.cardDetailPath ?? payload.card_detail_path, 'cardDetailPath');
+  const transactionsPath = optionalApiPath(payload.transactionsPath ?? payload.transactions_path, 'transactionsPath');
+  const settlementDelayDays = optionalInteger(payload.settlementDelayDays, 'settlementDelayDays', 0, 31);
+  rejectUnexpectedKeys(payload, [
+    'appId', 'app_id', 'appSecret', 'app_secret', 'apiKey', 'secret', 'baseUrl', 'base_url',
+    'tokenPath', 'token_path', 'cardsPath', 'cards_path', 'cardDetailPath', 'card_detail_path',
+    'transactionsPath', 'transactions_path', 'settlementDelayDays',
+  ]);
+  return {
+    appId,
+    appSecret,
+    ...(baseUrl ? { baseUrl: validateHttpsUrl(baseUrl, 'baseUrl') } : {}),
+    ...(tokenPath ? { tokenPath } : {}),
+    ...(cardsPath ? { cardsPath } : {}),
+    ...(cardDetailPath ? { cardDetailPath } : {}),
+    ...(transactionsPath ? { transactionsPath } : {}),
     ...(settlementDelayDays !== undefined ? { settlementDelayDays } : {}),
   };
 }

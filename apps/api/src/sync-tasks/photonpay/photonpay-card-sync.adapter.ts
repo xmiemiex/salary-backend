@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import { Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AppError } from '../../common/app-error';
+import { parsePhotonPayCredential, ProviderCardInventoryService, safeProviderError } from '../../card-bindings/provider-card-inventory.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
@@ -11,7 +12,6 @@ import { PhotonPayClient, PhotonPayCredentialPayload, PhotonPayTransactionRecord
 const PAGE_SIZE = 200;
 const DEFAULT_SETTLEMENT_DELAY_DAYS = 10;
 const MAX_SETTLEMENT_DELAY_DAYS = 31;
-const PHOTONPAY_SETTLED_STATUS_ZH = '\u5df2\u7ed3\u7b97';
 
 type NormalizedPhotonPayTransaction = {
   externalEventId: string | null;
@@ -23,14 +23,13 @@ type NormalizedPhotonPayTransaction = {
   currency: string | null;
   settledAt: Date | null;
   sourceStatus: string | null;
+  settleStatus: string | null;
+  transactionStatus: string | null;
+  transactionType: string | null;
   sourceUpdatedAt: Date | null;
-  rawData: PhotonPayTransactionRecord;
 };
 
 type PhotonPayAdapterPrisma = {
-  cardBinding: {
-    findFirst(args: unknown): Promise<{ employeeId: string } | null>;
-  };
   cardSpendEvent: {
     upsert(args: unknown): Promise<unknown>;
   };
@@ -44,18 +43,22 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
     private readonly prisma: PrismaService,
     private readonly client: PhotonPayClient,
     private readonly unmatchedEvents: SyncUnmatchedEventsService,
+    private readonly inventory: ProviderCardInventoryService,
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
     this.assertContext(context);
-    const credential = parseCredentialPayload(context.credential.payload);
+    const credential = parsePhotonPayCredential(context.credential.payload);
     const window = getPhotonPayRequestAndSettlementWindows(context.settlementMonth, credential.settlementDelayDays ?? DEFAULT_SETTLEMENT_DELAY_DAYS);
 
     let successCount = 0;
     let failedCount = 0;
+    const transactionSyncStartedAt = new Date();
     let page = 1;
+    let cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null = null;
 
     try {
+      cardInventory = await this.inventory.syncProviderWithPayload(Provider.photonpay, context.credential.payload);
       while (true) {
         const response = await this.client.listCardTransactions({
           credential,
@@ -73,11 +76,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
             failedCount += 1;
             continue;
           }
-          if (!isInsideSettlementWindow(record.transactionAt, window)) {
-            await this.recordUnmatchedCardSpend(record, context, 'OUTSIDE_SETTLEMENT_WINDOW', 'PhotonPay settled transactionAt is outside the GMT+8 settlement window.');
-            failedCount += 1;
-            continue;
-          }
+          if (!isInsideSettlementWindow(record.transactionAt, window)) continue;
 
           const result = await this.upsertCardSpendEvent(record, context);
           if (result) successCount += 1;
@@ -89,13 +88,17 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       }
     } catch (error) {
       failedCount += 1;
+      await this.inventory.markUntouchedTransactionSync(Provider.photonpay, transactionSyncStartedAt, `failed:${providerErrorCategory(error)}`);
       const errorMessage = sanitizeErrorMessage(error instanceof Error ? error.message : 'PhotonPay card spend request failed.', credential);
-      return { ...this.result('failed', successCount, failedCount, window, errorMessage, context), errorCategory: providerErrorCategory(error) };
+      const providerError = safeProviderError(error);
+      providerError.message = sanitizeErrorMessage(providerError.message, credential);
+      return { ...this.result('failed', successCount, failedCount, window, errorMessage, context, cardInventory, providerError), errorCategory: providerErrorCategory(error) };
     }
 
-    const status = successCount > 0 && failedCount === 0 ? 'completed' : 'failed';
+    const status = failedCount === 0 ? 'completed' : 'failed';
+    await this.inventory.markUntouchedTransactionSync(Provider.photonpay, transactionSyncStartedAt, 'completed:no_transactions');
     const message = `PhotonPay card spend sync finished: successCount=${successCount}, failedCount=${failedCount}.`;
-    return this.result(status, successCount, failedCount, window, message, context);
+    return this.result(status, successCount, failedCount, window, message, context, cardInventory);
   }
 
   private result(
@@ -105,6 +108,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
     window: ReturnType<typeof getPhotonPayRequestAndSettlementWindows>,
     message: string,
     context: SyncAdapterContext,
+    cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null,
+    providerError: ReturnType<typeof safeProviderError> | null = null,
   ): SyncAdapterResult {
     return {
       status,
@@ -115,9 +120,11 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       resultPayload: {
         adapterKey: this.adapterKey,
         provider: Provider.photonpay,
-        pulledThirdPartyData: true,
+        pulledThirdPartyData: cardInventory !== null || successCount > 0,
         successCount,
         failedCount,
+        cardInventory,
+        providerError,
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
         requestWindow: {
           from: window.requestFrom.toISOString(),
@@ -151,26 +158,21 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       return false;
     }
 
-    const mapping = await this.db().cardBinding.findFirst({
-      where: {
-        provider: Provider.photonpay,
-        cardId: record.cardId,
-        effectiveMonth: context.settlementMonth,
-        status: CommonStatus.active,
-      },
-      select: { employeeId: true },
-    });
-    if (!mapping) {
-      await this.recordUnmatchedCardSpend(record, context, 'CARD_NOT_MAPPED', 'PhotonPay cardId is not mapped to an employee.');
+    const ownership = await this.inventory.resolveSpendOwner(Provider.photonpay, record.cardId, context.settlementMonth);
+    if (!ownership.ok) {
+      await this.recordUnmatchedCardSpend(record, context, ownership.reasonCode, ownership.reasonMessage);
+      await this.inventory.markTransactionSync(Provider.photonpay, record.cardId, `unmatched:${ownership.reasonCode}`);
       return false;
     }
+
+    const safeRawData = buildPhotonPayRawSafeData(record, ownership.subIdMapping);
 
     await this.db().cardSpendEvent.upsert({
       where: { provider_externalEventId: { provider: Provider.photonpay, externalEventId: record.externalEventId } },
       update: {
         settlementMonth: context.settlementMonth,
         cardId: record.cardId,
-        employeeId: mapping.employeeId,
+        employeeId: ownership.employeeId,
         transactionAt: record.transactionAt,
         amount: record.amount,
         currency: record.currency,
@@ -178,8 +180,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
         settledAt: record.settledAt,
         sourceStatus: record.sourceStatus,
         sourceUpdatedAt: record.sourceUpdatedAt,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
+        rawData: safeRawData,
+        status: 'confirmed',
         importedBy: context.requestedBy,
       },
       create: {
@@ -187,7 +189,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
         externalEventId: record.externalEventId,
         settlementMonth: context.settlementMonth,
         cardId: record.cardId,
-        employeeId: mapping.employeeId,
+        employeeId: ownership.employeeId,
         transactionAt: record.transactionAt,
         amount: record.amount,
         currency: record.currency,
@@ -195,11 +197,19 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
         settledAt: record.settledAt,
         sourceStatus: record.sourceStatus,
         sourceUpdatedAt: record.sourceUpdatedAt,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
+        rawData: safeRawData,
+        status: 'confirmed',
         importedBy: context.requestedBy,
       },
     });
+    await this.unmatchedEvents.resolveAfterSuccessfulImport({
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      thirdPartyEventId: record.externalEventId,
+      employeeId: ownership.employeeId,
+      resolvedBy: context.requestedBy,
+    });
+    await this.inventory.markTransactionSync(Provider.photonpay, record.cardId, 'completed');
     return true;
   }
 
@@ -261,60 +271,34 @@ export function getPhotonPayRequestAndSettlementWindows(settlementMonth: Date, s
 }
 
 export function normalizePhotonPayTransaction(raw: PhotonPayTransactionRecord): NormalizedPhotonPayTransaction {
-  const amount = firstValue(raw.amount, raw.transactionAmount, raw.transaction_amount, raw.billingAmount, raw.billing_amount, raw.settlementAmount, raw.settlement_amount);
+  const amount = firstValue(raw.transactionAmount, raw.transaction_amount, raw.amount);
+  const transactionType = firstNonBlank(raw.transactionType, raw.transaction_type);
+  const unsignedAmount = new Prisma.Decimal(typeof amount === 'number' || typeof amount === 'string' ? amount : 0).abs();
+  const credit = ['REFUND', 'CORRECTIVE_REFUND'].includes(normalizeStatus(transactionType) ?? '');
   return {
-    externalEventId: firstNonBlank(raw.id, raw.transactionId, raw.transaction_id, raw.tradeId, raw.trade_id, raw.orderId, raw.order_id),
-    cardId: firstNonBlank(
-      raw.cardId,
-      raw.card_id,
-      raw.cardNo,
-      raw.card_no,
-      raw.cardNumberMask,
-      raw.card_number_mask,
-      raw.cardIdentifier,
-      raw.card_identifier,
-      recordField(raw.card, 'id'),
-      recordField(raw.card, 'cardId'),
-      recordField(raw.card, 'card_id'),
-      recordField(raw.card, 'cardNumberMask'),
-    ),
-    cardLast4: firstNonBlank(raw.cardLast4, raw.card_last4, raw.last4, recordField(raw.card, 'last4'), recordField(raw.card, 'cardLast4'), recordField(raw.card, 'card_last4')),
-    cardEmail: firstNonBlank(raw.cardEmail, raw.card_email, raw.email, recordField(raw.card, 'email'), recordField(raw.card, 'cardEmail'), recordField(raw.card, 'card_email')),
-    transactionAt: parseDate(firstValue(raw.transactionAt, raw.transaction_at, raw.transactionTime, raw.transaction_time, raw.tradeTime, raw.trade_time)),
-    amount: new Prisma.Decimal(typeof amount === 'number' || typeof amount === 'string' ? amount : 0),
-    currency: firstNonBlank(raw.currency, raw.transactionCurrency, raw.transaction_currency, raw.billingCurrency, raw.billing_currency, raw.settlementCurrency, raw.settlement_currency)?.toUpperCase() ?? null,
-    settledAt: parseDate(firstValue(raw.settledAt, raw.settled_at, raw.settlementAt, raw.settlement_at, raw.settleTime, raw.settle_time)),
-    sourceStatus: firstNonBlank(raw.settleStatus, raw.settle_status, raw.settlementStatus, raw.settlement_status),
-    sourceUpdatedAt: parseDate(firstValue(raw.updatedAt, raw.updated_at, raw.updateTime, raw.update_time, raw.createdAt, raw.created_at)),
-    rawData: raw,
-  };
-}
-
-function parseCredentialPayload(payload: unknown): PhotonPayCredentialPayload {
-  if (!payload || typeof payload !== 'object') {
-    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'PhotonPay credential payload is required.');
-  }
-  const record = payload as Record<string, unknown>;
-  const apiKey = asNonBlankString(record.apiKey);
-  const token = asNonBlankString(record.token);
-  const secret = asNonBlankString(record.secret);
-  const merchantId = asNonBlankString(record.merchantId);
-  if (!apiKey && !token) throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'PhotonPay credential apiKey or token is required.');
-
-  return {
-    baseUrl: asNonBlankString(record.baseUrl) ?? undefined,
-    transactionsPath: asNonBlankString(record.transactionsPath) ?? undefined,
-    apiKey: apiKey ?? undefined,
-    token: token ?? undefined,
-    secret: secret ?? undefined,
-    merchantId: merchantId ?? undefined,
-    settlementDelayDays: parseSettlementDelayDays(record.settlementDelayDays),
+    externalEventId: firstNonBlank(raw.transactionId, raw.transaction_id, raw.id),
+    cardId: firstNonBlank(raw.cardId, raw.card_id),
+    cardLast4: lastFour(firstNonBlank(raw.maskCardNo, raw.mask_card_no, raw.cardLast4)),
+    cardEmail: null,
+    transactionAt: parseDate(firstValue(raw.txnDate, raw.txn_date)),
+    amount: credit ? unsignedAmount.negated() : unsignedAmount,
+    currency: firstNonBlank(raw.transactionCurrency, raw.transaction_currency, raw.currency)?.toUpperCase() ?? null,
+    settledAt: parseDate(firstValue(raw.settlementDate, raw.settlement_date)),
+    sourceStatus: [firstNonBlank(raw.settleStatus, raw.settle_status), firstNonBlank(raw.status), transactionType].filter(Boolean).join('|') || null,
+    settleStatus: firstNonBlank(raw.settleStatus, raw.settle_status),
+    transactionStatus: firstNonBlank(raw.status),
+    transactionType,
+    sourceUpdatedAt: parseDate(firstValue(raw.createdAt, raw.created_at, raw.settlementDate, raw.settlement_date)),
   };
 }
 
 function isSettled(record: NormalizedPhotonPayTransaction): boolean {
-  const normalized = normalizeStatus(record.sourceStatus);
-  return normalized === PHOTONPAY_SETTLED_STATUS_ZH || normalized === 'SETTLED' || normalized === 'SETTLED_SUCCESS';
+  const settleStatus = normalizeStatus(record.settleStatus);
+  const status = normalizeStatus(record.transactionStatus);
+  const type = normalizeStatus(record.transactionType);
+  return settleStatus === 'SETTLED'
+    && status === 'SUCCEED'
+    && ['AUTH', 'CORRECTIVE_AUTH', 'REFUND', 'CORRECTIVE_REFUND', 'REFUND_REVERSAL', 'CORRECTIVE_REFUND_VOID'].includes(type ?? '');
 }
 
 function normalizeStatus(value: string | null): string | null {
@@ -324,10 +308,6 @@ function normalizeStatus(value: string | null): string | null {
 
 function isInsideSettlementWindow(date: Date | null, window: ReturnType<typeof getPhotonPayRequestAndSettlementWindows>): boolean {
   return !!date && date >= window.settlementStartInclusiveUtc && date < window.settlementEndExclusiveUtc;
-}
-
-function recordField(value: unknown, field: string): unknown {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>)[field] : undefined;
 }
 
 function firstNonBlank(...values: unknown[]): string | null {
@@ -346,6 +326,12 @@ function asNonBlankString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function lastFour(value: string | null): string | null {
+  if (!value) return null;
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 4 ? digits.slice(-4) : null;
+}
+
 function parseSettlementDelayDays(value: unknown): number {
   if (value === undefined || value === null || value === '') return DEFAULT_SETTLEMENT_DELAY_DAYS;
   const parsed = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
@@ -359,23 +345,29 @@ function parseDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function buildPhotonPayRawSafeData(record: NormalizedPhotonPayTransaction): Prisma.InputJsonObject {
+function buildPhotonPayRawSafeData(
+  record: NormalizedPhotonPayTransaction,
+  subIdMapping?: { affiliateAccountId: string; subField: string; subValue: string },
+): Prisma.InputJsonObject {
   return {
     transactionId: record.externalEventId,
     cardId: record.cardId,
     cardLast4: record.cardLast4,
     cardEmail: record.cardEmail,
-    status: record.sourceStatus,
-    sourceStatus: record.sourceStatus,
+    settleStatus: record.settleStatus,
+    status: record.transactionStatus,
+    transactionType: record.transactionType,
     amount: record.amount.toString(),
     currency: record.currency,
     transactionAt: record.transactionAt?.toISOString(),
     settledAt: record.settledAt?.toISOString(),
+    affiliateAccountId: subIdMapping?.affiliateAccountId,
+    subField: subIdMapping?.subField,
+    subValue: subIdMapping?.subValue,
   };
 }
 
 function sanitizeErrorMessage(message: string, credential: PhotonPayCredentialPayload): string {
-  return [credential.apiKey, credential.token, credential.secret, credential.merchantId]
-    .filter((value): value is string => !!value)
+  return [credential.appId, credential.appSecret]
     .reduce((sanitized, secret) => sanitized.split(secret).join('[REDACTED]'), message);
 }

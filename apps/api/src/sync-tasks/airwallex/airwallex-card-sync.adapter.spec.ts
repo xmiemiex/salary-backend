@@ -25,7 +25,7 @@ describe('AirwallexClient', () => {
       credential: { clientId: 'client-id', apiKey: 'api-key', baseUrl: 'https://airwallex.example.test' },
       from: new Date('2026-05-31T16:00:00.000Z'),
       to: new Date('2026-06-30T16:00:00.000Z'),
-      page: 2,
+      page: 'cursor-2',
       pageSize: 200,
     });
 
@@ -47,7 +47,7 @@ describe('AirwallexClient', () => {
     expect(url.searchParams.get('to_created_at')).toBe('2026-06-30T16:00:00.000Z');
     expect(url.searchParams.has('transaction_type')).toBe(false);
     expect(url.searchParams.has('status')).toBe(false);
-    expect(url.searchParams.get('page_num')).toBe('2');
+    expect(url.searchParams.get('page')).toBe('cursor-2');
     expect(url.searchParams.get('page_size')).toBe('200');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({
       method: 'GET',
@@ -92,7 +92,8 @@ describe('AirwallexCardSyncAdapter', () => {
     cardSpendEvent: { upsert: jest.Mock };
   };
   let client: { listCardTransactions: jest.Mock };
-  let unmatchedEvents: { recordUnmatchedEvent: jest.Mock };
+  let unmatchedEvents: { recordUnmatchedEvent: jest.Mock; resolveAfterSuccessfulImport: jest.Mock };
+  let inventory: { syncProviderWithPayload: jest.Mock; resolveSpendOwner: jest.Mock; markTransactionSync: jest.Mock; markUntouchedTransactionSync: jest.Mock };
   let adapter: AirwallexCardSyncAdapter;
 
   beforeEach(() => {
@@ -101,8 +102,17 @@ describe('AirwallexCardSyncAdapter', () => {
       cardSpendEvent: { upsert: jest.fn().mockResolvedValue({ id: 'spend-1' }) },
     };
     client = { listCardTransactions: jest.fn() };
-    unmatchedEvents = { recordUnmatchedEvent: jest.fn().mockResolvedValue({ id: 'unmatched-1' }) };
-    adapter = new AirwallexCardSyncAdapter(prisma as never, client as never, unmatchedEvents as never);
+    unmatchedEvents = {
+      recordUnmatchedEvent: jest.fn().mockResolvedValue({ id: 'unmatched-1' }),
+      resolveAfterSuccessfulImport: jest.fn().mockResolvedValue(false),
+    };
+    inventory = {
+      syncProviderWithPayload: jest.fn().mockResolvedValue({ provider: Provider.airwallex, status: 'completed', discoveredCount: 1, matchedCount: 1, unmatchedCount: 0, conflictCount: 0, retainedHistoricalCards: true }),
+      resolveSpendOwner: jest.fn().mockResolvedValue({ ok: true, employeeId, subIdMapping: { id: 'sub-1', affiliateAccountId: 'account-1', subField: 'sub1', subValue: 'employee-sub' } }),
+      markTransactionSync: jest.fn().mockResolvedValue(undefined),
+      markUntouchedTransactionSync: jest.fn().mockResolvedValue(undefined),
+    };
+    adapter = new AirwallexCardSyncAdapter(prisma as never, client as never, unmatchedEvents as never, inventory as never);
   });
 
   it('calculates the GMT+8 settlement month window from transactionAt', () => {
@@ -136,16 +146,14 @@ describe('AirwallexCardSyncAdapter', () => {
     expect(result.failedCount).toBe(0);
     expect(client.listCardTransactions).toHaveBeenCalledWith(
       expect.objectContaining({
-        credential: {
+        credential: expect.objectContaining({
           clientId: 'plain-client-id',
           apiKey: 'plain-api-key',
-          baseUrl: undefined,
-          transactionsPath: undefined,
           settlementDelayDays: 10,
-        },
+        }),
         from: new Date('2026-05-31T16:00:00.000Z'),
         to: new Date('2026-07-10T16:00:00.000Z'),
-        page: 0,
+        page: null,
       }),
     );
     expect(result.resultPayload).toMatchObject({
@@ -159,15 +167,7 @@ describe('AirwallexCardSyncAdapter', () => {
         timezone: 'GMT+8',
       },
     });
-    expect(prisma.cardBinding.findFirst).toHaveBeenCalledWith({
-      where: {
-        provider: Provider.airwallex,
-        cardId: 'card-1',
-        effectiveMonth: settlementMonth,
-        status: CommonStatus.active,
-      },
-      select: { employeeId: true },
-    });
+    expect(inventory.resolveSpendOwner).toHaveBeenCalledWith(Provider.airwallex, 'card-1', settlementMonth);
     expect(prisma.cardSpendEvent.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { provider_externalEventId: { provider: Provider.airwallex, externalEventId: 'txn-1' } },
@@ -284,17 +284,11 @@ describe('AirwallexCardSyncAdapter', () => {
 
     const result = await adapter.execute(context());
 
-    expect(result.status).toBe('failed');
+    expect(result.status).toBe('completed');
     expect(result.successCount).toBe(0);
-    expect(result.failedCount).toBe(1);
+    expect(result.failedCount).toBe(0);
     expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
-    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reasonCode: 'OUTSIDE_SETTLEMENT_WINDOW',
-        thirdPartyEventId: 'txn-1',
-        occurredAt: new Date('2026-07-01T00:00:00.000Z'),
-      }),
-    );
+    expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
   it('uses credential settlementDelayDays to extend requestToCreatedDate', async () => {
@@ -361,7 +355,7 @@ describe('AirwallexCardSyncAdapter', () => {
     expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
-  it('records settled transactions outside the GMT+8 month window as unmatched', async () => {
+  it('filters settled transactions outside the GMT+8 month window without reconciliation noise', async () => {
     mockTransactions([
       { transaction_id: 'txn-1', card_id: 'card-1', transaction_type: 'CLEARING', transaction_date: '2026-05-31T15:59:59.999Z', billing_amount: 1, billing_currency: 'USD' },
       { transaction_id: 'txn-2', card_id: 'card-1', transaction_type: 'CLEARING', transaction_date: '2026-06-30T16:00:00.000Z', billing_amount: 1, billing_currency: 'USD' },
@@ -370,19 +364,17 @@ describe('AirwallexCardSyncAdapter', () => {
 
     const result = await adapter.execute(context());
 
-    expect(result.status).toBe('failed');
+    expect(result.status).toBe('completed');
     expect(result.successCount).toBe(0);
-    expect(result.failedCount).toBe(2);
-    expect(prisma.cardBinding.findFirst).not.toHaveBeenCalled();
+    expect(result.failedCount).toBe(0);
+    expect(inventory.resolveSpendOwner).not.toHaveBeenCalled();
     expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
-    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledTimes(2);
-    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'OUTSIDE_SETTLEMENT_WINDOW', thirdPartyEventId: 'txn-1' }));
-    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'OUTSIDE_SETTLEMENT_WINDOW', thirdPartyEventId: 'txn-2' }));
+    expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
   it('rejects settled transactions with no active card employee mapping', async () => {
     mockTransactions([settledTransaction()]);
-    prisma.cardBinding.findFirst.mockResolvedValue(null);
+    inventory.resolveSpendOwner.mockResolvedValue({ ok: false, reasonCode: 'CARD_NOT_MAPPED', reasonMessage: 'not mapped' });
 
     const result = await adapter.execute(context());
 
@@ -406,7 +398,7 @@ describe('AirwallexCardSyncAdapter', () => {
 
     expect(result.status).toBe('failed');
     expect(result.failedCount).toBe(1);
-    expect(prisma.cardBinding.findFirst).not.toHaveBeenCalled();
+    expect(inventory.resolveSpendOwner).not.toHaveBeenCalled();
     expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -425,7 +417,7 @@ describe('AirwallexCardSyncAdapter', () => {
 
     expect(result.status).toBe('failed');
     expect(result.failedCount).toBe(1);
-    expect(prisma.cardBinding.findFirst).not.toHaveBeenCalled();
+    expect(inventory.resolveSpendOwner).not.toHaveBeenCalled();
     expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(
       expect.objectContaining({

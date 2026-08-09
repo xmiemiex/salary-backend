@@ -39,25 +39,6 @@ type FieldConfig = {
   create?: boolean;
   edit?: boolean;
   render?: (record: BaseRecord) => string;
-  airwallexCardDiscovery?: boolean;
-};
-
-type AirwallexDiscoveredCard = {
-  cardId: string;
-  last4?: string | null;
-  nickname?: string | null;
-  cardStatus?: string | null;
-  cardholderName?: string | null;
-  cardholderEmail?: string | null;
-  suggestedEmployeeCode?: string | null;
-  suggestedEmployeeName?: string | null;
-  mappingHint: string;
-};
-
-type AirwallexDiscoveryResponse = {
-  cardCount: number;
-  cards: AirwallexDiscoveredCard[];
-  warnings?: string[];
 };
 
 type PageConfig = {
@@ -142,24 +123,10 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
     ],
   },
   '/card-bindings': {
-    title: '虚拟卡绑定',
+    title: '虚拟卡自动关联',
     endpoint: '/card-bindings',
-    defaultCreateValues: { status: 'active' },
-    notice: 'Airwallex 凭证会拉取账户下全部卡交易；此处只负责把 Airwallex 返回的卡片/持卡人映射到后台员工。未映射或持卡人不唯一的卡不会自动归属员工。',
-    fields: [
-      { name: 'provider', label: '卡服务商', type: 'select', options: PROVIDER_OPTIONS, required: true, filter: true },
-      {
-        name: 'cardId',
-        label: 'Airwallex 卡片 / 使用人',
-        type: 'select',
-        required: true,
-        airwallexCardDiscovery: true,
-        help: '选择从 Airwallex 只读接口发现的卡片；PhotonPay 暂保留卡 ID 输入。',
-      },
-      { name: 'effectiveMonth', label: '生效月份', type: 'month', required: true, filter: true, help: '用于支持卡片更换使用人；同步该月份花费时采用此映射。' },
-      { name: 'employeeId', label: '后台员工', type: 'select', optionSource: 'employees', required: true, filter: true },
-      { name: 'status', label: '状态', type: 'select', options: STATUS_OPTIONS, filter: true },
-    ],
+    notice: '卡片由服务商接口全量发现，并按持卡人邮箱精确关联员工；此页面不提供手工绑卡入口。',
+    fields: [],
   },
   '/monthly-exchange-rates': {
     title: '汇率设置',
@@ -404,15 +371,14 @@ type FieldControlProps = {
   value?: string | number | bigint | readonly string[];
   onChange?: (...args: unknown[]) => void;
   disabled?: boolean;
-  selectedProvider?: unknown;
 };
 
-function FieldControl({ field, onValueChange, onChange, selectedProvider, ...formControlProps }: FieldControlProps) {
+function FieldControl({ field, onValueChange, onChange, ...formControlProps }: FieldControlProps) {
   const handleChange = (...args: unknown[]) => {
     onChange?.(...args);
     onValueChange?.();
   };
-  if (field.type === 'select' && (!field.airwallexCardDiscovery || selectedProvider === 'airwallex')) {
+  if (field.type === 'select') {
     return (
       <Select
         {...formControlProps}
@@ -455,22 +421,6 @@ export function buildEmployeeOptions(employees: BaseRecord[]) {
     value: employee.id,
     label: `${String(employee.employeeCode ?? '')} / ${String(employee.name ?? '')}${employee.status === 'disabled' ? '（已禁用）' : ''}`,
   }));
-}
-
-export function buildAirwallexCardOptions(cards: AirwallexDiscoveredCard[]) {
-  return cards.map((card) => {
-    const holder = [card.cardholderName, card.cardholderEmail].filter(Boolean).join(' / ') || '未返回持卡人';
-    const cardText = [card.last4 ? `****${card.last4}` : null, card.nickname, card.cardStatus].filter(Boolean).join(' / ');
-    const suggestion = card.suggestedEmployeeCode
-      ? `；建议员工 ${card.suggestedEmployeeCode} / ${card.suggestedEmployeeName ?? ''}`
-      : card.mappingHint === 'multiple_cardholders'
-        ? '；多人持卡，必须人工确认'
-        : '；未找到唯一员工邮箱匹配';
-    return {
-      value: card.cardId,
-      label: `${holder} / ${cardText || `卡 ${card.cardId.slice(-8)}`}${suggestion}`,
-    };
-  });
 }
 
 function PerformanceGroupMembersForm() {
@@ -531,6 +481,140 @@ export function hasBaseDataPage(path: string): boolean {
 }
 
 export function BaseDataPage({ path }: { path: string }) {
+  if (path === '/card-bindings') return <ProviderCardsPage />;
+  return <GenericBaseDataPage path={path} />;
+}
+
+type ProviderCardRow = BaseRecord & {
+  provider: 'airwallex' | 'photonpay';
+  cardId: string;
+  maskedCardNumber?: string | null;
+  nickname?: string | null;
+  providerStatus?: string | null;
+  cardholderEmail?: string | null;
+  employeeCode?: string | null;
+  employeeName?: string | null;
+  matchStatus: 'matched' | 'unmatched' | 'conflict';
+  unmatchedReasonCode?: string | null;
+  lastCardSyncedAt?: string | null;
+  lastTransactionSyncedAt?: string | null;
+  lastTransactionSyncStatus?: string | null;
+};
+
+type ProviderCardListResponse = { items: ProviderCardRow[]; summary: Record<string, number> };
+type ProviderSyncResult = {
+  provider: 'airwallex' | 'photonpay';
+  status: 'completed' | 'partial' | 'external_blocked' | 'failed';
+  discoveredCount: number;
+  matchedCount: number;
+  unmatchedCount: number;
+  conflictCount: number;
+  invalidCardCount?: number;
+  apiVersion?: string;
+  error?: { category?: string; httpStatus?: number | null; code?: string | null; message?: string; requestId?: string | null; apiVersion?: string | null };
+};
+
+function ProviderCardsPage() {
+  const [messageApi, messageHolder] = message.useMessage();
+  const [rows, setRows] = useState<ProviderCardRow[]>([]);
+  const [summary, setSummary] = useState<Record<string, number>>({});
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [results, setResults] = useState<ProviderSyncResult[]>([]);
+
+  const loadCards = useCallback(async (nextFilters = filters) => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams(Object.entries(nextFilters).filter(([, value]) => Boolean(value))).toString();
+      const response = await apiClient.request<ProviderCardListResponse>(`/card-bindings${query ? `?${query}` : ''}`);
+      setRows(response.items);
+      setSummary(response.summary);
+    } catch (error) {
+      messageApi.error(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, messageApi]);
+
+  useEffect(() => { void loadCards({}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const syncCards = async (provider?: 'airwallex' | 'photonpay') => {
+    setSyncing(provider ?? 'all');
+    try {
+      const response = provider
+        ? await apiClient.request<ProviderSyncResult>(`/card-bindings/sync/${provider}`, { method: 'POST' })
+        : await apiClient.request<{ results: ProviderSyncResult[] }>('/card-bindings/sync', { method: 'POST' });
+      const nextResults = provider ? [response as ProviderSyncResult] : (response as { results: ProviderSyncResult[] }).results;
+      setResults(nextResults);
+      if (nextResults.every((item) => item.status === 'completed')) messageApi.success('卡库存同步完成');
+      else messageApi.warning('卡库存同步部分完成，请查看 Provider 返回信息');
+      await loadCards(filters);
+    } catch (error) {
+      messageApi.error(errorMessage(error));
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  const columns: ColumnsType<ProviderCardRow> = [
+    { title: 'Provider', dataIndex: 'provider', render: (value) => value === 'airwallex' ? 'Airwallex' : 'PhotonPay' },
+    { title: '卡号', dataIndex: 'maskedCardNumber', render: (value) => formatValue(value) },
+    { title: '卡昵称', dataIndex: 'nickname', render: (value) => formatValue(value) },
+    { title: '卡状态', dataIndex: 'providerStatus', render: (value) => formatValue(value) },
+    { title: '持卡人邮箱', dataIndex: 'cardholderEmail', render: (value) => formatValue(value) },
+    { title: '匹配员工', key: 'employee', render: (_, row) => row.employeeName ? `${row.employeeCode ?? ''} ${row.employeeName}`.trim() : '-' },
+    {
+      title: '匹配结果', dataIndex: 'matchStatus',
+      render: (value, row) => <Space><Tag color={value === 'matched' ? 'green' : value === 'conflict' ? 'red' : 'orange'}>{value}</Tag>{row.unmatchedReasonCode ?? ''}</Space>,
+    },
+    { title: '最近卡同步', dataIndex: 'lastCardSyncedAt', render: formatDate },
+    {
+      title: '最近交易同步', key: 'transactionSync',
+      render: (_, row) => <span>{formatDate(row.lastTransactionSyncedAt)}<br />{row.lastTransactionSyncStatus ?? '-'}</span>,
+    },
+  ];
+
+  return (
+    <section className="page-section data-page">
+      {messageHolder}
+      <div className="data-page-header">
+        <div>
+          <Typography.Title level={3}>虚拟卡自动关联</Typography.Title>
+          <Typography.Text type="secondary">系统从 Airwallex、PhotonPay 自动发现全部卡，并仅按持卡人邮箱精确关联唯一在职员工。</Typography.Text>
+        </div>
+        <Space wrap>
+          <Button onClick={() => void loadCards(filters)} loading={loading}>刷新列表</Button>
+          <Button onClick={() => void syncCards('airwallex')} loading={syncing === 'airwallex'}>同步 Airwallex</Button>
+          <Button onClick={() => void syncCards('photonpay')} loading={syncing === 'photonpay'}>同步 PhotonPay</Button>
+          <Button type="primary" onClick={() => void syncCards()} loading={syncing === 'all'}>同步全部卡</Button>
+        </Space>
+      </div>
+      <Alert type="info" showIcon message="无需填写外部卡 ID、员工 ID 或生效月份。未匹配、重复邮箱、停用员工和冲突映射不会进入工资花费。" />
+      {results.map((result) => (
+        <Alert
+          key={result.provider}
+          className="data-page-notice"
+          type={result.status === 'completed' ? 'success' : result.status === 'external_blocked' ? 'error' : 'warning'}
+          showIcon
+          message={`${result.provider}: ${result.status}; cards=${result.discoveredCount}, matched=${result.matchedCount}, unmatched=${result.unmatchedCount}, conflict=${result.conflictCount}, missingId=${result.invalidCardCount ?? 0}`}
+          description={result.error ? `HTTP ${result.error.httpStatus ?? '-'} / ${result.error.code ?? result.error.category ?? '-'} / ${result.error.message ?? '-'} / requestId ${result.error.requestId ?? '-'} / API ${result.error.apiVersion ?? result.apiVersion ?? '-'}` : undefined}
+        />
+      ))}
+      <Form layout="inline" className="data-filter" onFinish={(values) => { setFilters(values); void loadCards(values); }}>
+        <Form.Item name="provider" label="Provider"><Select allowClear style={{ width: 160 }} options={PROVIDER_OPTIONS} /></Form.Item>
+        <Form.Item name="matchStatus" label="匹配状态"><Select allowClear style={{ width: 160 }} options={['matched', 'unmatched', 'conflict'].map((value) => ({ label: value, value }))} /></Form.Item>
+        <Form.Item><Button type="primary" htmlType="submit">查询</Button></Form.Item>
+      </Form>
+      <Space wrap className="data-page-notice">
+        {Object.entries(summary).map(([key, value]) => <Tag key={key}>{key}: {value}</Tag>)}
+      </Space>
+      <Table rowKey="id" columns={columns} dataSource={rows} loading={loading} scroll={{ x: 'max-content' }} />
+    </section>
+  );
+}
+
+function GenericBaseDataPage({ path }: { path: string }) {
   const config = PAGE_CONFIGS[path];
   const [records, setRecords] = useState<BaseRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -544,10 +628,7 @@ export function BaseDataPage({ path }: { path: string }) {
     affiliateAccounts: [],
     employees: [],
   });
-  const [airwallexCardOptions, setAirwallexCardOptions] = useState<{ label: string; value: string }[]>([]);
-  const [loadingAirwallexCards, setLoadingAirwallexCards] = useState(false);
   const selectedAffiliatePlatform = Form.useWatch('platform', form);
-  const selectedCardProvider = Form.useWatch('provider', form);
   const [messageApi, messageHolder] = message.useMessage();
   const [modalApi, modalHolder] = Modal.useModal();
 
@@ -598,28 +679,9 @@ export function BaseDataPage({ path }: { path: string }) {
   }, [config.fields, messageApi]);
 
   const fieldOptions = useCallback(
-    (field: FieldConfig) => field.airwallexCardDiscovery ? airwallexCardOptions : field.optionSource ? referenceOptions[field.optionSource] : field.options ?? [],
-    [airwallexCardOptions, referenceOptions],
+    (field: FieldConfig) => field.optionSource ? referenceOptions[field.optionSource] : field.options ?? [],
+    [referenceOptions],
   );
-
-  const loadAirwallexCards = useCallback(async () => {
-    setLoadingAirwallexCards(true);
-    try {
-      const response = await apiClient.request<AirwallexDiscoveryResponse>('/card-bindings/airwallex/discovery');
-      setAirwallexCardOptions(buildAirwallexCardOptions(response.cards));
-      response.warnings?.forEach((warning) => messageApi.warning(warning));
-    } catch (error) {
-      setAirwallexCardOptions([]);
-      messageApi.error(`Airwallex 卡片加载失败：${errorMessage(error)}`);
-    } finally {
-      setLoadingAirwallexCards(false);
-    }
-  }, [messageApi]);
-
-  useEffect(() => {
-    if (!open || path !== '/card-bindings' || selectedCardProvider !== 'airwallex') return;
-    void loadAirwallexCards();
-  }, [loadAirwallexCards, open, path, selectedCardProvider]);
 
   useEffect(() => {
     if (!open) return;
@@ -863,8 +925,6 @@ export function BaseDataPage({ path }: { path: string }) {
               >
                 <FieldControl
                   field={{ ...field, label, options: fieldOptions(field) }}
-                  selectedProvider={selectedCardProvider}
-                  disabled={field.airwallexCardDiscovery && selectedCardProvider === 'airwallex' && loadingAirwallexCards}
                   onValueChange={() => {
                     queueMicrotask(() => {
                       void form.validateFields([field.name]).catch(() => undefined);

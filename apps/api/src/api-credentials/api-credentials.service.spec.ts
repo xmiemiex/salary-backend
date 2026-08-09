@@ -235,17 +235,15 @@ describe('ApiCredentialsService', () => {
 
     await service.upsertCardProvider(
       'photonpay',
-      { payload: { apiKey: 'apiKey-raw-123456', secret: 'secret-raw-123456', token: 'token-raw-123456' } },
+      { payload: { appId: 'appId-raw-123456', appSecret: 'secret-raw-123456' } },
       actor,
     );
 
     const auditPayload = JSON.stringify(audit.success.mock.calls[0][0]);
-    expect(auditPayload).not.toContain('apiKey-raw-123456');
+    expect(auditPayload).not.toContain('appId-raw-123456');
     expect(auditPayload).not.toContain('secret-raw-123456');
-    expect(auditPayload).not.toContain('token-raw-123456');
-    expect(auditPayload).toContain('apiK****3456');
+    expect(auditPayload).toContain('appI****3456');
     expect(auditPayload).toContain('secr****3456');
-    expect(auditPayload).toContain('toke****3456');
   });
 });
 

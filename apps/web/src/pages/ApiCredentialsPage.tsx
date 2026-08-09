@@ -42,7 +42,12 @@ type CredentialFormValues = {
   fields?: PayloadField[];
 };
 
-const DEFAULT_FIELDS: PayloadField[] = [{ key: '', value: '' }];
+const PHOTONPAY_DEFAULT_FIELDS: PayloadField[] = [
+  { key: 'appId', value: '' },
+  { key: 'appSecret', value: '' },
+  { key: 'baseUrl', value: '' },
+  { key: 'settlementDelayDays', value: '10' },
+];
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -158,7 +163,9 @@ export function ApiCredentialsPage() {
           conversionsPath: publicMaskedValue(masked.conversionsPath),
         });
       } else {
-        form.setFieldsValue(nextTarget.id === 'airwallex' ? { clientId: '', apiKey: '', baseUrl: '' } : { fields: DEFAULT_FIELDS });
+        form.setFieldsValue(nextTarget.id === 'airwallex'
+          ? { clientId: '', apiKey: '', baseUrl: '' }
+          : { fields: PHOTONPAY_DEFAULT_FIELDS });
       }
       setTarget(nextTarget);
     },

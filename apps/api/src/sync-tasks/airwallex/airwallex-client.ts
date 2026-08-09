@@ -3,7 +3,7 @@ import { ProviderRequestError, providerFetch } from '../provider-request-error';
 import { SyncExecutionErrorCategory } from '@prisma/client';
 
 export const AIRWALLEX_DEFAULT_BASE_URL = 'https://api.airwallex.com';
-export const AIRWALLEX_DEFAULT_TRANSACTIONS_PATH = '/api/v1/issuing/transactions';
+export const AIRWALLEX_DEFAULT_TRANSACTIONS_PATH = '/api/v1/issuing/card_transactions';
 export const AIRWALLEX_DEFAULT_CARDS_PATH = '/api/v1/issuing/cards';
 export const AIRWALLEX_DEFAULT_CARDHOLDERS_PATH = '/api/v1/issuing/cardholders';
 export const AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION = '2024-02-22';
@@ -18,7 +18,7 @@ export type AirwallexCredentialPayload = {
   transactionsPath?: string;
   cardsPath?: string;
   cardholdersPath?: string;
-  apiVersion?: string;
+  apiVersion?: string | null;
   settlementDelayDays?: number;
 };
 
@@ -26,8 +26,8 @@ export type AirwallexTransactionRecord = Record<string, unknown>;
 
 export type AirwallexTransactionsResponse = {
   transactions: AirwallexTransactionRecord[];
-  raw: unknown;
   hasMore: boolean;
+  nextPage: string | null;
 };
 
 export type AirwallexCardsResponse = {
@@ -44,20 +44,22 @@ type FetchLike = typeof fetch;
 
 @Injectable()
 export class AirwallexClient {
+  private readonly tokenCache = new WeakMap<AirwallexCredentialPayload, { token: string; expiresAt: number }>();
+
   constructor(@Optional() @Inject(AIRWALLEX_FETCH) private readonly fetchImpl: FetchLike = fetch) {}
 
   async listCardTransactions(input: {
     credential: AirwallexCredentialPayload;
     from: Date;
     to: Date;
-    page: number;
+    page?: string | number | null;
     pageSize: number;
   }): Promise<AirwallexTransactionsResponse> {
     const token = await this.login(input.credential);
     const url = new URL(input.credential.transactionsPath ?? AIRWALLEX_DEFAULT_TRANSACTIONS_PATH, normalizeBaseUrl(input.credential.baseUrl));
     url.searchParams.set('from_created_at', input.from.toISOString());
     url.searchParams.set('to_created_at', input.to.toISOString());
-    url.searchParams.set('page_num', String(input.page));
+    if (input.page) url.searchParams.set('page', String(input.page));
     url.searchParams.set('page_size', String(input.pageSize));
 
     const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
@@ -65,24 +67,24 @@ export class AirwallexClient {
       headers: this.authorizedHeaders(token, input.credential),
     });
     const raw = await response.json();
-    return {
-      transactions: extractTransactions(raw),
-      raw,
-      hasMore: hasMore(raw, input.page, input.pageSize),
-    };
+    const nextPage = firstString(
+      isRecord(raw) ? raw.page_after : undefined,
+      isRecord(raw) && isRecord(raw.meta) ? raw.meta.page_after : undefined,
+    );
+    return { transactions: extractTransactions(raw), hasMore: Boolean(nextPage), nextPage };
   }
 
   async listCards(input: {
     credential: AirwallexCredentialPayload;
     page: number;
     pageSize: number;
-    from: Date;
-    to: Date;
+    from?: Date;
+    to?: Date;
   }): Promise<AirwallexCardsResponse> {
     const token = await this.login(input.credential);
     const url = new URL(input.credential.cardsPath ?? AIRWALLEX_DEFAULT_CARDS_PATH, normalizeBaseUrl(input.credential.baseUrl));
-    url.searchParams.set('from_created_at', input.from.toISOString());
-    url.searchParams.set('to_created_at', input.to.toISOString());
+    if (input.from) url.searchParams.set('from_created_at', input.from.toISOString());
+    if (input.to) url.searchParams.set('to_created_at', input.to.toISOString());
     url.searchParams.set('page_num', String(input.page));
     url.searchParams.set('page_size', String(input.pageSize));
 
@@ -91,10 +93,8 @@ export class AirwallexClient {
       headers: this.authorizedHeaders(token, input.credential),
     });
     const raw = await response.json();
-    return {
-      cards: extractItems(raw),
-      hasMore: hasMore(raw, input.page, input.pageSize),
-    };
+    const cards = extractItems(raw);
+    return { cards, hasMore: hasMore(raw, input.page, input.pageSize, cards) };
   }
 
   async listCardholders(input: {
@@ -112,22 +112,24 @@ export class AirwallexClient {
       headers: this.authorizedHeaders(token, input.credential),
     });
     const raw = await response.json();
-    return {
-      cardholders: extractItems(raw),
-      hasMore: hasMore(raw, input.page, input.pageSize),
-    };
+    const cardholders = extractItems(raw);
+    return { cardholders, hasMore: hasMore(raw, input.page, input.pageSize, cardholders) };
   }
 
   private authorizedHeaders(token: string, credential: AirwallexCredentialPayload): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       Accept: 'application/json',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      'x-api-version': credential.apiVersion ?? AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION,
     };
+    const apiVersion = credential.apiVersion === undefined ? AIRWALLEX_BUSINESS_ACCOUNT_API_VERSION : credential.apiVersion;
+    if (apiVersion) headers['x-api-version'] = apiVersion;
+    return headers;
   }
 
   private async login(credential: AirwallexCredentialPayload): Promise<string> {
+    const cached = this.tokenCache.get(credential);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
     const url = new URL('/api/v1/authentication/login', normalizeBaseUrl(credential.baseUrl));
     const response = await providerFetch(this.fetchImpl, 'Airwallex', url, {
       method: 'POST',
@@ -140,6 +142,7 @@ export class AirwallexClient {
     const raw = await response.json();
     const token = extractToken(raw);
     if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'Airwallex authentication response was invalid.');
+    this.tokenCache.set(credential, { token, expiresAt: Date.now() + 25 * 60 * 1_000 });
     return token;
   }
 }
@@ -176,11 +179,10 @@ function extractItems(raw: unknown): AirwallexTransactionRecord[] {
   return raw.items.filter(isRecord);
 }
 
-function hasMore(raw: unknown, page: number, pageSize: number): boolean {
+function hasMore(raw: unknown, page: number, pageSize: number, items: AirwallexTransactionRecord[]): boolean {
   if (!isRecord(raw)) return false;
   if (typeof raw.has_more === 'boolean') return raw.has_more;
   const total = firstNumber(raw.total_count, raw.total, isRecord(raw.page) ? raw.page.total_count : undefined);
-  const items = extractTransactions(raw);
   if (typeof total === 'number') return (page + 1) * pageSize < total;
   return items.length >= pageSize;
 }

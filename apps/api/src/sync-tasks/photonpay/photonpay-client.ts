@@ -1,142 +1,197 @@
-import { createHmac } from 'crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { providerFetch } from '../provider-request-error';
+import { SyncExecutionErrorCategory } from '@prisma/client';
+import { ProviderRequestError, providerFetch } from '../provider-request-error';
 
 export const PHOTONPAY_DEFAULT_BASE_URL = 'https://api.photonpay.com';
-export const PHOTONPAY_DEFAULT_TRANSACTIONS_PATH = '/openapi/v1/issuing/transactions';
+export const PHOTONPAY_DEFAULT_TOKEN_PATH = '/oauth2/token/accessToken';
+export const PHOTONPAY_DEFAULT_CARDS_PATH = '/vcc/openApi/v4/pagingVccCard';
+export const PHOTONPAY_DEFAULT_CARD_DETAIL_PATH = '/vcc/openApi/v4/getCardDetail';
+export const PHOTONPAY_DEFAULT_TRANSACTIONS_PATH = '/vcc/openApi/v4/pagingVccTradeOrder';
 export const PHOTONPAY_FETCH = 'PHOTONPAY_FETCH';
-export const PHOTONPAY_API_KEY_HEADER = 'x-api-key';
-export const PHOTONPAY_TOKEN_HEADER = 'authorization';
-export const PHOTONPAY_MERCHANT_ID_HEADER = 'x-merchant-id';
-export const PHOTONPAY_TIMESTAMP_HEADER = 'x-timestamp';
-export const PHOTONPAY_SIGNATURE_HEADER = 'x-signature';
+export const PHOTONPAY_TOKEN_HEADER = 'X-PD-TOKEN';
 
 export type PhotonPayCredentialPayload = {
   baseUrl?: string;
+  tokenPath?: string;
+  cardsPath?: string;
+  cardDetailPath?: string;
   transactionsPath?: string;
-  apiKey?: string;
-  token?: string;
-  secret?: string;
-  merchantId?: string;
+  appId: string;
+  appSecret: string;
   settlementDelayDays?: number;
 };
 
 export type PhotonPayTransactionRecord = Record<string, unknown>;
-
-export type PhotonPayTransactionsResponse = {
-  transactions: PhotonPayTransactionRecord[];
-  raw: unknown;
-  hasMore: boolean;
+export type PhotonPayCardRecord = {
+  cardId: string | null;
+  cardholderId: string | null;
+  email: string | null;
+  maskCardNo: string | null;
+  nickname: string | null;
+  cardStatus: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
+export type PhotonPayTransactionsResponse = { transactions: PhotonPayTransactionRecord[]; hasMore: boolean };
+export type PhotonPayCardsResponse = { cards: PhotonPayCardRecord[]; hasMore: boolean };
 
 type FetchLike = typeof fetch;
 
 @Injectable()
 export class PhotonPayClient {
+  private readonly tokenCache = new WeakMap<PhotonPayCredentialPayload, { token: string; expiresAt: number }>();
+
   constructor(@Optional() @Inject(PHOTONPAY_FETCH) private readonly fetchImpl: FetchLike = fetch) {}
 
-  async listCardTransactions(input: {
-    credential: PhotonPayCredentialPayload;
-    from: Date;
-    to: Date;
-    page: number;
-    pageSize: number;
-  }): Promise<PhotonPayTransactionsResponse> {
-    const path = input.credential.transactionsPath ?? PHOTONPAY_DEFAULT_TRANSACTIONS_PATH;
-    const url = new URL(path, normalizeBaseUrl(input.credential.baseUrl));
-    url.searchParams.set('from', input.from.toISOString());
-    url.searchParams.set('to', input.to.toISOString());
-    url.searchParams.set('startTime', input.from.toISOString());
-    url.searchParams.set('endTime', input.to.toISOString());
-    url.searchParams.set('page', String(input.page));
-    url.searchParams.set('pageSize', String(input.pageSize));
-
-    const timestamp = new Date().toISOString();
-    const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
-      method: 'GET',
-      headers: this.buildHeaders(input.credential, 'GET', url, timestamp),
+  async listCards(input: { credential: PhotonPayCredentialPayload; page: number; pageSize: number }): Promise<PhotonPayCardsResponse> {
+    const raw = await this.authorizedGet(input.credential, input.credential.cardsPath ?? PHOTONPAY_DEFAULT_CARDS_PATH, {
+      pageIndex: input.page, pageSize: input.pageSize,
     });
-    const raw = await response.json();
-    return {
-      transactions: extractTransactions(raw),
-      raw,
-      hasMore: hasMore(raw, input.page, input.pageSize),
-    };
+    const cards = extractDataArray(raw).map(toSafeCardListRecord);
+    const total = extractTotal(raw);
+    return { cards, hasMore: total === null ? cards.length >= input.pageSize : input.page * input.pageSize < total };
   }
 
-  private buildHeaders(credential: PhotonPayCredentialPayload, method: string, url: URL, timestamp: string): HeadersInit {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (credential.apiKey) headers[PHOTONPAY_API_KEY_HEADER] = credential.apiKey;
-    if (credential.token) headers[PHOTONPAY_TOKEN_HEADER] = `Bearer ${credential.token}`;
-    if (credential.merchantId) headers[PHOTONPAY_MERCHANT_ID_HEADER] = credential.merchantId;
-    if (credential.secret) {
-      headers[PHOTONPAY_TIMESTAMP_HEADER] = timestamp;
-      headers[PHOTONPAY_SIGNATURE_HEADER] = signRequest(credential.secret, method, url, timestamp);
-    }
-    return headers;
+  async getCardDetail(input: { credential: PhotonPayCredentialPayload; cardId: string }): Promise<PhotonPayCardRecord> {
+    const raw = await this.authorizedGet(input.credential, input.credential.cardDetailPath ?? PHOTONPAY_DEFAULT_CARD_DETAIL_PATH, {
+      cardId: input.cardId,
+    });
+    // The official response can contain cardNo. Only this allowlisted projection leaves the client.
+    return toSafeCardDetail(extractDataObject(raw), input.cardId);
+  }
+
+  async listCardTransactions(input: {
+    credential: PhotonPayCredentialPayload; from: Date; to: Date; page: number; pageSize: number;
+  }): Promise<PhotonPayTransactionsResponse> {
+    const raw = await this.authorizedGet(input.credential, input.credential.transactionsPath ?? PHOTONPAY_DEFAULT_TRANSACTIONS_PATH, {
+      createdAtStart: formatGmt8DateTime(input.from),
+      createdAtEnd: formatGmt8DateTime(input.to),
+      pageIndex: input.page,
+      pageSize: input.pageSize,
+    });
+    const transactions = extractDataArray(raw);
+    const total = extractTotal(raw);
+    return { transactions, hasMore: total === null ? transactions.length >= input.pageSize : input.page * input.pageSize < total };
+  }
+
+  private async authorizedGet(credential: PhotonPayCredentialPayload, path: string, query: Record<string, string | number>) {
+    const token = await this.accessToken(credential);
+    const url = new URL(path, normalizeBaseUrl(credential.baseUrl));
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+    const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
+      method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
+    });
+    return assertBusinessSuccess(await response.json());
+  }
+
+  private async accessToken(credential: PhotonPayCredentialPayload): Promise<string> {
+    const cached = this.tokenCache.get(credential);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
+    const url = new URL(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, normalizeBaseUrl(credential.baseUrl));
+    const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Basic ${Buffer.from(`${credential.appId}:${credential.appSecret}`, 'utf8').toString('base64')}`,
+      },
+    });
+    const raw = assertBusinessSuccess(await response.json());
+    const data = extractDataObject(raw);
+    const token = firstString(data.accessToken, data.access_token, data.token, raw.accessToken);
+    if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
+    const expiresIn = firstNumber(data.expiresIn, data.expires_in) ?? 1_800;
+    this.tokenCache.set(credential, { token, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1_000 });
+    return token;
   }
 }
 
-export function signPhotonPayRequest(secret: string, method: string, url: URL, timestamp: string): string {
-  return signRequest(secret, method, url, timestamp);
+function assertBusinessSuccess(raw: unknown): Record<string, unknown> {
+  if (!isRecord(raw)) throw new ProviderRequestError(SyncExecutionErrorCategory.BUSINESS_REJECTED, 'PhotonPay response was invalid.');
+  const code = firstString(raw.code);
+  if (code && code !== '0000') {
+    const providerMessage = firstString(raw.message, raw.msg);
+    const requestId = firstString(raw.requestId, raw.request_id, raw.traceId);
+    throw new ProviderRequestError(
+      SyncExecutionErrorCategory.BUSINESS_REJECTED,
+      `PhotonPay rejected the request. ${code}${providerMessage ? `: ${providerMessage}` : ''}`,
+      200, code, providerMessage ?? undefined, requestId ?? undefined,
+    );
+  }
+  return raw;
 }
 
-function signRequest(secret: string, method: string, url: URL, timestamp: string): string {
-  const payload = [method.toUpperCase(), url.pathname, url.searchParams.toString(), timestamp].join('\n');
-  return createHmac('sha256', secret).update(payload).digest('hex');
+function extractDataArray(raw: Record<string, unknown>): PhotonPayTransactionRecord[] {
+  const data = raw.data;
+  if (Array.isArray(data)) return data.filter(isRecord);
+  if (!isRecord(data)) return [];
+  for (const candidate of [data.data, data.list, data.records, data.items]) {
+    if (Array.isArray(candidate)) return candidate.filter(isRecord);
+  }
+  return [];
+}
+
+function extractDataObject(raw: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(raw.data) ? raw.data : raw;
+}
+
+function extractTotal(raw: Record<string, unknown>): number | null {
+  const data = isRecord(raw.data) ? raw.data : undefined;
+  return firstNumber(raw.total, raw.totalCount, data?.total, data?.totalCount);
+}
+
+function toSafeCardListRecord(record: Record<string, unknown>): PhotonPayCardRecord {
+  return toSafeCardDetail(record, firstString(record.cardId) ?? '');
+}
+
+function toSafeCardDetail(record: Record<string, unknown>, fallbackCardId: string): PhotonPayCardRecord {
+  const cardId = firstString(record.cardId) ?? fallbackCardId;
+  return {
+    cardId: cardId || null,
+    cardholderId: firstString(record.cardholderId, record.memberId),
+    email: firstString(record.email),
+    maskCardNo: maskOnly(firstString(record.maskCardNo)),
+    nickname: firstString(record.nickname),
+    cardStatus: firstString(record.cardStatus),
+    createdAt: firstString(record.createdAt),
+    updatedAt: firstString(record.updatedAt),
+  };
+}
+
+function maskOnly(value: string | null): string | null {
+  if (!value) return null;
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 4 ? `****${digits.slice(-4)}` : null;
+}
+
+function formatGmt8DateTime(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:${value('minute')}:${value('second')}`;
 }
 
 function normalizeBaseUrl(baseUrl: string | undefined): string {
   return (baseUrl ?? PHOTONPAY_DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
 }
 
-function extractTransactions(raw: unknown): PhotonPayTransactionRecord[] {
-  if (Array.isArray(raw)) return raw.filter(isRecord);
-  if (!isRecord(raw)) return [];
-
-  const candidates = [
-    raw.items,
-    raw.records,
-    raw.transactions,
-    raw.list,
-    raw.data,
-    isRecord(raw.data) ? raw.data.items : undefined,
-    isRecord(raw.data) ? raw.data.records : undefined,
-    isRecord(raw.data) ? raw.data.transactions : undefined,
-    isRecord(raw.data) ? raw.data.list : undefined,
-  ];
-
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate.filter(isRecord);
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
-  return [];
-}
-
-function hasMore(raw: unknown, page: number, pageSize: number): boolean {
-  if (!isRecord(raw)) return false;
-  const total = firstNumber(raw.total, raw.totalCount, raw.total_count, isRecord(raw.data) ? raw.data.total : undefined);
-  const items = extractTransactions(raw);
-  if (typeof total === 'number') return page * pageSize < total;
-  const hasNext = firstBoolean(raw.hasMore, raw.has_more, isRecord(raw.data) ? raw.data.hasMore : undefined);
-  if (typeof hasNext === 'boolean') return hasNext;
-  return items.length >= pageSize;
+  return null;
 }
 
 function firstNumber(...values: unknown[]): number | null {
   for (const value of values) {
-    if (typeof value === 'number') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
   }
   return null;
 }
 
-function firstBoolean(...values: unknown[]): boolean | null {
-  for (const value of values) {
-    if (typeof value === 'boolean') return value;
-  }
-  return null;
-}
-
-function isRecord(value: unknown): value is PhotonPayTransactionRecord {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

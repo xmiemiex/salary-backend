@@ -45,6 +45,10 @@ const RAW_SAFE_KEYS = new Set([
   'status',
   'conversionStatus',
   'sourceStatus',
+  'settleStatus',
+  'transactionType',
+  'fundDirection',
+  'affiliateAccountId',
   'sub1',
   'sub2',
   'sub3',
@@ -214,6 +218,37 @@ export class SyncUnmatchedEventsService {
 
     const created = await prisma.syncUnmatchedEvent.create({ data, include: includeRelations() });
     return toDto(created);
+  }
+
+  async resolveAfterSuccessfulImport(input: {
+    sourceType: SyncTaskSourceType;
+    taskType: SyncTaskType;
+    thirdPartyEventId: string;
+    employeeId: string;
+    resolvedBy?: string | null;
+  }) {
+    const existing = await this.prisma.syncUnmatchedEvent.findUnique({
+      where: {
+        sourceType_taskType_thirdPartyEventId: {
+          sourceType: input.sourceType,
+          taskType: input.taskType,
+          thirdPartyEventId: input.thirdPartyEventId,
+        },
+      },
+      select: { id: true, status: true },
+    });
+    if (!existing || existing.status !== SyncUnmatchedEventStatus.open) return false;
+    await this.prisma.syncUnmatchedEvent.update({
+      where: { id: existing.id },
+      data: {
+        status: SyncUnmatchedEventStatus.resolved,
+        resolvedEmployeeId: input.employeeId,
+        resolvedAt: new Date(),
+        resolvedBy: input.resolvedBy ?? null,
+        resolutionNote: 'Automatically resolved after a successful idempotent re-sync.',
+      },
+    });
+    return true;
   }
 
   async ignore(id: string, input: UpdateSyncUnmatchedEventResolutionInput, actor: Actor) {

@@ -1,43 +1,36 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Provider } from '@prisma/client';
+import { ERROR_CODES } from '@salary/shared';
 import { Actor } from '../auth/auth.types';
 import { CurrentActor } from '../auth/current-actor.decorator';
 import { RequirePermissions } from '../auth/require-permissions.decorator';
-import { CardBindingsService, CreateCardBindingInput, UpdateCardBindingInput } from './card-bindings.service';
-import { AirwallexCardDiscoveryService } from './airwallex-card-discovery.service';
+import { AppError } from '../common/app-error';
+import { ProviderCardInventoryService } from './provider-card-inventory.service';
 
 @Controller('card-bindings')
 export class CardBindingsController {
   constructor(
-    private readonly bindings: CardBindingsService,
-    private readonly airwallexDiscovery: AirwallexCardDiscoveryService,
+    private readonly inventory: ProviderCardInventoryService,
   ) {}
 
-  @Post()
-  @RequirePermissions('card_binding.manage')
-  create(@Body() body: CreateCardBindingInput, @CurrentActor() actor: Actor) {
-    return this.bindings.create(body, actor);
-  }
-
   @Get()
+  @RequirePermissions('card_binding.manage')
   list(@Query() query: Record<string, string>) {
-    return this.bindings.list(query);
+    return this.inventory.list(query);
   }
 
-  @Get('airwallex/discovery')
+  @Post('sync')
   @RequirePermissions('card_binding.manage')
-  discoverAirwallexCards() {
-    return this.airwallexDiscovery.discover();
+  syncAll(@CurrentActor() actor: Actor) {
+    return this.inventory.syncAll(actor);
   }
 
-  @Patch(':id')
+  @Post('sync/:provider')
   @RequirePermissions('card_binding.manage')
-  update(@Param('id') id: string, @Body() body: UpdateCardBindingInput, @CurrentActor() actor: Actor) {
-    return this.bindings.update(id, body, actor);
-  }
-
-  @Patch(':id/disable')
-  @RequirePermissions('card_binding.manage')
-  disable(@Param('id') id: string, @CurrentActor() actor: Actor) {
-    return this.bindings.disable(id, actor);
+  syncProvider(@Param('provider') provider: string, @CurrentActor() actor: Actor) {
+    if (provider !== Provider.airwallex && provider !== Provider.photonpay) {
+      throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'provider must be airwallex or photonpay.');
+    }
+    return this.inventory.syncProvider(provider, actor);
   }
 }

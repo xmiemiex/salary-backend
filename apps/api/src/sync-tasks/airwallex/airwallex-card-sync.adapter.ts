@@ -1,14 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import { Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AppError } from '../../common/app-error';
+import { ProviderCardInventoryService, safeProviderError } from '../../card-bindings/provider-card-inventory.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
 import { providerErrorCategory } from '../provider-request-error';
 import { AirwallexClient, AirwallexCredentialPayload, AirwallexTransactionRecord } from './airwallex-client';
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 100;
 const DEFAULT_SETTLEMENT_DELAY_DAYS = 10;
 const MAX_SETTLEMENT_DELAY_DAYS = 31;
 
@@ -23,14 +24,11 @@ type NormalizedAirwallexTransaction = {
   settledAt: Date | null;
   sourceStatus: string | null;
   transactionType: string | null;
+  fundDirection: string | null;
   sourceUpdatedAt: Date | null;
-  rawData: AirwallexTransactionRecord;
 };
 
 type AirwallexAdapterPrisma = {
-  cardBinding: {
-    findFirst(args: unknown): Promise<{ employeeId: string } | null>;
-  };
   cardSpendEvent: {
     upsert(args: unknown): Promise<unknown>;
   };
@@ -44,6 +42,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
     private readonly prisma: PrismaService,
     private readonly client: AirwallexClient,
     private readonly unmatchedEvents: SyncUnmatchedEventsService,
+    private readonly inventory: ProviderCardInventoryService,
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
@@ -53,9 +52,12 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
 
     let successCount = 0;
     let failedCount = 0;
-    let page = 0;
+    const transactionSyncStartedAt = new Date();
+    let page: string | null = null;
+    let cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null = null;
 
     try {
+      cardInventory = await this.inventory.syncProviderWithPayload(Provider.airwallex, context.credential.payload);
       while (true) {
         const response = await this.client.listCardTransactions({
           credential,
@@ -73,11 +75,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
             failedCount += 1;
             continue;
           }
-          if (!isInsideSettlementWindow(record.transactionAt, window)) {
-            await this.recordUnmatchedCardSpend(record, context, 'OUTSIDE_SETTLEMENT_WINDOW', 'Airwallex settled card transactionAt is outside the GMT+8 settlement window.');
-            failedCount += 1;
-            continue;
-          }
+          if (!isInsideSettlementWindow(record.transactionAt, window)) continue;
 
           const result = await this.upsertCardSpendEvent(record, context);
           if (result) successCount += 1;
@@ -85,17 +83,22 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
         }
 
         if (!response.hasMore || response.transactions.length === 0) break;
-        page += 1;
+        page = response.nextPage;
+        if (!page) break;
       }
     } catch (error) {
       failedCount += 1;
+      await this.inventory.markUntouchedTransactionSync(Provider.airwallex, transactionSyncStartedAt, `failed:${providerErrorCategory(error)}`);
       const errorMessage = sanitizeErrorMessage(error instanceof Error ? error.message : 'Airwallex card spend request failed.', credential);
-      return { ...this.result('failed', successCount, failedCount, window, errorMessage, context), errorCategory: providerErrorCategory(error) };
+      const providerError = safeProviderError(error, credential.apiVersion);
+      providerError.message = sanitizeErrorMessage(providerError.message, credential);
+      return { ...this.result('failed', successCount, failedCount, window, errorMessage, context, cardInventory, providerError), errorCategory: providerErrorCategory(error) };
     }
 
     const status = failedCount === 0 ? 'completed' : 'failed';
+    await this.inventory.markUntouchedTransactionSync(Provider.airwallex, transactionSyncStartedAt, 'completed:no_transactions');
     const message = `Airwallex card spend sync finished: successCount=${successCount}, failedCount=${failedCount}.`;
-    return this.result(status, successCount, failedCount, window, message, context);
+    return this.result(status, successCount, failedCount, window, message, context, cardInventory);
   }
 
   private result(
@@ -105,6 +108,8 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
     window: ReturnType<typeof getAirwallexGmt8SettlementMonthWindow>,
     message: string,
     context: SyncAdapterContext,
+    cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null,
+    providerError: ReturnType<typeof safeProviderError> | null = null,
   ): SyncAdapterResult {
     return {
       status,
@@ -115,9 +120,11 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       resultPayload: {
         adapterKey: this.adapterKey,
         provider: Provider.airwallex,
-        pulledThirdPartyData: true,
+        pulledThirdPartyData: cardInventory !== null || successCount > 0,
         successCount,
         failedCount,
+        cardInventory,
+        providerError,
         settlementMonth: context.settlementMonth.toISOString().slice(0, 10),
         requestWindow: {
           fromCreatedDate: window.requestFromCreatedDate.toISOString(),
@@ -150,26 +157,21 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       return false;
     }
 
-    const mapping = await this.db().cardBinding.findFirst({
-      where: {
-        provider: Provider.airwallex,
-        cardId: record.cardId,
-        effectiveMonth: context.settlementMonth,
-        status: CommonStatus.active,
-      },
-      select: { employeeId: true },
-    });
-    if (!mapping) {
-      await this.recordUnmatchedCardSpend(record, context, 'CARD_NOT_MAPPED', 'Airwallex cardId is not mapped to an employee.');
+    const ownership = await this.inventory.resolveSpendOwner(Provider.airwallex, record.cardId, context.settlementMonth);
+    if (!ownership.ok) {
+      await this.recordUnmatchedCardSpend(record, context, ownership.reasonCode, ownership.reasonMessage);
+      await this.inventory.markTransactionSync(Provider.airwallex, record.cardId, `unmatched:${ownership.reasonCode}`);
       return false;
     }
+
+    const safeRawData = buildAirwallexRawSafeData(record, ownership.subIdMapping);
 
     await this.db().cardSpendEvent.upsert({
       where: { provider_externalEventId: { provider: Provider.airwallex, externalEventId: record.externalEventId } },
       update: {
         settlementMonth: context.settlementMonth,
         cardId: record.cardId,
-        employeeId: mapping.employeeId,
+        employeeId: ownership.employeeId,
         transactionAt: record.transactionAt,
         amount: record.amount,
         currency: record.currency,
@@ -177,8 +179,8 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
         settledAt: record.settledAt,
         sourceStatus: record.sourceStatus,
         sourceUpdatedAt: record.sourceUpdatedAt,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
+        rawData: safeRawData,
+        status: 'confirmed',
         importedBy: context.requestedBy,
       },
       create: {
@@ -186,7 +188,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
         externalEventId: record.externalEventId,
         settlementMonth: context.settlementMonth,
         cardId: record.cardId,
-        employeeId: mapping.employeeId,
+        employeeId: ownership.employeeId,
         transactionAt: record.transactionAt,
         amount: record.amount,
         currency: record.currency,
@@ -194,11 +196,19 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
         settledAt: record.settledAt,
         sourceStatus: record.sourceStatus,
         sourceUpdatedAt: record.sourceUpdatedAt,
-        rawData: record.rawData as Prisma.InputJsonObject,
-        status: CommonStatus.confirmed,
+        rawData: safeRawData,
+        status: 'confirmed',
         importedBy: context.requestedBy,
       },
     });
+    await this.unmatchedEvents.resolveAfterSuccessfulImport({
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.airwallex_card,
+      thirdPartyEventId: record.externalEventId,
+      employeeId: ownership.employeeId,
+      resolvedBy: context.requestedBy,
+    });
+    await this.inventory.markTransactionSync(Provider.airwallex, record.cardId, 'completed');
     return true;
   }
 
@@ -262,20 +272,22 @@ export function getAirwallexRequestAndSettlementWindows(settlementMonth: Date, s
 export function normalizeAirwallexTransaction(raw: AirwallexTransactionRecord): NormalizedAirwallexTransaction {
   const amount = firstValue(raw.billing_amount, raw.transaction_amount, raw.amount, raw.settlement_amount);
   const transactionType = firstNonBlank(raw.transaction_type, raw.transactionType);
+  const fundDirection = firstNonBlank(raw.fund_direction, raw.fundDirection);
   const unsignedAmount = new Prisma.Decimal(typeof amount === 'number' || typeof amount === 'string' ? amount : 0).abs();
+  const isCredit = normalizeCode(fundDirection) === 'CREDIT' || ['REFUND', 'REVERSAL', 'REVERSED'].includes(normalizeCode(transactionType) ?? '');
   return {
     externalEventId: firstNonBlank(raw.id, raw.transaction_id, raw.transactionId),
     cardId: firstNonBlank(raw.card_id, raw.cardId, recordField(raw.card, 'id'), recordField(raw.card, 'card_id')),
     cardLast4: firstNonBlank(raw.cardLast4, raw.card_last4, raw.last4, recordField(raw.card, 'last4'), recordField(raw.card, 'cardLast4'), recordField(raw.card, 'card_last4')),
     cardEmail: firstNonBlank(raw.cardEmail, raw.card_email, raw.email, recordField(raw.card, 'email'), recordField(raw.card, 'cardEmail'), recordField(raw.card, 'card_email')),
     transactionAt: parseDate(firstValue(raw.transaction_date, raw.transactionDate, raw.transaction_at, raw.transactionAt)),
-    amount: normalizeCode(transactionType) === 'REFUND' ? unsignedAmount.negated() : unsignedAmount,
+    amount: isCredit ? unsignedAmount.negated() : unsignedAmount,
     currency: firstNonBlank(raw.billing_currency, raw.transaction_currency, raw.currency, raw.settlement_currency)?.toUpperCase() ?? null,
     settledAt: parseDate(firstValue(raw.settled_at, raw.settledAt, raw.posted_date, raw.postedDate)),
     sourceStatus: firstNonBlank(raw.status, raw.transaction_status, raw.transactionStatus),
     transactionType,
+    fundDirection,
     sourceUpdatedAt: parseDate(firstValue(raw.updated_at, raw.updatedAt)),
-    rawData: raw,
   };
 }
 
@@ -307,7 +319,7 @@ function parseCredentialPayload(payload: unknown): AirwallexCredentialPayload {
 
 function isSettled(record: NormalizedAirwallexTransaction): boolean {
   const transactionType = normalizeCode(record.transactionType);
-  return transactionType === 'CLEARING' || transactionType === 'REFUND' || (!transactionType && normalizeCode(record.sourceStatus) === 'CLEARED');
+  return normalizeCode(record.sourceStatus) === 'CLEARED' || transactionType === 'CLEARING' || transactionType === 'REFUND';
 }
 
 function isInsideSettlementWindow(date: Date | null, window: ReturnType<typeof getAirwallexGmt8SettlementMonthWindow>): boolean {
@@ -347,7 +359,10 @@ function parseDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function buildAirwallexRawSafeData(record: NormalizedAirwallexTransaction): Prisma.InputJsonObject {
+function buildAirwallexRawSafeData(
+  record: NormalizedAirwallexTransaction,
+  subIdMapping?: { affiliateAccountId: string; subField: string; subValue: string },
+): Prisma.InputJsonObject {
   return {
     transactionId: record.externalEventId,
     cardId: record.cardId,
@@ -355,10 +370,14 @@ function buildAirwallexRawSafeData(record: NormalizedAirwallexTransaction): Pris
     cardEmail: record.cardEmail,
     status: record.sourceStatus,
     sourceStatus: record.transactionType,
+    fundDirection: record.fundDirection,
     amount: record.amount.toString(),
     currency: record.currency,
     transactionAt: record.transactionAt?.toISOString(),
     settledAt: record.settledAt?.toISOString(),
+    affiliateAccountId: subIdMapping?.affiliateAccountId,
+    subField: subIdMapping?.subField,
+    subValue: subIdMapping?.subValue,
   };
 }
 
