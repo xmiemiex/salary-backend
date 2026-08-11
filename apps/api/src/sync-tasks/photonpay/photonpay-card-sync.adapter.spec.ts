@@ -1,7 +1,9 @@
-import { CommonStatus, Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import { CommonStatus, Prisma, Provider, SyncExecutionErrorCategory, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { SyncAdapterResolver } from '../sync-adapter-resolver';
 import { PhotonPayCardSyncAdapter, getPhotonPayGmt8SettlementMonthWindow } from './photonpay-card-sync.adapter';
 import {
+  PHOTONPAY_DEFAULT_BASE_URL,
+  PHOTONPAY_DEFAULT_TOKEN_PATH,
   PHOTONPAY_DEFAULT_TRANSACTIONS_PATH,
   PHOTONPAY_TOKEN_HEADER,
   PhotonPayClient,
@@ -12,7 +14,7 @@ const employeeId = '30000000-0000-0000-0000-000000000001';
 const settlementMonth = new Date(Date.UTC(2026, 5, 1));
 
 describe('PhotonPayClient', () => {
-  it('uses official OAuth2 token and v4 transaction paging fields', async () => {
+  it('uses the official production token URL, slash-delimited Basic credential, and v4 transaction paging fields', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-06-19T00:00:00.000Z'));
     const fetchMock = jest.fn()
       .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: { accessToken: 'access-token', expiresIn: 1800 } }) })
@@ -21,7 +23,6 @@ describe('PhotonPayClient', () => {
 
     await client.listCardTransactions({
       credential: {
-        baseUrl: 'https://photonpay.example.test',
         appId: 'plain-app-id',
         appSecret: 'plain-app-secret',
       },
@@ -31,12 +32,18 @@ describe('PhotonPayClient', () => {
       pageSize: 200,
     });
 
+    const authUrl = fetchMock.mock.calls[0][0] as URL;
     const authInit = fetchMock.mock.calls[0][1] as { method: string; headers: Record<string, string> };
+    expect(authUrl.toString()).toBe(`${PHOTONPAY_DEFAULT_BASE_URL}${PHOTONPAY_DEFAULT_TOKEN_PATH}`);
     expect(authInit.method).toBe('POST');
-    expect(authInit.headers.Authorization).toMatch(/^Basic /);
+    expect(authInit.headers['Content-Type']).toBe('application/json');
+    expect(authInit.headers.Authorization).toMatch(/^basic /);
+    const decodedAuthorization = Buffer.from(authInit.headers.Authorization.replace(/^basic /, ''), 'base64').toString('utf8');
+    expect(decodedAuthorization).toBe('plain-app-id/plain-app-secret');
+    expect(decodedAuthorization).not.toBe('plain-app-id:plain-app-secret');
     const url = fetchMock.mock.calls[1][0] as URL;
     const init = fetchMock.mock.calls[1][1] as { method: string; headers: Record<string, string> };
-    expect(`${url.origin}${url.pathname}`).toBe(`https://photonpay.example.test${PHOTONPAY_DEFAULT_TRANSACTIONS_PATH}`);
+    expect(`${url.origin}${url.pathname}`).toBe(`${PHOTONPAY_DEFAULT_BASE_URL}${PHOTONPAY_DEFAULT_TRANSACTIONS_PATH}`);
     expect(url.searchParams.get('createdAtStart')).toBe('2026-06-01 00:00:00');
     expect(url.searchParams.get('createdAtEnd')).toBe('2026-07-11 00:00:00');
     expect(url.searchParams.get('pageIndex')).toBe('2');
@@ -55,16 +62,108 @@ describe('PhotonPayClient', () => {
     expect(detail).toMatchObject({ cardId: 'card-1', maskCardNo: '****1234', email: 'user@example.test' });
     expect(JSON.stringify(detail)).not.toContain('sensitive-card-value');
     expect(detail).not.toHaveProperty('cardNo');
+    const detailInit = fetchMock.mock.calls[1][1] as { headers: Record<string, string> };
+    expect(detailInit.headers[PHOTONPAY_TOKEN_HEADER]).toBe('access-token');
   });
 
-  it('preserves PhotonPay business code, message, and request ID without credential leakage', async () => {
+  it('preserves PhotonPay business code and request ID while redacting credential and token echoes', async () => {
     const fetchMock = jest.fn()
       .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: { accessToken: 'access-token' } }) })
-      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: 'VCC_403', message: 'product unavailable', requestId: 'req-photon' }) });
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ code: 'VCC_403', message: 'product unavailable access-token', requestId: 'req-photon' }),
+      });
     const client = new PhotonPayClient(fetchMock as never);
-    await expect(client.listCards({ credential: { appId: 'app-id', appSecret: 'app-secret' }, page: 1, pageSize: 200 })).rejects.toMatchObject({
-      providerCode: 'VCC_403', providerMessage: 'product unavailable', requestId: 'req-photon',
+    let caught: unknown;
+    try {
+      await client.listCards({ credential: { appId: 'app-id', appSecret: 'app-secret' }, page: 1, pageSize: 200 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ providerCode: 'VCC_403', requestId: 'req-photon' });
+    expect(JSON.stringify({
+      message: caught instanceof Error ? caught.message : caught,
+      providerMessage: (caught as { providerMessage?: string })?.providerMessage,
+    })).not.toContain('access-token');
+    expect((caught as { providerMessage?: string }).providerMessage).toContain('[REDACTED]');
+    const listInit = fetchMock.mock.calls[1][1] as { headers: Record<string, string> };
+    expect(listInit.headers[PHOTONPAY_TOKEN_HEADER]).toBe('access-token');
+  });
+
+  it('accepts code=0000 with data.token and preserves an explicitly configured baseUrl', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: { token: 'token-from-data' } }) })
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: [], total: 0 }) });
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await client.listCards({
+      credential: { baseUrl: 'https://configured.photonpay.example.test', appId: 'app-id', appSecret: 'app-secret' },
+      page: 1,
+      pageSize: 200,
     });
+
+    expect((fetchMock.mock.calls[0][0] as URL).toString()).toBe(
+      `https://configured.photonpay.example.test${PHOTONPAY_DEFAULT_TOKEN_PATH}`,
+    );
+    expect((fetchMock.mock.calls[1][1] as { headers: Record<string, string> }).headers[PHOTONPAY_TOKEN_HEADER]).toBe('token-from-data');
+  });
+
+  it('classifies non-0000 token responses safely without credential, Authorization, or token leakage', async () => {
+    const appId = 'sensitive-app-id';
+    const appSecret = 'sensitive-app-secret';
+    const encoded = Buffer.from(`${appId}/${appSecret}`, 'utf8').toString('base64');
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        code: 'union-oauth2:21312',
+        msg: `invalid ${appId} ${appSecret} ${encoded} basic ${encoded}`,
+        requestId: 'safe-request-id',
+      }),
+    });
+    const client = new PhotonPayClient(fetchMock as never);
+
+    let caught: unknown;
+    try {
+      await client.listCards({ credential: { appId, appSecret }, page: 1, pageSize: 200 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      category: SyncExecutionErrorCategory.CREDENTIAL_INVALID,
+      httpStatus: 200,
+      providerCode: 'union-oauth2:21312',
+      requestId: 'safe-request-id',
+    });
+    const serialized = JSON.stringify({
+      message: caught instanceof Error ? caught.message : caught,
+      providerMessage: (caught as { providerMessage?: string })?.providerMessage,
+      providerCode: (caught as { providerCode?: string })?.providerCode,
+      requestId: (caught as { requestId?: string })?.requestId,
+    });
+    for (const sensitive of [appId, appSecret, encoded, `basic ${encoded}`]) expect(serialized).not.toContain(sensitive);
+    expect(serialized).toContain('[REDACTED]');
+  });
+
+  it('caches the token before expiry and refreshes it after the safety window', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-19T00:00:00.000Z'));
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: { accessToken: 'token-1', expiresIn: 120 } }) })
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: [], total: 0 }) })
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: [], total: 0 }) })
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: { accessToken: 'token-2', expiresIn: 120 } }) })
+      .mockResolvedValueOnce({ ok: true, json: jest.fn().mockResolvedValue({ code: '0000', data: [], total: 0 }) });
+    const client = new PhotonPayClient(fetchMock as never);
+    const credential = { appId: 'app-id', appSecret: 'app-secret' };
+
+    await client.listCards({ credential, page: 1, pageSize: 20 });
+    jest.advanceTimersByTime(59_000);
+    await client.listCards({ credential, page: 1, pageSize: 20 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    jest.advanceTimersByTime(2_000);
+    await client.listCards({ credential, page: 1, pageSize: 20 });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect((fetchMock.mock.calls[4][1] as { headers: Record<string, string> }).headers[PHOTONPAY_TOKEN_HEADER]).toBe('token-2');
+    jest.useRealTimers();
   });
 });
 

@@ -6,6 +6,7 @@ import {
   credentialText,
   safeJsonText,
 } from '../src/pages/data-sync-utils';
+import { PHOTONPAY_DEFAULT_BASE_URL, photonPayDefaultFields } from '../src/pages/api-credentials-utils';
 import {
   AFFILIATE_PLATFORM_OPTIONS,
   EMPLOYEE_SUMMARY_COLUMNS,
@@ -81,6 +82,9 @@ assert.deepEqual(
   CARD_PROVIDER_OPTIONS.map((option) => option.provider).sort(),
   ['airwallex', 'photonpay'],
 );
+
+assert.equal(PHOTONPAY_DEFAULT_BASE_URL, 'https://x-api.photonpay.com');
+assert.equal(photonPayDefaultFields().find((field) => field.key === 'baseUrl')?.value, 'https://x-api.photonpay.com');
 
 assert.deepEqual(
   AFFILIATE_PLATFORM_OPTIONS.map((option) => option.value),

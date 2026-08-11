@@ -2,7 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SyncExecutionErrorCategory } from '@prisma/client';
 import { ProviderRequestError, providerFetch } from '../provider-request-error';
 
-export const PHOTONPAY_DEFAULT_BASE_URL = 'https://api.photonpay.com';
+export const PHOTONPAY_DEFAULT_BASE_URL = 'https://x-api.photonpay.com';
 export const PHOTONPAY_DEFAULT_TOKEN_PATH = '/oauth2/token/accessToken';
 export const PHOTONPAY_DEFAULT_CARDS_PATH = '/vcc/openApi/v4/pagingVccCard';
 export const PHOTONPAY_DEFAULT_CARD_DETAIL_PATH = '/vcc/openApi/v4/getCardDetail';
@@ -78,46 +78,86 @@ export class PhotonPayClient {
     const token = await this.accessToken(credential);
     const url = new URL(path, normalizeBaseUrl(credential.baseUrl));
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
-    const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
-      method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
-    });
-    return assertBusinessSuccess(await response.json());
+    try {
+      const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
+        method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
+      });
+      return assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.BUSINESS_REJECTED, [
+        credential.appId, credential.appSecret, token,
+      ]);
+    } catch (error) {
+      throw redactProviderRequestError(error, [credential.appId, credential.appSecret, token]);
+    }
   }
 
   private async accessToken(credential: PhotonPayCredentialPayload): Promise<string> {
     const cached = this.tokenCache.get(credential);
     if (cached && cached.expiresAt > Date.now()) return cached.token;
     const url = new URL(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, normalizeBaseUrl(credential.baseUrl));
-    const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Basic ${Buffer.from(`${credential.appId}:${credential.appSecret}`, 'utf8').toString('base64')}`,
-      },
-    });
-    const raw = assertBusinessSuccess(await response.json());
-    const data = extractDataObject(raw);
-    const token = firstString(data.accessToken, data.access_token, data.token, raw.accessToken);
-    if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
-    const expiresIn = firstNumber(data.expiresIn, data.expires_in) ?? 1_800;
-    this.tokenCache.set(credential, { token, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1_000 });
-    return token;
+    const encodedCredential = Buffer.from(`${credential.appId}/${credential.appSecret}`, 'utf8').toString('base64');
+    const authorization = `basic ${encodedCredential}`;
+    try {
+      const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: authorization,
+        },
+      });
+      const raw = assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.CREDENTIAL_INVALID, [
+        credential.appId, credential.appSecret, encodedCredential, authorization,
+      ]);
+      const data = extractDataObject(raw);
+      const token = firstString(data.accessToken, data.access_token, data.token, raw.accessToken);
+      if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
+      const expiresIn = firstNumber(data.expiresIn, data.expires_in) ?? 1_800;
+      this.tokenCache.set(credential, { token, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1_000 });
+      return token;
+    } catch (error) {
+      throw redactProviderRequestError(error, [credential.appId, credential.appSecret, encodedCredential, authorization]);
+    }
   }
 }
 
-function assertBusinessSuccess(raw: unknown): Record<string, unknown> {
-  if (!isRecord(raw)) throw new ProviderRequestError(SyncExecutionErrorCategory.BUSINESS_REJECTED, 'PhotonPay response was invalid.');
-  const code = firstString(raw.code);
+function assertBusinessSuccess(
+  raw: unknown,
+  category: SyncExecutionErrorCategory = SyncExecutionErrorCategory.BUSINESS_REJECTED,
+  sensitiveValues: string[] = [],
+): Record<string, unknown> {
+  if (!isRecord(raw)) throw new ProviderRequestError(category, 'PhotonPay response was invalid.');
+  const code = redactSensitiveText(firstString(raw.code), sensitiveValues);
   if (code && code !== '0000') {
-    const providerMessage = firstString(raw.message, raw.msg);
-    const requestId = firstString(raw.requestId, raw.request_id, raw.traceId);
+    const providerMessage = redactSensitiveText(firstString(raw.message, raw.msg), sensitiveValues);
+    const requestId = redactSensitiveText(firstString(raw.requestId, raw.request_id, raw.traceId), sensitiveValues);
     throw new ProviderRequestError(
-      SyncExecutionErrorCategory.BUSINESS_REJECTED,
+      category,
       `PhotonPay rejected the request. ${code}${providerMessage ? `: ${providerMessage}` : ''}`,
       200, code, providerMessage ?? undefined, requestId ?? undefined,
     );
   }
   return raw;
+}
+
+function redactProviderRequestError(error: unknown, sensitiveValues: string[]): unknown {
+  if (!(error instanceof ProviderRequestError)) return error;
+  return new ProviderRequestError(
+    error.category,
+    redactSensitiveText(error.message, sensitiveValues) ?? 'PhotonPay request failed.',
+    error.httpStatus,
+    redactSensitiveText(error.providerCode, sensitiveValues) ?? undefined,
+    redactSensitiveText(error.providerMessage, sensitiveValues) ?? undefined,
+    redactSensitiveText(error.requestId, sensitiveValues) ?? undefined,
+    error.apiVersion,
+  );
+}
+
+function redactSensitiveText(value: string | null | undefined, sensitiveValues: string[]): string | null {
+  if (!value) return null;
+  return sensitiveValues
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+    .reduce((sanitized, sensitive) => sanitized.split(sensitive).join('[REDACTED]'), value);
 }
 
 function extractDataArray(raw: Record<string, unknown>): PhotonPayTransactionRecord[] {

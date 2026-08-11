@@ -245,6 +245,46 @@ describe('ApiCredentialsService', () => {
     expect(auditPayload).toContain('appI****3456');
     expect(auditPayload).toContain('secr****3456');
   });
+
+  it('preserves an explicitly configured PhotonPay production baseUrl without exposing credentials', async () => {
+    prisma.cardProviderCredential.findUnique.mockResolvedValue(null);
+    prisma.cardProviderCredential.upsert.mockImplementation(async (args) =>
+      credential({ ...args.create, id: 'card-cred-photon', provider: Provider.photonpay }),
+    );
+
+    const result = await service.upsertCardProvider(
+      'photonpay',
+      {
+        payload: {
+          appId: 'photon-app-id-123456',
+          appSecret: 'photon-app-secret-123456',
+          baseUrl: 'https://x-api.photonpay.com',
+        },
+      },
+      actor,
+    );
+
+    expect(result).toMatchObject({
+      provider: Provider.photonpay,
+      maskedPayload: expect.objectContaining({ baseUrl: 'http****.com' }),
+    });
+    expect(JSON.stringify(result)).not.toContain('photon-app-id-123456');
+    expect(JSON.stringify(result)).not.toContain('photon-app-secret-123456');
+  });
+
+  it.each([
+    { apiKey: 'legacy-app-id', appSecret: 'app-secret' },
+    { appId: 'app-id', secret: 'legacy-app-secret' },
+    { appId: 'app-id', appSecret: 'app-secret', accessToken: 'manual-token' },
+    { appId: 'app-id', appSecret: 'app-secret', merchantId: 'legacy-merchant' },
+  ])('rejects legacy PhotonPay credential fields: %j', async (payload) => {
+    prisma.cardProviderCredential.findUnique.mockResolvedValue(null);
+
+    await expect(service.upsertCardProvider('photonpay', { payload }, actor)).rejects.toMatchObject({
+      code: ERROR_CODES.VALIDATION_ERROR,
+    });
+    expect(prisma.cardProviderCredential.upsert).not.toHaveBeenCalled();
+  });
 });
 
 function affiliateAccount(platform: string, credentialRecord: ReturnType<typeof credential> | null = null) {

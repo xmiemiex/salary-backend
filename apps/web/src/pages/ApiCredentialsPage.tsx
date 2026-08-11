@@ -2,6 +2,7 @@ import { Alert, Button, Form, Input, Modal, Space, Table, Tabs, Tag, Typography,
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, apiClient } from '../lib/api-client';
+import { photonPayDefaultFields, type CredentialPayloadField } from './api-credentials-utils';
 
 type CredentialStatus = 'active' | 'disabled' | string;
 
@@ -29,10 +30,7 @@ type CredentialTarget =
   | { type: 'affiliate'; id: string; title: string; platform: string; accountCode: string; maskedPayload?: unknown }
   | { type: 'cardProvider'; id: string; title: string; maskedPayload?: unknown };
 
-type PayloadField = {
-  key?: string;
-  value?: string;
-};
+type PayloadField = CredentialPayloadField;
 
 type CredentialFormValues = {
   clientId?: string;
@@ -41,13 +39,6 @@ type CredentialFormValues = {
   conversionsPath?: string;
   fields?: PayloadField[];
 };
-
-const PHOTONPAY_DEFAULT_FIELDS: PayloadField[] = [
-  { key: 'appId', value: '' },
-  { key: 'appSecret', value: '' },
-  { key: 'baseUrl', value: '' },
-  { key: 'settlementDelayDays', value: '10' },
-];
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -165,7 +156,7 @@ export function ApiCredentialsPage() {
       } else {
         form.setFieldsValue(nextTarget.id === 'airwallex'
           ? { clientId: '', apiKey: '', baseUrl: '' }
-          : { fields: PHOTONPAY_DEFAULT_FIELDS });
+          : { fields: photonPayDefaultFields() });
       }
       setTarget(nextTarget);
     },

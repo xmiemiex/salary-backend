@@ -346,8 +346,8 @@ function validateAirwallexCredentialPayload(payloadInput: unknown): Record<strin
 
 function validatePhotonPayCredentialPayload(payloadInput: unknown): Record<string, unknown> {
   const payload = validatePayload(payloadInput);
-  const appId = requiredString(payload.appId ?? payload.app_id ?? payload.apiKey, 'appId');
-  const appSecret = requiredString(payload.appSecret ?? payload.app_secret ?? payload.secret, 'appSecret');
+  const appId = requiredString(payload.appId ?? payload.app_id, 'appId');
+  const appSecret = requiredString(payload.appSecret ?? payload.app_secret, 'appSecret');
   const baseUrl = optionalString(payload.baseUrl ?? payload.base_url, 'baseUrl');
   const tokenPath = optionalApiPath(payload.tokenPath ?? payload.token_path, 'tokenPath');
   const cardsPath = optionalApiPath(payload.cardsPath ?? payload.cards_path, 'cardsPath');
@@ -355,7 +355,7 @@ function validatePhotonPayCredentialPayload(payloadInput: unknown): Record<strin
   const transactionsPath = optionalApiPath(payload.transactionsPath ?? payload.transactions_path, 'transactionsPath');
   const settlementDelayDays = optionalInteger(payload.settlementDelayDays, 'settlementDelayDays', 0, 31);
   rejectUnexpectedKeys(payload, [
-    'appId', 'app_id', 'appSecret', 'app_secret', 'apiKey', 'secret', 'baseUrl', 'base_url',
+    'appId', 'app_id', 'appSecret', 'app_secret', 'baseUrl', 'base_url',
     'tokenPath', 'token_path', 'cardsPath', 'cards_path', 'cardDetailPath', 'card_detail_path',
     'transactionsPath', 'transactions_path', 'settlementDelayDays',
   ]);
@@ -390,7 +390,7 @@ function optionalApiPath(value: unknown, field: string): string | undefined {
   const path = optionalString(value, field);
   if (!path) return undefined;
   if (!path.startsWith('/') || path.startsWith('//') || path.includes('://')) {
-    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be an absolute API path on the configured Airwallex host.`);
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `${field} must be an absolute API path on the configured provider host.`);
   }
   return path;
 }
