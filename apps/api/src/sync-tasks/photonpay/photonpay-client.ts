@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SyncExecutionErrorCategory } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { ProviderRequestError, providerFetch } from '../provider-request-error';
 
 export const PHOTONPAY_DEFAULT_BASE_URL = 'https://x-api.photonpay.com';
@@ -39,7 +40,8 @@ type FetchLike = typeof fetch;
 
 @Injectable()
 export class PhotonPayClient {
-  private readonly tokenCache = new WeakMap<PhotonPayCredentialPayload, { token: string; expiresAt: number }>();
+  private readonly tokenCache = new Map<string, { token: string; expiresAt: number }>();
+  private readonly tokenRequests = new Map<string, Promise<string>>();
 
   constructor(@Optional() @Inject(PHOTONPAY_FETCH) private readonly fetchImpl: FetchLike = fetch) {}
 
@@ -75,24 +77,53 @@ export class PhotonPayClient {
   }
 
   private async authorizedGet(credential: PhotonPayCredentialPayload, path: string, query: Record<string, string | number>) {
-    const token = await this.accessToken(credential);
     const url = new URL(path, normalizeBaseUrl(credential.baseUrl));
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await this.accessToken(credential, attempt > 0);
+      try {
+        const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
+          method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
+        });
+        return assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.BUSINESS_REJECTED, [
+          credential.appId, credential.appSecret, token,
+        ]);
+      } catch (error) {
+        const sanitized = redactProviderRequestError(error, [credential.appId, credential.appSecret, token]);
+        if (attempt === 0 && isInvalidAccessToken(sanitized)) {
+          this.tokenCache.delete(tokenCacheKey(credential));
+          continue;
+        }
+        throw sanitized;
+      }
+    }
+
+    throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay access token refresh failed.');
+  }
+
+  private async accessToken(credential: PhotonPayCredentialPayload, forceRefresh = false): Promise<string> {
+    const cacheKey = tokenCacheKey(credential);
+    if (!forceRefresh) {
+      const cached = this.tokenCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.token;
+    } else {
+      this.tokenCache.delete(cacheKey);
+    }
+
+    const inFlight = this.tokenRequests.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const request = this.requestAccessToken(credential, cacheKey);
+    this.tokenRequests.set(cacheKey, request);
     try {
-      const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
-        method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
-      });
-      return assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.BUSINESS_REJECTED, [
-        credential.appId, credential.appSecret, token,
-      ]);
-    } catch (error) {
-      throw redactProviderRequestError(error, [credential.appId, credential.appSecret, token]);
+      return await request;
+    } finally {
+      if (this.tokenRequests.get(cacheKey) === request) this.tokenRequests.delete(cacheKey);
     }
   }
 
-  private async accessToken(credential: PhotonPayCredentialPayload): Promise<string> {
-    const cached = this.tokenCache.get(credential);
-    if (cached && cached.expiresAt > Date.now()) return cached.token;
+  private async requestAccessToken(credential: PhotonPayCredentialPayload, cacheKey: string): Promise<string> {
     const url = new URL(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, normalizeBaseUrl(credential.baseUrl));
     const encodedCredential = Buffer.from(`${credential.appId}/${credential.appSecret}`, 'utf8').toString('base64');
     const authorization = `basic ${encodedCredential}`;
@@ -111,13 +142,32 @@ export class PhotonPayClient {
       const data = extractDataObject(raw);
       const token = firstString(data.accessToken, data.access_token, data.token, raw.accessToken);
       if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
-      const expiresIn = firstNumber(data.expiresIn, data.expires_in) ?? 1_800;
-      this.tokenCache.set(credential, { token, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1_000 });
+      const expiresIn = Math.max(1, firstNumber(data.expiresIn, data.expires_in) ?? 7_200);
+      const refreshLeadSeconds = Math.min(300, Math.max(60, Math.floor(expiresIn * 0.1)));
+      const cacheLifetimeSeconds = Math.max(1, expiresIn - refreshLeadSeconds);
+      this.tokenCache.set(cacheKey, { token, expiresAt: Date.now() + cacheLifetimeSeconds * 1_000 });
       return token;
     } catch (error) {
       throw redactProviderRequestError(error, [credential.appId, credential.appSecret, encodedCredential, authorization]);
     }
   }
+}
+
+function tokenCacheKey(credential: PhotonPayCredentialPayload): string {
+  return createHash('sha256')
+    .update(normalizeBaseUrl(credential.baseUrl), 'utf8')
+    .update('\0')
+    .update(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, 'utf8')
+    .update('\0')
+    .update(credential.appId, 'utf8')
+    .update('\0')
+    .update(credential.appSecret, 'utf8')
+    .digest('hex');
+}
+
+function isInvalidAccessToken(error: unknown): boolean {
+  return error instanceof ProviderRequestError
+    && (error.httpStatus === 401 || error.providerCode === '1002');
 }
 
 function assertBusinessSuccess(

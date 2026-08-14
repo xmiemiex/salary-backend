@@ -165,6 +165,113 @@ describe('PhotonPayClient', () => {
     expect((fetchMock.mock.calls[4][1] as { headers: Record<string, string> }).headers[PHOTONPAY_TOKEN_HEADER]).toBe('token-2');
     jest.useRealTimers();
   });
+
+  it('reuses a token for equivalent credential objects and keeps the default lifetime beyond 30 minutes', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-19T00:00:00.000Z'));
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'stable-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }));
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await client.listCards({ credential: { appId: 'same-app', appSecret: 'same-secret' }, page: 1, pageSize: 20 });
+    jest.advanceTimersByTime(31 * 60 * 1_000);
+    await client.listCards({ credential: { appId: 'same-app', appSecret: 'same-secret' }, page: 1, pageSize: 20 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.filter(([url]) => (url as URL).pathname === PHOTONPAY_DEFAULT_TOKEN_PATH)).toHaveLength(1);
+    jest.useRealTimers();
+  });
+
+  it('does not share tokens across environments or appIds', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'uat-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'production-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'other-app-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }));
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await client.listCards({
+      credential: { baseUrl: 'https://x-api1.uat.photontech.cc', appId: 'app-a', appSecret: 'same-secret' },
+      page: 1,
+      pageSize: 20,
+    });
+    await client.listCards({ credential: { appId: 'app-a', appSecret: 'same-secret' }, page: 1, pageSize: 20 });
+    await client.listCards({ credential: { appId: 'app-b', appSecret: 'same-secret' }, page: 1, pageSize: 20 });
+
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as { method?: string }).method === 'POST')).toHaveLength(3);
+  });
+
+  it('uses a single token request for concurrent calls with equivalent credentials', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'shared-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }));
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await Promise.all([
+      client.listCards({ credential: { appId: 'same-app', appSecret: 'same-secret' }, page: 1, pageSize: 20 }),
+      client.listCards({ credential: { appId: 'same-app', appSecret: 'same-secret' }, page: 2, pageSize: 20 }),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as { method?: string }).method === 'POST')).toHaveLength(1);
+  });
+
+  it('refreshes once after HTTP 401 and retries the business GET with the new token', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'expired-token' } }))
+      .mockResolvedValueOnce(httpJson(401, { code: '1002', message: 'invalid token' }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'fresh-token' } }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: [], total: 0 }));
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await client.listCards({ credential: { appId: 'app-id', appSecret: 'app-secret' }, page: 1, pageSize: 20 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((fetchMock.mock.calls[1][1] as { headers: Record<string, string> }).headers[PHOTONPAY_TOKEN_HEADER]).toBe('expired-token');
+    expect((fetchMock.mock.calls[3][1] as { headers: Record<string, string> }).headers[PHOTONPAY_TOKEN_HEADER]).toBe('fresh-token');
+  });
+
+  it('refreshes once for official business code 1002 and stops after a second HTTP 401', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'token-1' } }))
+      .mockResolvedValueOnce(okJson({ code: '1002', message: 'invalid token' }))
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'token-2' } }))
+      .mockResolvedValueOnce(httpJson(401, { code: '1002', message: 'still invalid' }));
+    const client = new PhotonPayClient(fetchMock as never);
+
+    await expect(client.listCards({
+      credential: { appId: 'app-id', appSecret: 'app-secret' },
+      page: 1,
+      pageSize: 20,
+    })).rejects.toMatchObject({ httpStatus: 401, providerCode: '1002' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as { method?: string }).method === 'POST')).toHaveLength(2);
+  });
+
+  it('does not refresh on HTTP 403 or retry a rejected token credential', async () => {
+    const forbiddenFetch = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'token' } }))
+      .mockResolvedValueOnce(httpJson(403, { code: '403', message: 'forbidden' }));
+    const forbiddenClient = new PhotonPayClient(forbiddenFetch as never);
+    await expect(forbiddenClient.listCards({
+      credential: { appId: 'app-id', appSecret: 'app-secret' }, page: 1, pageSize: 20,
+    })).rejects.toMatchObject({ httpStatus: 403 });
+    expect(forbiddenFetch).toHaveBeenCalledTimes(2);
+
+    const rejectedCredentialFetch = jest.fn().mockResolvedValueOnce(
+      httpJson(401, { code: 'union-oauth2:21312', message: 'invalid client' }),
+    );
+    const rejectedCredentialClient = new PhotonPayClient(rejectedCredentialFetch as never);
+    await expect(rejectedCredentialClient.listCards({
+      credential: { appId: 'app-id', appSecret: 'app-secret' }, page: 1, pageSize: 20,
+    })).rejects.toMatchObject({ httpStatus: 401, providerCode: 'union-oauth2:21312' });
+    expect(rejectedCredentialFetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PhotonPayCardSyncAdapter', () => {
@@ -502,4 +609,15 @@ function context(payloadOverrides: Record<string, unknown> = {}) {
       },
     },
   };
+}
+
+function okJson(body: unknown) {
+  return { ok: true, json: jest.fn().mockResolvedValue(body) };
+}
+
+function httpJson(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
