@@ -7,7 +7,7 @@ import {
   SyncUnmatchedEventStatus,
 } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
-import { SyncUnmatchedEventsService } from './sync-unmatched-events.service';
+import { ResolveAfterSuccessfulImportInput, SyncUnmatchedEventsService } from './sync-unmatched-events.service';
 
 const actor = {
   userId: '00000000-0000-0000-0000-000000000001',
@@ -110,12 +110,25 @@ describe('SyncUnmatchedEventsService', () => {
   });
 
   it('automatically resolves an open reconciliation event after a successful idempotent re-sync', async () => {
-    prisma.syncUnmatchedEvent.findUnique.mockResolvedValue({ id: 'unmatched-1', status: SyncUnmatchedEventStatus.open });
+    prisma.syncUnmatchedEvent.findUnique.mockResolvedValue({
+      id: 'unmatched-1',
+      status: SyncUnmatchedEventStatus.open,
+      settlementMonth,
+      platform: null,
+      provider: Provider.photonpay,
+      affiliateAccountId: null,
+      subField: null,
+      subValue: null,
+      cardId: 'card-1',
+    });
     prisma.syncUnmatchedEvent.update.mockResolvedValue({});
     const result = await service.resolveAfterSuccessfulImport({
+      settlementMonth,
       sourceType: SyncTaskSourceType.card_spend,
       taskType: SyncTaskType.photonpay_card,
+      provider: Provider.photonpay,
       thirdPartyEventId: 'txn-1',
+      cardId: 'card-1',
       employeeId,
       resolvedBy: actor.userId,
     });
@@ -128,6 +141,97 @@ describe('SyncUnmatchedEventsService', () => {
         resolvedBy: actor.userId,
       }),
     });
+  });
+
+  it('does not resolve an affiliate event outside the exact account, month, platform, or SUB identity', async () => {
+    const existing = {
+      id: 'unmatched-1',
+      status: SyncUnmatchedEventStatus.open,
+      settlementMonth,
+      platform: SyncTaskPlatform.cake,
+      provider: null,
+      affiliateAccountId: 'account-expected',
+      subField: 'sub1',
+      subValue: 'ZW',
+      cardId: null,
+    };
+    const baseInput: ResolveAfterSuccessfulImportInput = {
+      settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: 'account-expected',
+      thirdPartyEventId: 'cake-row-1',
+      subField: 'sub1',
+      subValue: 'ZW',
+      employeeId,
+    };
+    const mismatches = [
+      { affiliateAccountId: 'account-other' },
+      { settlementMonth: new Date('2026-05-01T00:00:00.000Z') },
+      { platform: SyncTaskPlatform.everflow },
+      { subField: 'sub2' },
+      { subValue: 'MSY' },
+    ];
+    for (const mismatch of mismatches) {
+      prisma.syncUnmatchedEvent.findUnique.mockResolvedValueOnce({ ...existing, ...mismatch });
+      await expect(service.resolveAfterSuccessfulImport(baseInput)).resolves.toBe(false);
+    }
+    expect(prisma.syncUnmatchedEvent.update).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a card event for another provider or card', async () => {
+    const input: ResolveAfterSuccessfulImportInput = {
+      settlementMonth,
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      provider: Provider.photonpay,
+      thirdPartyEventId: 'txn-1',
+      cardId: 'card-expected',
+      employeeId,
+    };
+    const existing = {
+      id: 'unmatched-1',
+      status: SyncUnmatchedEventStatus.open,
+      settlementMonth,
+      platform: null,
+      provider: Provider.photonpay,
+      affiliateAccountId: null,
+      subField: null,
+      subValue: null,
+      cardId: 'card-expected',
+    };
+    for (const mismatch of [{ provider: Provider.airwallex }, { cardId: 'card-other' }]) {
+      prisma.syncUnmatchedEvent.findUnique.mockResolvedValueOnce({ ...existing, ...mismatch });
+      await expect(service.resolveAfterSuccessfulImport(input)).resolves.toBe(false);
+    }
+    expect(prisma.syncUnmatchedEvent.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves an already resolved event unchanged on a repeated successful import', async () => {
+    prisma.syncUnmatchedEvent.findUnique.mockResolvedValue({
+      id: 'unmatched-1',
+      status: SyncUnmatchedEventStatus.resolved,
+      settlementMonth,
+      platform: SyncTaskPlatform.cake,
+      provider: null,
+      affiliateAccountId: 'account-1',
+      subField: 'sub1',
+      subValue: 'ZW',
+      cardId: null,
+    });
+    await expect(service.resolveAfterSuccessfulImport({
+      settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: 'account-1',
+      thirdPartyEventId: 'cake-row-1',
+      subField: 'sub1',
+      subValue: 'ZW',
+      employeeId,
+    })).resolves.toBe(false);
+    expect(prisma.syncUnmatchedEvent.update).not.toHaveBeenCalled();
   });
 
   it('creates card_spend unmatched events', async () => {

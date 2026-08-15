@@ -114,6 +114,28 @@ export type ResolveSyncUnmatchedEventInput = UpdateSyncUnmatchedEventResolutionI
   resolvedEmployeeId?: string;
 };
 
+export type ResolveAfterSuccessfulImportInput = {
+  settlementMonth: string | Date;
+  thirdPartyEventId: string;
+  employeeId: string;
+  resolvedBy?: string | null;
+} & (
+  | {
+    sourceType: 'affiliate_income';
+    taskType: 'affiliate_income';
+    platform: SyncTaskPlatform;
+    affiliateAccountId: string;
+    subField: string;
+    subValue: string;
+  }
+  | {
+    sourceType: 'card_spend';
+    taskType: 'airwallex_card' | 'photonpay_card';
+    provider: Provider;
+    cardId: string;
+  }
+);
+
 type UnmatchedEventWithRelations = Prisma.SyncUnmatchedEventGetPayload<{
   include: {
     affiliateAccount: { select: { id: true; platform: true; accountCode: true; accountName: true } };
@@ -220,14 +242,11 @@ export class SyncUnmatchedEventsService {
     return toDto(created);
   }
 
-  async resolveAfterSuccessfulImport(input: {
-    sourceType: SyncTaskSourceType;
-    taskType: SyncTaskType;
-    thirdPartyEventId: string;
-    employeeId: string;
-    resolvedBy?: string | null;
-  }) {
-    const existing = await this.prisma.syncUnmatchedEvent.findUnique({
+  async resolveAfterSuccessfulImport(
+    input: ResolveAfterSuccessfulImportInput,
+    prisma: UnmatchedPrismaClient = this.prisma,
+  ) {
+    const existing = await prisma.syncUnmatchedEvent.findUnique({
       where: {
         sourceType_taskType_thirdPartyEventId: {
           sourceType: input.sourceType,
@@ -235,10 +254,24 @@ export class SyncUnmatchedEventsService {
           thirdPartyEventId: input.thirdPartyEventId,
         },
       },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        settlementMonth: true,
+        platform: true,
+        provider: true,
+        affiliateAccountId: true,
+        subField: true,
+        subValue: true,
+        cardId: true,
+      },
     });
-    if (!existing || existing.status !== SyncUnmatchedEventStatus.open) return false;
-    await this.prisma.syncUnmatchedEvent.update({
+    if (
+      !existing
+      || existing.status !== SyncUnmatchedEventStatus.open
+      || !matchesSuccessfulImport(existing, input)
+    ) return false;
+    await prisma.syncUnmatchedEvent.update({
       where: { id: existing.id },
       data: {
         status: SyncUnmatchedEventStatus.resolved,
@@ -317,6 +350,37 @@ export class SyncUnmatchedEventsService {
     if (!event) throw new AppError(ERROR_CODES.NOT_FOUND, 'Sync unmatched event not found.');
     return event;
   }
+}
+
+function matchesSuccessfulImport(
+  existing: {
+    settlementMonth: Date;
+    platform: SyncTaskPlatform | null;
+    provider: Provider | null;
+    affiliateAccountId: string | null;
+    subField: string | null;
+    subValue: string | null;
+    cardId: string | null;
+  },
+  input: ResolveAfterSuccessfulImportInput,
+): boolean {
+  if (existing.settlementMonth.getTime() !== parseSettlementMonth(input.settlementMonth, 'settlementMonth').getTime()) {
+    return false;
+  }
+  if (input.sourceType === SyncTaskSourceType.affiliate_income) {
+    return existing.platform === input.platform
+      && existing.provider === null
+      && existing.affiliateAccountId === input.affiliateAccountId
+      && existing.subField === input.subField
+      && existing.subValue === input.subValue
+      && existing.cardId === null;
+  }
+  return existing.provider === input.provider
+    && existing.platform === null
+    && existing.affiliateAccountId === null
+    && existing.cardId === input.cardId
+    && existing.subField === null
+    && existing.subValue === null;
 }
 
 function validateRecordInput(input: RecordUnmatchedEventInput): Prisma.SyncUnmatchedEventCreateInput {

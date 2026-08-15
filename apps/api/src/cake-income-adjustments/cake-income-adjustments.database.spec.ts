@@ -246,9 +246,154 @@ databaseDescribe('Task96 CAKE adjustment real PostgreSQL integration', () => {
     expect(await db.incomeRecord.count({ where: { employeeId: employeeOtherId, source: 'cake' } })).toBe(0);
   });
 
+  it('resolves exactly four prior BA2-style events through June mappings and keeps income plus unrelated events idempotent', async () => {
+    await db.incomeRecord.deleteMany({ where: { affiliateAccountId: accountId } });
+    await db.subIdMapping.deleteMany({ where: { affiliateAccountId: accountId } });
+    const employees = await Promise.all([
+      db.employee.create({ data: { employeeCode: '01', name: 'Task98 ZW', status: CommonStatus.active } }),
+      db.employee.create({ data: { employeeCode: '02', name: 'Task98 MSY', status: CommonStatus.active } }),
+      db.employee.create({ data: { employeeCode: '03', name: 'Task98 DAN', status: CommonStatus.active } }),
+      db.employee.create({ data: { employeeCode: '04', name: 'Task98 YDF', status: CommonStatus.active } }),
+    ]);
+    const subs = ['ZW', 'MSY', 'DAN', 'YDF'] as const;
+    await db.subIdMapping.createMany({
+      data: subs.map((subValue, index) => ({
+        affiliateAccountId: accountId,
+        subField: 'sub1',
+        subValue,
+        effectiveMonth: new Date('2026-06-01T00:00:00.000Z'),
+        employeeId: employees[index].id,
+        status: CommonStatus.active,
+      })),
+    });
+    const otherAccount = await db.affiliateAccount.create({
+      data: {
+        platform: SyncTaskPlatform.cake,
+        accountCode: `task98-other-${randomUUID()}`,
+        accountName: 'Task98 unrelated account',
+        status: CommonStatus.active,
+      },
+    });
+    const task = await createTask();
+    await calibrate();
+    const unmatched = new SyncUnmatchedEventsService(db as never, audit);
+    const currentIds = subs.map((subValue) => monthlyExternalId(accountId, month, subValue));
+    for (const [index, subValue] of subs.entries()) {
+      await unmatched.recordUnmatchedEvent({
+        settlementMonth: month,
+        sourceType: SyncTaskSourceType.affiliate_income,
+        taskType: SyncTaskType.affiliate_income,
+        platform: SyncTaskPlatform.cake,
+        affiliateAccountId: accountId,
+        syncTaskId: task.id,
+        thirdPartyEventId: currentIds[index],
+        reasonCode: 'SUB_ID_NOT_MAPPED',
+        subField: 'sub1',
+        subValue,
+      });
+    }
+    const unrelatedIds = [
+      monthlyExternalId(otherAccount.id, month, 'ZW'),
+      monthlyExternalId(accountId, new Date('2026-06-01T00:00:00.000Z'), 'ZW'),
+      monthlyExternalId(accountId, month, 'NOT-IN-PROVIDER-RESULT'),
+    ];
+    await unmatched.recordUnmatchedEvent({
+      settlementMonth: month,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: otherAccount.id,
+      thirdPartyEventId: unrelatedIds[0],
+      reasonCode: 'SUB_ID_NOT_MAPPED',
+      subField: 'sub1',
+      subValue: 'ZW',
+    });
+    await unmatched.recordUnmatchedEvent({
+      settlementMonth: '2026-06',
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: accountId,
+      thirdPartyEventId: unrelatedIds[1],
+      reasonCode: 'SUB_ID_NOT_MAPPED',
+      subField: 'sub1',
+      subValue: 'ZW',
+    });
+    await unmatched.recordUnmatchedEvent({
+      settlementMonth: month,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: accountId,
+      thirdPartyEventId: unrelatedIds[2],
+      reasonCode: 'SUB_ID_NOT_MAPPED',
+      subField: 'sub1',
+      subValue: 'NOT-IN-PROVIDER-RESULT',
+    });
+
+    const adapter = realAdapter(clientWithRows([
+      { sub_id: 'ZW', revenue: '10000' },
+      { sub_id: 'MSY', revenue: '11000' },
+      { sub_id: 'DAN', revenue: '12000' },
+      { sub_id: 'YDF', revenue: '15100' },
+      { sub_id: 'ZERO', revenue: '0' },
+    ]));
+    const first = await adapter.execute(context(task.id));
+    const firstRows = await db.incomeRecord.findMany({
+      where: { affiliateAccountId: accountId, source: 'cake', incomeUsd: { gt: 0 } },
+      orderBy: { externalRecordId: 'asc' },
+    });
+    const resolvedOnce = await db.syncUnmatchedEvent.findMany({
+      where: { thirdPartyEventId: { in: currentIds } },
+      orderBy: { thirdPartyEventId: 'asc' },
+    });
+    const second = await adapter.execute(context(task.id));
+    const secondRows = await db.incomeRecord.findMany({
+      where: { affiliateAccountId: accountId, source: 'cake', incomeUsd: { gt: 0 } },
+      orderBy: { externalRecordId: 'asc' },
+    });
+    const resolvedTwice = await db.syncUnmatchedEvent.findMany({
+      where: { thirdPartyEventId: { in: currentIds } },
+      orderBy: { thirdPartyEventId: 'asc' },
+    });
+
+    expect(first.resultPayload).toMatchObject({
+      providerRowCount: 5,
+      pulledCount: 5,
+      aggregateRowCount: 5,
+      positiveRevenueCount: 4,
+      attributedCount: 4,
+      unmatchedCount: 0,
+      zeroRevenueCount: 1,
+      incompleteResults: false,
+    });
+    expect(second.resultPayload).toMatchObject(first.resultPayload);
+    expect(firstRows).toHaveLength(4);
+    expect(firstRows.reduce((sum, row) => sum.plus(row.incomeUsd), new Prisma.Decimal(0)).toString()).toBe('48100');
+    expect(secondRows.map((row) => row.id)).toEqual(firstRows.map((row) => row.id));
+    expect(secondRows.map((row) => row.incomeUsd.toString())).toEqual(firstRows.map((row) => row.incomeUsd.toString()));
+    expect(resolvedOnce.every((row) => row.status === 'resolved')).toBe(true);
+    expect(resolvedTwice.map((row) => row.resolvedAt?.toISOString())).toEqual(resolvedOnce.map((row) => row.resolvedAt?.toISOString()));
+    expect(await db.syncUnmatchedEvent.count({ where: { thirdPartyEventId: { in: unrelatedIds }, status: 'open' } })).toBe(3);
+    expect(await db.syncUnmatchedEvent.count({ where: { affiliateAccountId: accountId } })).toBe(6);
+  });
+
   it('rolls back the whole monthly batch when a later income write fails', async () => {
     const task = await createTask();
     await calibrate();
+    const unmatched = new SyncUnmatchedEventsService(db as never, audit);
+    await unmatched.recordUnmatchedEvent({
+      settlementMonth: month,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId: accountId,
+      syncTaskId: task.id,
+      thirdPartyEventId: baseExternalId('ZW'),
+      reasonCode: 'SUB_ID_NOT_MAPPED',
+      subField: 'sub1',
+      subValue: 'ZW',
+    });
     const client = clientWithRows([{ sub_id: 'ZW', revenue: '80000' }, { sub_id: 'YDF', revenue: '4000' }]);
     const adapter = new CakeIncomeSyncAdapter(failingTransactionPrisma() as never, client as never, new SyncUnmatchedEventsService(db as never, audit), audit);
     const result = await adapter.execute(context(task.id));
@@ -256,6 +401,13 @@ databaseDescribe('Task96 CAKE adjustment real PostgreSQL integration', () => {
     expect(result.status).toBe('failed');
     expect((await baseRow('ZW')).incomeUsd.toString()).toBe('77385');
     expect((await baseRow('YDF')).incomeUsd.toString()).toBe('3055');
+    expect(await db.syncUnmatchedEvent.findUniqueOrThrow({
+      where: { sourceType_taskType_thirdPartyEventId: {
+        sourceType: SyncTaskSourceType.affiliate_income,
+        taskType: SyncTaskType.affiliate_income,
+        thirdPartyEventId: baseExternalId('ZW'),
+      } },
+    })).toMatchObject({ status: 'open', resolvedAt: null });
   });
 
   it('marks a changed-base adjustment stale/draft in the same transaction and blocks preflight plus generation', async () => {
@@ -329,8 +481,12 @@ databaseDescribe('Task96 CAKE adjustment real PostgreSQL integration', () => {
   }
 
   function baseExternalId(subValue: string) {
+    return monthlyExternalId(accountId, month, subValue);
+  }
+
+  function monthlyExternalId(targetAccountId: string, targetMonth: Date, subValue: string) {
     const digest = createHash('sha256').update(subValue).digest('hex').slice(0, 24);
-    return `cake:sub-month:${accountId}:2026-07:${digest}`;
+    return `cake:sub-month:${targetAccountId}:${targetMonth.toISOString().slice(0, 7)}:${digest}`;
   }
 
   async function baseRow(subValue: string) {

@@ -203,9 +203,12 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       },
     });
     await this.unmatchedEvents.resolveAfterSuccessfulImport({
+      settlementMonth: context.settlementMonth,
       sourceType: SyncTaskSourceType.card_spend,
       taskType: SyncTaskType.photonpay_card,
+      provider: Provider.photonpay,
       thirdPartyEventId: record.externalEventId,
+      cardId: record.cardId,
       employeeId: ownership.employeeId,
       resolvedBy: context.requestedBy,
     });

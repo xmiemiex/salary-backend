@@ -60,7 +60,10 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
       },
     };
     client = { getSubAffiliateSummary: jest.fn() };
-    unmatchedEvents = { recordUnmatchedEvent: jest.fn().mockResolvedValue({ id: 'unmatched-1' }) };
+    unmatchedEvents = {
+      recordUnmatchedEvent: jest.fn().mockResolvedValue({ id: 'unmatched-1' }),
+      resolveAfterSuccessfulImport: jest.fn().mockResolvedValue(true),
+    };
     audit = { success: jest.fn().mockResolvedValue({ id: 'audit-stale-1' }) };
     adapter = new CakeIncomeSyncAdapter(prisma, client, unmatchedEvents, audit);
   });
@@ -89,6 +92,16 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     expect(write.create).toMatchObject({ source: 'cake', affiliateAccountId, employeeId, subField: 'sub1', subValue: 'ZW', incomeUsd: new Prisma.Decimal('77710') });
     expect(write.where.source_externalRecordId.externalRecordId).toContain(`cake:sub-month:${affiliateAccountId}:2026-07:`);
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_MISSING', amountUsd: new Prisma.Decimal('195') }), prisma);
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).toHaveBeenCalledWith(expect.objectContaining({
+      settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.cake,
+      affiliateAccountId,
+      subField: 'sub1',
+      subValue: 'ZW',
+      employeeId,
+    }), prisma);
     expect(prisma.incomeRecord.deleteMany).toHaveBeenCalledTimes(2);
     expect(result.resultPayload).toMatchObject({ pulledCount: 3, positiveRevenueCount: 2, attributedCount: 1, unmatchedCount: 1, zeroRevenueCount: 1 });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
@@ -143,6 +156,7 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     });
     expect(prisma.incomeRecord.upsert).toHaveBeenCalledTimes(4);
     expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).toHaveBeenCalledTimes(4);
   });
 
   it('fails the sync when any write inside the monthly transaction fails', async () => {
@@ -152,6 +166,14 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     expect(result.status).toBe('failed');
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(result.errorMessage).toContain('simulated write failure');
+  });
+
+  it('does not resolve an old event when the income write itself fails', async () => {
+    mockRows([{ sub_id: 'ZW', revenue: '10' }]);
+    prisma.incomeRecord.upsert.mockRejectedValueOnce(new Error('simulated first write failure'));
+    const result = await adapter.execute(context());
+    expect(result.status).toBe('failed');
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).not.toHaveBeenCalled();
   });
 
   it('marks a confirmed adjustment stale with audit when a later API sync changes the base', async () => {
@@ -202,6 +224,7 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     expect(result.status).toBe('completed');
     expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_EMPLOYEE_CONFLICT' }), prisma);
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).not.toHaveBeenCalled();
   });
 
   it('does not fall back when the latest mapping is disabled and rejects a disabled employee', async () => {
@@ -216,6 +239,7 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping({ employeeStatus: CommonStatus.disabled })]);
     await adapter.execute(context());
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'EMPLOYEE_DISABLED' }), prisma);
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).not.toHaveBeenCalled();
   });
 
   function mockRows(rows: Record<string, unknown>[]) {

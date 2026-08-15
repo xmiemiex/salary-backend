@@ -201,9 +201,12 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       },
     });
     await this.unmatchedEvents.resolveAfterSuccessfulImport({
+      settlementMonth: context.settlementMonth,
       sourceType: SyncTaskSourceType.card_spend,
       taskType: SyncTaskType.airwallex_card,
+      provider: Provider.airwallex,
       thirdPartyEventId: record.externalEventId,
+      cardId: record.cardId,
       employeeId: ownership.employeeId,
       resolvedBy: context.requestedBy,
     });

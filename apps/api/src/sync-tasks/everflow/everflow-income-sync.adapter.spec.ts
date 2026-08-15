@@ -52,7 +52,10 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
       getTimezones: jest.fn().mockResolvedValue({ timezones: [{ timezone_id: 75, timezone_name: 'China Standard Time', timezone: 'Asia/Shanghai', utc_offset: '+08:00' }] }),
       getAffiliateSubRevenueSummary: jest.fn(),
     };
-    unmatchedEvents = { recordUnmatchedEvent: jest.fn().mockResolvedValue({}) };
+    unmatchedEvents = {
+      recordUnmatchedEvent: jest.fn().mockResolvedValue({}),
+      resolveAfterSuccessfulImport: jest.fn().mockResolvedValue(true),
+    };
     adapter = new EverflowIncomeSyncAdapter(prisma, client, unmatchedEvents);
   });
 
@@ -86,6 +89,16 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     }, orderBy: { effectiveMonth: 'desc' } }));
     expect(prisma.incomeRecord.upsert.mock.calls[0][0].create).toMatchObject({ source: 'everflow', subField: 'sub1', subValue: 'ZW', incomeUsd: new Prisma.Decimal(100), employeeId });
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_MISSING', amountUsd: new Prisma.Decimal(5) }));
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).toHaveBeenCalledWith(expect.objectContaining({
+      settlementMonth,
+      sourceType: SyncTaskSourceType.affiliate_income,
+      taskType: SyncTaskType.affiliate_income,
+      platform: SyncTaskPlatform.everflow,
+      affiliateAccountId,
+      subField: 'sub1',
+      subValue: 'ZW',
+      employeeId,
+    }));
     expect(prisma.incomeRecord.deleteMany).toHaveBeenCalledTimes(2);
     expect(result.resultPayload).toMatchObject({ pulledCount: 3, positiveRevenueCount: 2, attributedCount: 1, unmatchedCount: 1, zeroRevenueCount: 1 });
   });
@@ -95,6 +108,7 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     const result = await adapter.execute(context());
     expect(result.status).toBe('failed');
     expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).not.toHaveBeenCalled();
   });
 
   it('fails closed before provider access when current credentials are not calibrated', async () => {
@@ -131,6 +145,7 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping({ employeeStatus: CommonStatus.disabled })]);
     await adapter.execute(context());
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'EMPLOYEE_DISABLED' }));
+    expect(unmatchedEvents.resolveAfterSuccessfulImport).toHaveBeenCalledTimes(1);
   });
 
   function mockRows(table: Record<string, unknown>[]) {

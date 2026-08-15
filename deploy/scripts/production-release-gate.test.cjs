@@ -99,11 +99,41 @@ test('production env check accepts the immutable task97 release format', () => {
   assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
 });
 
+test('production env check accepts the immutable task98 release format', () => {
+  const environment = validProductionEnv();
+  environment.RELEASE_IMAGE_TAG = 'task98-0123456789ab';
+  const result = spawnSync(process.execPath, [envCheck], { env: environment, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
+});
+
+test('production env check rejects unsafe or malformed release tags', () => {
+  const invalidTags = [
+    '',
+    'arbitrary',
+    '../task98-0123456789ab',
+    'task98-0123456789abcdef0123456789abcdef',
+    'task98-0123456789a',
+    'task98-0123456789abc',
+    'task95-0123456789ab',
+    'task99-0123456789ab',
+    'task98-0123456789aG',
+  ];
+  for (const releaseTag of invalidTags) {
+    const environment = validProductionEnv();
+    environment.RELEASE_IMAGE_TAG = releaseTag;
+    const result = spawnSync(process.execPath, [envCheck], { env: environment, encoding: 'utf8' });
+    assert.equal(result.status, 1, `expected RELEASE_IMAGE_TAG=${JSON.stringify(releaseTag)} to fail`);
+    assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=fail/);
+  }
+});
+
 test('standard gate refreshes read-only evidence and mounts it into the gate', () => {
   const script = readFileSync(gateScript, 'utf8');
   assert.match(script, /release-gate-current/);
   assert.match(script, /task96-\[0-9a-f\]/);
   assert.match(script, /task97-\[0-9a-f\]/);
+  assert.match(script, /task98-\[0-9a-f\]/);
   assert.match(script, /api_image="salary-settlement-api:\$\{release_tag\}"/);
   assert.match(script, /production-env-check\.js/);
   assert.match(script, /production-migration-evidence\.js/);

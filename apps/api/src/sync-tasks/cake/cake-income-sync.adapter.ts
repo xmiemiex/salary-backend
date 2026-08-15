@@ -179,6 +179,18 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
           },
           });
           await this.markAdjustmentStaleWhenBaseChanges(context, row, false, db, transaction);
+          await this.unmatchedEvents.resolveAfterSuccessfulImport({
+            settlementMonth: context.settlementMonth,
+            sourceType: SyncTaskSourceType.affiliate_income,
+            taskType: SyncTaskType.affiliate_income,
+            platform: SyncTaskPlatform.cake,
+            affiliateAccountId: context.affiliateAccountId as string,
+            thirdPartyEventId: externalRecordId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            employeeId: employeeIds[0],
+            resolvedBy: context.requestedBy,
+          }, transaction);
           attributedCount += 1;
         }
       });

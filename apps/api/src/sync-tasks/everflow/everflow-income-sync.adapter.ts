@@ -181,6 +181,18 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
             importedBy: context.requestedBy ?? null,
           },
         });
+        await this.unmatchedEvents.resolveAfterSuccessfulImport({
+          settlementMonth: context.settlementMonth,
+          sourceType: SyncTaskSourceType.affiliate_income,
+          taskType: SyncTaskType.affiliate_income,
+          platform: SyncTaskPlatform.everflow,
+          affiliateAccountId: context.affiliateAccountId as string,
+          thirdPartyEventId: externalRecordId,
+          subField: SUB_FIELD,
+          subValue: row.subValue,
+          employeeId: employeeIds[0],
+          resolvedBy: context.requestedBy,
+        });
         attributedCount += 1;
       }
 

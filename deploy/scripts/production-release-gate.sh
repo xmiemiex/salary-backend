@@ -26,6 +26,9 @@ case "$release_tag" in
   task97-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
     release_dir="/opt/salary-settlement-admin/releases/${release_tag}"
     ;;
+  task98-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+    release_dir="/opt/salary-settlement-admin/releases/${release_tag}"
+    ;;
   *)
     echo 'PRODUCTION_RELEASE_GATE_ERROR=invalid_release_image_tag' >&2
     exit 2
