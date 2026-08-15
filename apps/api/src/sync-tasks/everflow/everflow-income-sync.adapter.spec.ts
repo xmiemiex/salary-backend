@@ -45,7 +45,7 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     prisma = {
       affiliateAccountCredential: { findUnique: jest.fn().mockResolvedValue({ updatedAt: new Date('2026-08-03T00:00:00Z') }) },
       auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', action: 'everflow.monthly_sub_revenue.calibration.pass', createdAt: new Date('2026-08-03T00:01:00Z') }) },
-      subIdMapping: { findMany: jest.fn().mockResolvedValue([{ employeeId }]) },
+      subIdMapping: { findMany: jest.fn().mockResolvedValue([subMapping()]) },
       incomeRecord: { upsert: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     client = {
@@ -81,9 +81,9 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     ]);
     const result = await adapter.execute(context());
     expect(result.status).toBe('completed');
-    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith({ where: {
-      affiliateAccountId, subField: 'sub1', subValue: 'ZW', effectiveMonth: settlementMonth, status: CommonStatus.active,
-    }, select: { employeeId: true } });
+    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      affiliateAccountId, subField: 'sub1', subValue: 'ZW', effectiveMonth: { lte: settlementMonth },
+    }, orderBy: { effectiveMonth: 'desc' } }));
     expect(prisma.incomeRecord.upsert.mock.calls[0][0].create).toMatchObject({ source: 'everflow', subField: 'sub1', subValue: 'ZW', incomeUsd: new Prisma.Decimal(100), employeeId });
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_MISSING', amountUsd: new Prisma.Decimal(5) }));
     expect(prisma.incomeRecord.deleteMany).toHaveBeenCalledTimes(2);
@@ -112,10 +112,41 @@ describe('EverflowIncomeSyncAdapter monthly SUB revenue', () => {
     expect(client.getAffiliateSubRevenueSummary).not.toHaveBeenCalled();
   });
 
+  it('uses the latest cross-month mapping, fails closed on disabled, and rejects a disabled employee', async () => {
+    mockRows([{ columns: [{ column_type: 'sub1', id: 'ZW' }], reporting: { revenue: 100 } }]);
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([
+      subMapping({ id: 'latest', employeeId: 'employee-new', effectiveMonth: new Date('2026-06-01T00:00:00.000Z') }),
+      subMapping({ id: 'old', employeeId: 'employee-old', effectiveMonth: new Date('2026-05-01T00:00:00.000Z') }),
+    ]);
+    await adapter.execute(context());
+    expect(prisma.incomeRecord.upsert.mock.calls[0][0].create.employeeId).toBe('employee-new');
+
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([
+      subMapping({ id: 'disabled', effectiveMonth: settlementMonth, status: CommonStatus.disabled }),
+      subMapping({ id: 'old', effectiveMonth: new Date('2026-06-01T00:00:00.000Z') }),
+    ]);
+    await adapter.execute(context());
+    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_NOT_MAPPED' }));
+
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping({ employeeStatus: CommonStatus.disabled })]);
+    await adapter.execute(context());
+    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'EMPLOYEE_DISABLED' }));
+  });
+
   function mockRows(table: Record<string, unknown>[]) {
     client.getAffiliateSubRevenueSummary.mockResolvedValue({ table, incomplete_results: false });
   }
 });
+
+function subMapping(overrides: Record<string, unknown> & { employeeStatus?: CommonStatus } = {}) {
+  const { employeeStatus = CommonStatus.active, ...rest } = overrides;
+  return {
+    id: 'mapping-1', affiliateAccountId, subField: 'sub1', subValue: 'ZW',
+    effectiveMonth: new Date('2026-06-01T00:00:00.000Z'), employeeId, status: CommonStatus.active,
+    employee: { employeeCode: '01', name: 'Employee', status: employeeStatus },
+    ...rest,
+  };
+}
 
 function context() {
   return {

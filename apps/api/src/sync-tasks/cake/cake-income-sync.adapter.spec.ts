@@ -51,7 +51,7 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
       $transaction: jest.fn(async (callback: (transaction: unknown) => Promise<unknown>) => callback(prisma)),
       affiliateAccountCredential: { findUnique: jest.fn().mockResolvedValue({ updatedAt: new Date('2026-08-03T00:00:00Z') }) },
       auditLog: { findFirst: jest.fn().mockResolvedValue({ id: 'audit-1', action: CAKE_MONTHLY_SUB_CALIBRATION_ACTION, createdAt: new Date('2026-08-03T00:01:00Z') }) },
-      subIdMapping: { findMany: jest.fn().mockResolvedValue([{ employeeId }]) },
+      subIdMapping: { findMany: jest.fn().mockResolvedValue([subMapping()]) },
       incomeRecord: {
         upsert: jest.fn().mockResolvedValue({ id: 'income-1' }),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -82,9 +82,9 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     expect(result.status).toBe('completed');
     expect(result.successCount).toBe(1);
     expect(result.failedCount).toBe(1);
-    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith({ where: {
-      affiliateAccountId, subField: 'sub1', subValue: 'ZW', effectiveMonth: settlementMonth, status: CommonStatus.active,
-    }, select: { employeeId: true } });
+    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      affiliateAccountId, subField: 'sub1', subValue: 'ZW', effectiveMonth: { lte: settlementMonth },
+    }, orderBy: { effectiveMonth: 'desc' } }));
     const write = prisma.incomeRecord.upsert.mock.calls[0][0];
     expect(write.create).toMatchObject({ source: 'cake', affiliateAccountId, employeeId, subField: 'sub1', subValue: 'ZW', incomeUsd: new Prisma.Decimal('77710') });
     expect(write.where.source_externalRecordId.externalRecordId).toContain(`cake:sub-month:${affiliateAccountId}:2026-07:`);
@@ -121,6 +121,28 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
     const first = prisma.incomeRecord.upsert.mock.calls[0][0].where;
     const second = prisma.incomeRecord.upsert.mock.calls[1][0].where;
     expect(second).toEqual(first);
+  });
+
+  it('reproduces BA2 July and attributes four positive rows through June mappings while skipping one zero row', async () => {
+    mockRows([
+      { sub_id: 'YDF', revenue: '100' },
+      { sub_id: 'MSY', revenue: '200' },
+      { sub_id: 'DAN', revenue: '300' },
+      { sub_id: 'ZW', revenue: '400' },
+      { sub_id: 'ZERO', revenue: '0' },
+    ]);
+    const result = await adapter.execute({ ...context(), affiliateAccountCode: '3284' });
+    expect(result.status).toBe('completed');
+    expect(result.resultPayload).toMatchObject({
+      pulledCount: 5,
+      aggregateRowCount: 5,
+      positiveRevenueCount: 4,
+      attributedCount: 4,
+      unmatchedCount: 0,
+      zeroRevenueCount: 1,
+    });
+    expect(prisma.incomeRecord.upsert).toHaveBeenCalledTimes(4);
+    expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
   it('fails the sync when any write inside the monthly transaction fails', async () => {
@@ -172,17 +194,44 @@ describe('CakeIncomeSyncAdapter monthly SUB revenue', () => {
 
   it('routes multiple-employee mapping conflicts to unmatched', async () => {
     mockRows([{ sub_id: 'ZW', revenue: '10' }]);
-    prisma.subIdMapping.findMany.mockResolvedValue([{ employeeId: 'emp-1' }, { employeeId: 'emp-2' }]);
+    prisma.subIdMapping.findMany.mockResolvedValue([
+      subMapping({ id: 'mapping-1', employeeId: 'emp-1' }),
+      subMapping({ id: 'mapping-2', employeeId: 'emp-2' }),
+    ]);
     const result = await adapter.execute(context());
     expect(result.status).toBe('completed');
     expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
     expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_EMPLOYEE_CONFLICT' }), prisma);
   });
 
+  it('does not fall back when the latest mapping is disabled and rejects a disabled employee', async () => {
+    mockRows([{ sub_id: 'ZW', revenue: '10' }]);
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([
+      subMapping({ id: 'disabled', effectiveMonth: new Date('2026-07-01T00:00:00.000Z'), status: CommonStatus.disabled }),
+      subMapping({ id: 'old', effectiveMonth: new Date('2026-06-01T00:00:00.000Z') }),
+    ]);
+    await adapter.execute(context());
+    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'SUB_ID_NOT_MAPPED' }), prisma);
+
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping({ employeeStatus: CommonStatus.disabled })]);
+    await adapter.execute(context());
+    expect(unmatchedEvents.recordUnmatchedEvent).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'EMPLOYEE_DISABLED' }), prisma);
+  });
+
   function mockRows(rows: Record<string, unknown>[]) {
     client.getSubAffiliateSummary.mockResolvedValue({ rows, rowCount: rows.length, httpStatus: 200, raw: {} });
   }
 });
+
+function subMapping(overrides: Record<string, unknown> & { employeeStatus?: CommonStatus } = {}) {
+  const { employeeStatus = CommonStatus.active, ...rest } = overrides;
+  return {
+    id: 'mapping-1', affiliateAccountId, subField: 'sub1', subValue: 'ZW',
+    effectiveMonth: new Date('2026-06-01T00:00:00.000Z'), employeeId, status: CommonStatus.active,
+    employee: { employeeCode: '01', name: 'Employee', status: employeeStatus },
+    ...rest,
+  };
+}
 
 function context() {
   return {

@@ -218,17 +218,10 @@ export class ProviderCardInventoryService {
     if (card.employee.status !== CommonStatus.active) {
       return { ok: false as const, reasonCode: 'EMPLOYEE_DISABLED', reasonMessage: 'The matched employee is disabled.' };
     }
-    const mappings = await this.prisma.subIdMapping.findMany({
-      where: { employeeId: card.employeeId, effectiveMonth: settlementMonth, status: CommonStatus.active },
-      select: { id: true, affiliateAccountId: true, subField: true, subValue: true },
-    });
-    if (mappings.length === 0) {
-      return { ok: false as const, reasonCode: 'SUB_ID_NOT_MAPPED', reasonMessage: 'No active SUB ID mapping exists for the employee and transaction month.' };
-    }
-    if (mappings.length !== 1) {
-      return { ok: false as const, reasonCode: 'SUB_ID_EMPLOYEE_CONFLICT', reasonMessage: 'Multiple active SUB ID mappings exist for the employee and transaction month.' };
-    }
-    return { ok: true as const, employeeId: card.employeeId, subIdMapping: mappings[0] };
+    // ProviderCard is already the canonical, unique provider + cardId -> employee
+    // match. Affiliate SUB mappings are independent attribution metadata and may
+    // legally contain multiple accounts for the same employee.
+    return { ok: true as const, employeeId: card.employeeId };
   }
 
   async markTransactionSync(provider: Provider, cardId: string, status: string, syncedAt = new Date()) {

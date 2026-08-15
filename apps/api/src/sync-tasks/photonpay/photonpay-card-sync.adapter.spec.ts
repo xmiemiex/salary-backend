@@ -296,7 +296,7 @@ describe('PhotonPayCardSyncAdapter', () => {
     };
     inventory = {
       syncProviderWithPayload: jest.fn().mockResolvedValue({ provider: Provider.photonpay, status: 'completed', discoveredCount: 1, matchedCount: 1, unmatchedCount: 0, conflictCount: 0, retainedHistoricalCards: true }),
-      resolveSpendOwner: jest.fn().mockResolvedValue({ ok: true, employeeId, subIdMapping: { id: 'sub-1', affiliateAccountId: 'account-1', subField: 'sub1', subValue: 'employee-sub' } }),
+      resolveSpendOwner: jest.fn().mockResolvedValue({ ok: true, employeeId }),
       markTransactionSync: jest.fn().mockResolvedValue(undefined),
       markUntouchedTransactionSync: jest.fn().mockResolvedValue(undefined),
     };
@@ -376,6 +376,8 @@ describe('PhotonPayCardSyncAdapter', () => {
         }),
       }),
     );
+    expect(prisma.cardSpendEvent.upsert.mock.calls[0][0].create.rawData).not.toHaveProperty('affiliateAccountId');
+    expect(prisma.cardSpendEvent.upsert.mock.calls[0][0].create.rawData).not.toHaveProperty('subValue');
     expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('plain-api-key');
     expect(JSON.stringify(result)).not.toContain('plain-token');

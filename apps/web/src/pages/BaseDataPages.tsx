@@ -112,12 +112,13 @@ const PAGE_CONFIGS: Record<string, PageConfig> = {
   '/sub-id-mappings': {
     title: 'SUB ID 映射',
     endpoint: '/sub-id-mappings',
+    notice: '映射从生效月份开始持续有效，后续月份无需重复创建；只有归属变化时才新增更晚月份的映射版本。',
     defaultCreateValues: { status: 'active' },
     fields: [
       { name: 'affiliateAccountId', label: '联盟账号', type: 'select', optionSource: 'affiliateAccounts', required: true },
       { name: 'subField', label: 'SUB 字段', type: 'select', options: ['sub1', 'sub2', 'sub3', 'sub4', 'sub5'].map((value) => ({ label: value, value })), required: true },
       { name: 'subValue', label: 'SUB 值', required: true },
-      { name: 'effectiveMonth', label: '生效月份', type: 'month', required: true, filter: true },
+      { name: 'effectiveMonth', label: '生效月份（从本月起）', type: 'month', required: true, filter: true },
       { name: 'employeeId', label: '员工', type: 'select', optionSource: 'employees', required: true, filter: true },
       { name: 'status', label: '状态', type: 'select', options: STATUS_OPTIONS, filter: true },
     ],

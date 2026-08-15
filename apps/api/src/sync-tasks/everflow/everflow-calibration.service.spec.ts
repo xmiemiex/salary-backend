@@ -1,3 +1,4 @@
+import { CommonStatus } from '@prisma/client';
 import { EverflowCalibrationService } from './everflow-calibration.service';
 import { EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION } from './everflow-income-sync.adapter';
 
@@ -5,7 +6,7 @@ describe('EverflowCalibrationService', () => {
   it('records a pass only when SUB1 and offer totals agree in a metadata-confirmed GMT+8 timezone', async () => {
     const prisma: any = {
       affiliateAccount: { findUnique: jest.fn().mockResolvedValue({ id: 'account-1', platform: 'everflow', accountCode: '21490', accountName: 'DFO' }) },
-      subIdMapping: { findMany: jest.fn().mockResolvedValue([{ subField: 'sub1', subValue: 'ZW', employeeId: 'emp-1' }]) },
+      subIdMapping: { findMany: jest.fn().mockResolvedValue([mapping()]) },
     };
     const credentials: any = { getAffiliateAccountCredentialPayload: jest.fn().mockResolvedValue({ payload: { apiKey: 'secret' } }) };
     const client: any = {
@@ -21,6 +22,10 @@ describe('EverflowCalibrationService', () => {
     const service = new EverflowCalibrationService(prisma, credentials, client, audit);
     const result = await service.run('account-1', { settlementMonth: '2026-07' }, { userId: 'user-1', roleCode: 'admin' } as any);
     expect(result).toMatchObject({ writeGateEligible: true, rawPayloadReturned: false, returnedCount: 1 });
+    expect(result.attribution).toMatchObject({ attributedPositiveCount: 1, unmatchedPositiveCount: 0 });
+    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
+      affiliateAccountId: 'account-1', effectiveMonth: { lte: new Date('2026-07-01T00:00:00.000Z') },
+    }) }));
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION }));
     expect(JSON.stringify(result)).not.toContain('secret');
   });
@@ -44,3 +49,11 @@ describe('EverflowCalibrationService', () => {
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'everflow.monthly_sub_revenue.calibration.read' }));
   });
 });
+
+function mapping() {
+  return {
+    id: 'mapping-1', affiliateAccountId: 'account-1', subField: 'sub1', subValue: 'ZW',
+    effectiveMonth: new Date('2026-06-01T00:00:00.000Z'), employeeId: 'emp-1', status: CommonStatus.active,
+    employee: { employeeCode: '01', name: 'Employee', status: CommonStatus.active },
+  };
+}

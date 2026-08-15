@@ -8,6 +8,11 @@ import { AppError } from '../common/app-error';
 import { MonthLockService } from '../month-lock/month-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  EffectiveSubIdMappingReader,
+  isActiveEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../sub-id-mappings/effective-sub-id-mappings';
+import {
   buildCakeAdjustmentMetadata,
   CAKE_ADJUSTMENT_SOURCE,
   CAKE_BASE_SOURCE,
@@ -63,9 +68,10 @@ export class CakeIncomeAdjustmentsService {
           updatedAt: true,
         },
       }),
-      this.prisma.subIdMapping.findMany({
-        where: { affiliateAccountId, effectiveMonth: settlementMonth, subField: CAKE_SUB_FIELD, status: CommonStatus.active },
-        select: { subValue: true, employeeId: true, employee: { select: { employeeCode: true, name: true, status: true } } },
+      resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, {
+        affiliateAccountId,
+        settlementMonth,
+        subField: CAKE_SUB_FIELD,
       }),
       this.monthLock.isLocked(settlementMonth),
     ]);
@@ -78,7 +84,7 @@ export class CakeIncomeAdjustmentsService {
     const items = [...keys].sort().map((subValue) => {
       const subBaseRows = baseRows.filter((row) => row.subValue === subValue);
       const baseRevenue = sum(subBaseRows.map((row) => row.incomeUsd));
-      const mappingRows = mappings.filter((row) => row.subValue === subValue);
+      const mappingRows = mappings.filter((row) => row.subValue === subValue && isActiveEffectiveSubIdMapping(row));
       const employeeIds = [...new Set(mappingRows.map((row) => row.employeeId))];
       const adjustment = adjustments.find((row) => row.subValue === subValue) ?? null;
       const metadata = readCakeAdjustmentMetadata(adjustment?.rawData);
@@ -313,22 +319,27 @@ export class CakeIncomeAdjustmentsService {
     if (reason.length > MAX_REASON_LENGTH) throw new AppError(ERROR_CODES.VALIDATION_ERROR, `reason must be at most ${MAX_REASON_LENGTH} characters.`);
     await this.getCakeAccount(affiliateAccountId);
     const [mappings, baseRows] = await Promise.all([
-      this.prisma.subIdMapping.findMany({
-        where: { affiliateAccountId, effectiveMonth: settlementMonth, subField: CAKE_SUB_FIELD, subValue, status: CommonStatus.active },
-        select: { employeeId: true, employee: { select: { status: true } } },
+      resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, {
+        affiliateAccountId,
+        settlementMonth,
+        subField: CAKE_SUB_FIELD,
+        subValue,
       }),
       this.prisma.incomeRecord.findMany({
         where: { affiliateAccountId, settlementMonth, source: CAKE_BASE_SOURCE, status: CommonStatus.confirmed, subField: CAKE_SUB_FIELD, subValue },
         select: { employeeId: true, incomeUsd: true },
       }),
     ]);
-    const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
+    const activeMappings = mappings.filter(isActiveEffectiveSubIdMapping);
+    const employeeIds = [...new Set(activeMappings.map((mapping) => mapping.employeeId))];
     if (baseRows.length === 0) {
       throw new AppError(ERROR_CODES.CONFLICT, '该SUB没有已确认的CAKE API基础收入记录，不能创建收入调整。');
     }
-    if (employeeIds.length === 0) throw new AppError(ERROR_CODES.CONFLICT, '该SUB没有有效员工映射，不能创建收入调整。');
+    if (mappings.length === 0 || activeMappings.length !== mappings.length || employeeIds.length === 0) {
+      throw new AppError(ERROR_CODES.CONFLICT, '该SUB没有有效员工映射，不能创建收入调整。');
+    }
     if (employeeIds.length > 1) throw new AppError(ERROR_CODES.CONFLICT, '该SUB映射到多个员工，不能创建收入调整。');
-    if (mappings.some((mapping) => mapping.employee.status !== CommonStatus.active)) {
+    if (activeMappings.some((mapping) => mapping.employee.status !== CommonStatus.active)) {
       throw new AppError(ERROR_CODES.CONFLICT, '该SUB映射的员工不是启用状态。');
     }
     const employeeId = employeeIds[0];

@@ -163,7 +163,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       return false;
     }
 
-    const safeRawData = buildAirwallexRawSafeData(record, ownership.subIdMapping);
+    const safeRawData = buildAirwallexRawSafeData(record);
 
     await this.db().cardSpendEvent.upsert({
       where: { provider_externalEventId: { provider: Provider.airwallex, externalEventId: record.externalEventId } },
@@ -358,10 +358,7 @@ function parseDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function buildAirwallexRawSafeData(
-  record: NormalizedAirwallexTransaction,
-  subIdMapping?: { affiliateAccountId: string; subField: string; subValue: string },
-): Prisma.InputJsonObject {
+function buildAirwallexRawSafeData(record: NormalizedAirwallexTransaction): Prisma.InputJsonObject {
   return {
     transactionId: record.externalEventId,
     cardId: record.cardId,
@@ -374,9 +371,6 @@ function buildAirwallexRawSafeData(
     currency: record.currency,
     transactionAt: record.transactionAt?.toISOString(),
     settledAt: record.settledAt?.toISOString(),
-    affiliateAccountId: subIdMapping?.affiliateAccountId,
-    subField: subIdMapping?.subField,
-    subValue: subIdMapping?.subValue,
   };
 }
 

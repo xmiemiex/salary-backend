@@ -52,16 +52,20 @@ databaseDescribe('task97 provider card inventory on isolated PostgreSQL', () => 
     await expect(prisma.providerCard.findUniqueOrThrow({ where: key })).resolves.toMatchObject({ nickname: 'second', providerStatus: 'FROZEN' });
   });
 
-  it('resolves the employee through the exact transaction-month SUB ID mapping', async () => {
+  it('resolves the employee once across months even when multiple affiliate SUB mappings exist', async () => {
+    const secondAccount = await prisma.affiliateAccount.create({ data: { platform: 'everflow', accountCode: 'task97-account-2', status: 'active' } });
+    await prisma.subIdMapping.create({ data: {
+      affiliateAccountId: secondAccount.id, subField: 'sub1', subValue: 'task97-sub-2',
+      effectiveMonth: new Date('2026-06-01T00:00:00.000Z'), employeeId, status: 'active',
+    } });
     const service = new ProviderCardInventoryService(prisma as never, {} as never, {} as never, {} as never, {} as never);
     await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-06-01T00:00:00.000Z'))).resolves.toMatchObject({
       ok: true,
       employeeId,
-      subIdMapping: { subField: 'sub1', subValue: 'task97-sub' },
     });
     await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-07-01T00:00:00.000Z'))).resolves.toMatchObject({
-      ok: false,
-      reasonCode: 'SUB_ID_NOT_MAPPED',
+      ok: true,
+      employeeId,
     });
   });
 

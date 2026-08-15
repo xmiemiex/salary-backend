@@ -125,22 +125,19 @@ describe('ProviderCardInventoryService', () => {
     await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-06-01'))).resolves.toMatchObject({ ok: false, reasonCode: 'EMPLOYEE_DISABLED' });
   });
 
-  it('requires exactly one active SUB ID mapping for the transaction month', async () => {
+  it('assigns spend to the uniquely matched active employee without requiring an affiliate SUB mapping', async () => {
     matchedCard(CommonStatus.active);
     const month = new Date('2026-06-01T00:00:00.000Z');
     prisma.subIdMapping.findMany.mockResolvedValueOnce([]);
-    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', month)).resolves.toMatchObject({ ok: false, reasonCode: 'SUB_ID_NOT_MAPPED' });
-    prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping('one'), subMapping('two')]);
-    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', month)).resolves.toMatchObject({ ok: false, reasonCode: 'SUB_ID_EMPLOYEE_CONFLICT' });
-    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ effectiveMonth: month, status: CommonStatus.active }) }));
+    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', month)).resolves.toEqual({ ok: true, employeeId: 'employee-1' });
+    expect(prisma.subIdMapping.findMany).not.toHaveBeenCalled();
   });
 
-  it('returns the employee and monthly SUB ID only for a unique valid chain', async () => {
+  it('allows the same employee to have multiple affiliate mappings without duplicating spend ownership', async () => {
     matchedCard(CommonStatus.active);
-    prisma.subIdMapping.findMany.mockResolvedValue([subMapping('unique')]);
-    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-06-01'))).resolves.toMatchObject({
-      ok: true, employeeId: 'employee-1', subIdMapping: { subValue: 'unique' },
-    });
+    prisma.subIdMapping.findMany.mockResolvedValue([subMapping('cake', 'account-cake'), subMapping('everflow', 'account-everflow')]);
+    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-06-01'))).resolves.toEqual({ ok: true, employeeId: 'employee-1' });
+    expect(prisma.subIdMapping.findMany).not.toHaveBeenCalled();
   });
 
   function employeeRows(rows: any[]) { prisma.employee.findMany.mockResolvedValue(rows); }
@@ -162,5 +159,5 @@ function listedCard(cardId: string, cardStatus: string) {
   return { cardId, cardholderId: 'holder-1', email: null, maskCardNo: '****1234', nickname: 'Ads', cardStatus, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
 }
 function photonCredential() { return { appId: 'app-id', appSecret: 'app-secret' }; }
-function subMapping(subValue: string) { return { id: `sub-${subValue}`, affiliateAccountId: 'account-1', subField: 'sub1', subValue }; }
+function subMapping(subValue: string, affiliateAccountId: string) { return { id: `sub-${subValue}`, affiliateAccountId, subField: 'sub1', subValue }; }
 function actor() { return { userId: 'user-1', roleCode: 'super_admin', permissions: ['card_binding.manage'], ipAddress: '127.0.0.1', userAgent: 'jest' } as any; }

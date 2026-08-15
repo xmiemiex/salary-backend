@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { CredentialReaderService } from '../../api-credentials/credential-reader.service';
 import { AuditService } from '../../audit/audit.service';
 import { Actor } from '../../auth/auth.types';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  EffectiveSubIdMappingReader,
+  isUsableEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../../sub-id-mappings/effective-sub-id-mappings';
 import { CakeClient, CakeCredentialPayload } from './cake-client';
 import {
   CAKE_MONTHLY_SUB_CALIBRATION_ACTION,
@@ -50,10 +55,10 @@ export class CakeCalibrationService {
         rowLimit: 1000,
       }),
       this.client.getCurrencies({ credential, affiliateId: account.accountCode }),
-      this.prisma.subIdMapping.findMany({
-        where: { affiliateAccountId: account.id, effectiveMonth: range.monthDate, status: CommonStatus.active },
-        select: { subField: true, subValue: true, employeeId: true },
-      }),
+      resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, {
+        affiliateAccountId: account.id,
+        settlementMonth: range.monthDate,
+      }).then((rows) => rows.filter(isUsableEffectiveSubIdMapping)),
     ]);
 
     const rows = summary.rows.map(normalizeCakeSummaryRow);

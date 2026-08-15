@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { CommonStatus, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { CredentialReaderService } from '../../api-credentials/credential-reader.service';
 import { AuditService } from '../../audit/audit.service';
 import { Actor } from '../../auth/auth.types';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  EffectiveSubIdMappingReader,
+  isUsableEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../../sub-id-mappings/effective-sub-id-mappings';
 import { EverflowClient, EverflowCredentialPayload } from './everflow-client';
 import {
   EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION,
@@ -45,10 +50,10 @@ export class EverflowCalibrationService {
     const [response, offerResponse, mappings] = await Promise.all([
       this.client.getAffiliateSubRevenueSummary({ credential, from: window.from, to: window.to, timezoneId: timezone.timezoneId, subField: 'sub1' }),
       this.client.getAffiliateOfferRevenueSummary({ credential, from: window.from, to: window.to, timezoneId: timezone.timezoneId }),
-      this.prisma.subIdMapping.findMany({
-        where: { affiliateAccountId: account.id, effectiveMonth: monthDate, status: CommonStatus.active },
-        select: { subField: true, subValue: true, employeeId: true },
-      }),
+      resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, {
+        affiliateAccountId: account.id,
+        settlementMonth: monthDate,
+      }).then((rows) => rows.filter(isUsableEffectiveSubIdMapping)),
     ]);
     const rows = (response.table ?? []).map(normalizeEverflowSummaryRow);
     const offerRows = (offerResponse.table ?? []).map(normalizeEverflowSummaryRow);

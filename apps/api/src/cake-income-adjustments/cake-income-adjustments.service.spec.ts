@@ -14,7 +14,7 @@ describe('CakeIncomeAdjustmentsService', () => {
         findUnique: jest.fn().mockResolvedValue({ id: accountId, platform: 'cake', accountCode: '329', accountName: 'Blitzads' }),
       },
       subIdMapping: {
-        findMany: jest.fn().mockResolvedValue([{ employeeId, employee: { status: CommonStatus.active } }]),
+        findMany: jest.fn().mockResolvedValue([subMapping()]),
       },
       incomeRecord: {
         findMany: jest.fn().mockResolvedValue([{ employeeId, incomeUsd: new Prisma.Decimal('77385') }]),
@@ -58,6 +58,9 @@ describe('CakeIncomeAdjustmentsService', () => {
       stale: false,
     });
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'cake_income_adjustment.save_draft' }));
+    expect(prisma.subIdMapping.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
+      affiliateAccountId: accountId, subField: 'sub1', subValue: 'ZW', effectiveMonth: { lte: month },
+    }) }));
   });
 
   it('supports a negative adjustment only through the dedicated source and repeated saves use one idempotency key', async () => {
@@ -92,15 +95,25 @@ describe('CakeIncomeAdjustmentsService', () => {
     prisma.subIdMapping.findMany.mockResolvedValueOnce([]);
     await expect(service.saveDraft(input('77710'), actor)).rejects.toMatchObject({ code: 'CONFLICT' });
     prisma.subIdMapping.findMany.mockResolvedValueOnce([
-      { employeeId: 'emp-1', employee: { status: CommonStatus.active } },
-      { employeeId: 'emp-2', employee: { status: CommonStatus.active } },
+      subMapping({ id: 'mapping-1', employeeId: 'emp-1' }),
+      subMapping({ id: 'mapping-2', employeeId: 'emp-2' }),
     ]);
     await expect(service.saveDraft(input('77710'), actor)).rejects.toMatchObject({ code: 'CONFLICT' });
-    prisma.subIdMapping.findMany.mockResolvedValueOnce([{ employeeId, employee: { status: CommonStatus.disabled } }]);
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping({ employeeStatus: CommonStatus.disabled })]);
     await expect(service.saveDraft(input('77710'), actor)).rejects.toMatchObject({ code: 'CONFLICT' });
-    prisma.subIdMapping.findMany.mockResolvedValueOnce([{ employeeId, employee: { status: CommonStatus.active } }]);
+    prisma.subIdMapping.findMany.mockResolvedValueOnce([subMapping()]);
     prisma.incomeRecord.findMany.mockResolvedValueOnce([{ employeeId: 'other-employee', incomeUsd: new Prisma.Decimal('77385') }]);
     await expect(service.saveDraft(input('77710'), actor)).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('does not fall back to an older active mapping when the latest version is disabled', async () => {
+    const { service, prisma } = harness();
+    prisma.subIdMapping.findMany.mockResolvedValue([
+      subMapping({ id: 'disabled', effectiveMonth: month, status: CommonStatus.disabled }),
+      subMapping({ id: 'old', effectiveMonth: new Date('2026-06-01T00:00:00.000Z') }),
+    ]);
+    await expect(service.saveDraft(input('77710'), actor)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(prisma.incomeRecord.upsert).not.toHaveBeenCalled();
   });
 
   it('enforces super_admin plus income.import and the month lock', async () => {
@@ -138,12 +151,20 @@ describe('CakeIncomeAdjustmentsService', () => {
     prisma.incomeRecord.findMany
       .mockResolvedValueOnce([{ id: 'base-1', employeeId, subValue: 'ZW', incomeUsd: new Prisma.Decimal('77385') }])
       .mockResolvedValueOnce([]);
-    prisma.subIdMapping.findMany.mockResolvedValue([{
-      subValue: 'ZW', employeeId, employee: { employeeCode: '01', name: 'ZW', status: CommonStatus.active },
-    }]);
+    prisma.subIdMapping.findMany.mockResolvedValue([subMapping()]);
     const result = await service.exportCsv({ affiliateAccountId: accountId, settlementMonth: '2026-07' }, actor);
     expect(result.csv).toContain('API Default Timezone Revenue USD,China Standard Time Actual Revenue USD,Proposed Adjustment USD,Confirmed Adjustment USD,Preview Final Revenue USD,Settlement Final Revenue USD');
     expect(result.csv).toContain('77385,77385,0,0,77385,77385');
     expect(result.csv).not.toMatch(/api.?key|authorization|raw.?payload/i);
   });
 });
+
+function subMapping(overrides: Record<string, unknown> & { employeeStatus?: CommonStatus } = {}) {
+  const { employeeStatus = CommonStatus.active, ...rest } = overrides;
+  return {
+    id: 'mapping-1', affiliateAccountId: accountId, subField: 'sub1', subValue: 'ZW',
+    effectiveMonth: new Date('2026-06-01T00:00:00.000Z'), employeeId, status: CommonStatus.active,
+    employee: { employeeCode: '01', name: 'ZW', status: employeeStatus },
+    ...rest,
+  };
+}

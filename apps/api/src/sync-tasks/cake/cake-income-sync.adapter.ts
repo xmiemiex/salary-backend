@@ -18,6 +18,11 @@ import {
 } from '../../cake-income-adjustments/cake-income-adjustment.utils';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  EffectiveSubIdMappingReader,
+  isActiveEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../../sub-id-mappings/effective-sub-id-mappings';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
 import { providerErrorCategory } from '../provider-request-error';
@@ -29,11 +34,9 @@ export const CAKE_MONTHLY_SUB_CALIBRATION_ACTION = 'cake.monthly_sub_revenue.def
 export const CAKE_MONTHLY_SUB_CALIBRATION_READ_ACTION = 'cake.monthly_sub_revenue.calibration.read';
 
 type CakeSummaryRow = { subValue: string | null; revenueUsd: Prisma.Decimal };
-type Mapping = { employeeId: string };
-type CakeAdapterPrisma = {
+type CakeAdapterPrisma = EffectiveSubIdMappingReader & {
   affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
   auditLog: { findFirst(args: unknown): Promise<{ id: string; action: string; createdAt: Date } | null> };
-  subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
     deleteMany(args: unknown): Promise<{ count: number }>;
@@ -118,18 +121,15 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
             await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'CAKE SubAffiliateSummary revenue row has no SUB1 value.', transaction);
             continue;
           }
-          const mappings = await db.subIdMapping.findMany({
-            where: {
-              affiliateAccountId: context.affiliateAccountId,
-              subField: SUB_FIELD,
-              subValue: row.subValue,
-              effectiveMonth: context.settlementMonth,
-              status: CommonStatus.active,
-            },
-            select: { employeeId: true },
+          const mappings = await resolveEffectiveSubIdMappings(db, {
+            affiliateAccountId: context.affiliateAccountId,
+            subField: SUB_FIELD,
+            subValue: row.subValue,
+            settlementMonth: context.settlementMonth,
           });
-          const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
-          if (employeeIds.length === 0) {
+          const activeMappings = mappings.filter(isActiveEffectiveSubIdMapping);
+          const employeeIds = [...new Set(activeMappings.map((mapping) => mapping.employeeId))];
+          if (mappings.length === 0 || activeMappings.length !== mappings.length) {
             unmatchedCount += 1;
             await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
             await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
@@ -141,6 +141,13 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
             await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
             await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
             await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'CAKE SUB1 maps to multiple employees.', transaction);
+            continue;
+          }
+          if (activeMappings.some((mapping) => mapping.employee.status !== CommonStatus.active)) {
+            unmatchedCount += 1;
+            await db.incomeRecord.deleteMany({ where: { source: CAKE_SOURCE, externalRecordId } });
+            await this.markAdjustmentStaleWhenBaseChanges(context, row, true, db, transaction);
+            await this.recordUnmatched(row, externalRecordId, context, 'EMPLOYEE_DISABLED', 'CAKE SUB1 maps to a disabled employee.', transaction);
             continue;
           }
 

@@ -34,10 +34,12 @@ assert.match(page, /name: 'affiliateAccountId'.+type: 'select'.+optionSource: 'a
 assert.match(page, /name: 'employeeId'.+type: 'select'.+optionSource: 'employees'/);
 assert.match(page, /function ProviderCardsPage\(\)/);
 assert.match(page, /\/card-bindings\/sync\/\$\{provider\}/);
-const cardBindingConfig = page.match(/'\/card-bindings': \{([\s\S]*?)\n  \},\n  '\/monthly-exchange-rates'/)?.[1] ?? '';
+const cardBindingConfig = page.match(/'\/card-bindings': \{([\s\S]*?)\r?\n  \},\r?\n  '\/monthly-exchange-rates'/)?.[1] ?? '';
 assert.match(cardBindingConfig, /fields: \[\]/);
 assert.doesNotMatch(cardBindingConfig, /name: '(?:cardId|employeeId|effectiveMonth)'/);
 assert.doesNotMatch(page, /\/card-bindings\/airwallex\/discovery/);
 assert.match(page, /\['sub1', 'sub2', 'sub3', 'sub4', 'sub5'\]/);
+assert.match(page, /label: '生效月份（从本月起）'/);
+assert.match(page, /映射从生效月份开始持续有效，后续月份无需重复创建；只有归属变化时才新增更晚月份的映射版本。/);
 
 console.log('base data form utility tests passed');

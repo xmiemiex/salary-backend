@@ -12,6 +12,11 @@ import {
 import { ERROR_CODES } from '@salary/shared';
 import { AppError } from '../../common/app-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  EffectiveSubIdMappingReader,
+  isActiveEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../../sub-id-mappings/effective-sub-id-mappings';
 import { SyncUnmatchedEventsService } from '../../sync-unmatched-events/sync-unmatched-events.service';
 import { SyncAdapter, SyncAdapterContext, SyncAdapterResult } from '../sync-adapter';
 import { providerErrorCategory } from '../provider-request-error';
@@ -27,11 +32,9 @@ const SUB_FIELD = 'sub1';
 export const EVERFLOW_MONTHLY_SUB_CALIBRATION_ACTION = 'everflow.monthly_sub_revenue.calibration.pass';
 export const EVERFLOW_MONTHLY_SUB_CALIBRATION_READ_ACTION = 'everflow.monthly_sub_revenue.calibration.read';
 
-type Mapping = { employeeId: string };
-type EverflowAdapterPrisma = {
+type EverflowAdapterPrisma = EffectiveSubIdMappingReader & {
   affiliateAccountCredential: { findUnique(args: unknown): Promise<{ updatedAt: Date } | null> };
   auditLog: { findFirst(args: unknown): Promise<{ id: string; action: string; createdAt: Date } | null> };
-  subIdMapping: { findMany(args: unknown): Promise<Mapping[]> };
   incomeRecord: {
     upsert(args: unknown): Promise<unknown>;
     deleteMany(args: unknown): Promise<{ count: number }>;
@@ -124,18 +127,15 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
           await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_MISSING', 'Everflow monthly revenue row has no SUB1 value.');
           continue;
         }
-        const mappings = await this.db().subIdMapping.findMany({
-          where: {
-            affiliateAccountId: context.affiliateAccountId,
-            subField: SUB_FIELD,
-            subValue: row.subValue,
-            effectiveMonth: context.settlementMonth,
-            status: CommonStatus.active,
-          },
-          select: { employeeId: true },
+        const mappings = await resolveEffectiveSubIdMappings(this.db(), {
+          affiliateAccountId: context.affiliateAccountId,
+          subField: SUB_FIELD,
+          subValue: row.subValue,
+          settlementMonth: context.settlementMonth,
         });
-        const employeeIds = [...new Set(mappings.map((mapping) => mapping.employeeId))];
-        if (employeeIds.length === 0) {
+        const activeMappings = mappings.filter(isActiveEffectiveSubIdMapping);
+        const employeeIds = [...new Set(activeMappings.map((mapping) => mapping.employeeId))];
+        if (mappings.length === 0 || activeMappings.length !== mappings.length) {
           unmatchedCount += 1;
           await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
           await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_NOT_MAPPED', 'Everflow SUB1 is not mapped to an employee.');
@@ -145,6 +145,12 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
           unmatchedCount += 1;
           await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
           await this.recordUnmatched(row, externalRecordId, context, 'SUB_ID_EMPLOYEE_CONFLICT', 'Everflow SUB1 maps to multiple employees.');
+          continue;
+        }
+        if (activeMappings.some((mapping) => mapping.employee.status !== CommonStatus.active)) {
+          unmatchedCount += 1;
+          await this.db().incomeRecord.deleteMany({ where: { source: EVERFLOW_SOURCE, externalRecordId } });
+          await this.recordUnmatched(row, externalRecordId, context, 'EMPLOYEE_DISABLED', 'Everflow SUB1 maps to a disabled employee.');
           continue;
         }
 

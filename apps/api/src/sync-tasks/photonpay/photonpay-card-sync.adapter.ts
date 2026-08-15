@@ -165,7 +165,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       return false;
     }
 
-    const safeRawData = buildPhotonPayRawSafeData(record, ownership.subIdMapping);
+    const safeRawData = buildPhotonPayRawSafeData(record);
 
     await this.db().cardSpendEvent.upsert({
       where: { provider_externalEventId: { provider: Provider.photonpay, externalEventId: record.externalEventId } },
@@ -345,10 +345,7 @@ function parseDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function buildPhotonPayRawSafeData(
-  record: NormalizedPhotonPayTransaction,
-  subIdMapping?: { affiliateAccountId: string; subField: string; subValue: string },
-): Prisma.InputJsonObject {
+function buildPhotonPayRawSafeData(record: NormalizedPhotonPayTransaction): Prisma.InputJsonObject {
   return {
     transactionId: record.externalEventId,
     cardId: record.cardId,
@@ -361,9 +358,6 @@ function buildPhotonPayRawSafeData(
     currency: record.currency,
     transactionAt: record.transactionAt?.toISOString(),
     settledAt: record.settledAt?.toISOString(),
-    affiliateAccountId: subIdMapping?.affiliateAccountId,
-    subField: subIdMapping?.subField,
-    subValue: subIdMapping?.subValue,
   };
 }
 
