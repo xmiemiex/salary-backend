@@ -45,6 +45,30 @@ describe('ProviderCardInventoryService', () => {
       }),
     }));
     expect(JSON.stringify(prisma.providerCard.upsert.mock.calls)).not.toContain('sensitive-card-value');
+    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 1, multipleBusinessSubValues: 0 });
+  });
+
+  it('treats the same effective business SUB value across accounts as valid', async () => {
+    employeeRows([{ id: 'employee-1', email: 'user@example.test', status: CommonStatus.active }]);
+    prisma.subIdMapping.findMany.mockResolvedValue([
+      effectiveSub('account-cake', 'SAME-SUB'),
+      effectiveSub('account-everflow', 'SAME-SUB'),
+    ]);
+    photonCards({ email: 'user@example.test' });
+    const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential(), new Date('2026-06-01T00:00:00.000Z'));
+    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 0, multipleBusinessSubValues: 0 });
+  });
+
+  it('reports multiple distinct effective business SUB values without choosing one', async () => {
+    employeeRows([{ id: 'employee-1', email: 'user@example.test', status: CommonStatus.active }]);
+    prisma.subIdMapping.findMany.mockResolvedValue([
+      effectiveSub('account-cake', 'SUB-A'),
+      effectiveSub('account-everflow', 'SUB-B'),
+    ]);
+    photonCards({ email: 'user@example.test' });
+    const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential(), new Date('2026-06-01T00:00:00.000Z'));
+    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 0, multipleBusinessSubValues: 1 });
+    expect(prisma.providerCard.upsert.mock.calls[0][0].create.employeeId).toBe('employee-1');
   });
 
   it.each([
@@ -79,6 +103,20 @@ describe('ProviderCardInventoryService', () => {
     });
   });
 
+  it('treats one active plus one disabled employee with the same normalized email as a conflict', async () => {
+    employeeRows([
+      { id: 'employee-1', email: 'user@example.test', status: CommonStatus.active },
+      { id: 'employee-2', email: ' USER@example.test ', status: CommonStatus.disabled },
+    ]);
+    photonCards({ email: 'user@example.test' });
+    const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
+    expect(result).toMatchObject({ matchedCount: 0, conflictCount: 1 });
+    expect(result.mappingDiagnostics).toMatchObject({ multipleEmployeeEmail: 1 });
+    expect(prisma.providerCard.upsert.mock.calls[0][0].create).toMatchObject({
+      employeeId: null, matchStatus: ProviderCardMatchStatus.conflict, unmatchedReasonCode: 'EMPLOYEE_EMAIL_AMBIGUOUS',
+    });
+  });
+
   it('paginates every PhotonPay card and retains frozen and closed cards', async () => {
     photonpay.listCards
       .mockResolvedValueOnce({ cards: [listedCard('card-1', 'FROZEN')], hasMore: true })
@@ -86,6 +124,11 @@ describe('ProviderCardInventoryService', () => {
     photonpay.getCardDetail.mockImplementation(({ cardId }: { cardId: string }) => Promise.resolve({ ...listedCard(cardId, cardId === 'card-1' ? 'FROZEN' : 'CLOSED'), email: null }));
     const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
     expect(result.discoveredCount).toBe(2);
+    expect(result.connectionDiagnostics).toMatchObject({
+      cardPages: 2,
+      cardStatusCounts: { FROZEN: 1, CLOSED: 1 },
+      cardOrganizationCounts: { UNKNOWN: 2 },
+    });
     expect(photonpay.listCards).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }));
     expect(prisma.providerCard.upsert.mock.calls.map((call: any[]) => call[0].create.providerStatus)).toEqual(['FROZEN', 'CLOSED']);
   });
@@ -160,4 +203,16 @@ function listedCard(cardId: string, cardStatus: string) {
 }
 function photonCredential() { return { appId: 'app-id', appSecret: 'app-secret' }; }
 function subMapping(subValue: string, affiliateAccountId: string) { return { id: `sub-${subValue}`, affiliateAccountId, subField: 'sub1', subValue }; }
+function effectiveSub(affiliateAccountId: string, subValue: string) {
+  return {
+    id: `${affiliateAccountId}-${subValue}`,
+    affiliateAccountId,
+    subField: 'sub1',
+    subValue,
+    effectiveMonth: new Date('2026-06-01T00:00:00.000Z'),
+    employeeId: 'employee-1',
+    status: CommonStatus.active,
+    employee: { employeeCode: 'E001', name: 'Employee', status: CommonStatus.active },
+  };
+}
 function actor() { return { userId: 'user-1', roleCode: 'super_admin', permissions: ['card_binding.manage'], ipAddress: '127.0.0.1', userAgent: 'jest' } as any; }

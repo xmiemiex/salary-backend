@@ -1,6 +1,12 @@
 import { CommonStatus, Prisma, Provider, SyncExecutionErrorCategory, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { SyncAdapterResolver } from '../sync-adapter-resolver';
-import { PhotonPayCardSyncAdapter, getPhotonPayGmt8SettlementMonthWindow } from './photonpay-card-sync.adapter';
+import {
+  PhotonPayCardSyncAdapter,
+  getPhotonPayGmt8SettlementMonthWindow,
+  normalizePhotonPayTransaction,
+  parsePhotonPayVerificationWindow,
+  splitPhotonPayQueryWindow,
+} from './photonpay-card-sync.adapter';
 import {
   PHOTONPAY_DEFAULT_BASE_URL,
   PHOTONPAY_DEFAULT_TOKEN_PATH,
@@ -44,12 +50,17 @@ describe('PhotonPayClient', () => {
     const url = fetchMock.mock.calls[1][0] as URL;
     const init = fetchMock.mock.calls[1][1] as { method: string; headers: Record<string, string> };
     expect(`${url.origin}${url.pathname}`).toBe(`${PHOTONPAY_DEFAULT_BASE_URL}${PHOTONPAY_DEFAULT_TRANSACTIONS_PATH}`);
-    expect(url.searchParams.get('createdAtStart')).toBe('2026-06-01 00:00:00');
-    expect(url.searchParams.get('createdAtEnd')).toBe('2026-07-11 00:00:00');
+    expect(url.searchParams.get('createdAtStart')).toBe('2026-05-31T16:00:00');
+    expect(url.searchParams.get('createdAtEnd')).toBe('2026-07-10T16:00:00');
     expect(url.searchParams.get('pageIndex')).toBe('2');
     expect(url.searchParams.get('pageSize')).toBe('200');
     expect(init.method).toBe('GET');
     expect(init.headers[PHOTONPAY_TOKEN_HEADER]).toBe('access-token');
+    expect(client.getSafeDiagnostics()).toMatchObject({
+      tokenRequestCount: 1,
+      transactionListRequestCount: 1,
+      lastAuth: { httpStatus: 200, providerCode: '0000', tokenPresent: true },
+    });
     jest.useRealTimers();
   });
 
@@ -180,7 +191,31 @@ describe('PhotonPayClient', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls.filter(([url]) => (url as URL).pathname === PHOTONPAY_DEFAULT_TOKEN_PATH)).toHaveLength(1);
+    expect(client.getSafeDiagnostics()).toMatchObject({ tokenRequestCount: 1, tokenCacheHitCount: 1, cardListRequestCount: 2 });
     jest.useRealTimers();
+  });
+
+  it('blocks non-production hosts and non-allowlisted paths in production before any request', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const fetchMock = jest.fn();
+    const client = new PhotonPayClient(fetchMock as never);
+    try {
+      await expect(client.listCards({
+        credential: { baseUrl: 'https://x-api.sandbox.photontech.cc', appId: 'app', appSecret: 'secret' },
+        page: 1,
+        pageSize: 20,
+      })).rejects.toThrow('official production API host');
+      await expect(client.listCards({
+        credential: { appId: 'app', appSecret: 'secret', cardsPath: '/vcc/openApi/v4/getCvv' },
+        page: 1,
+        pageSize: 20,
+      })).rejects.toThrow('not allowlisted');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   it('does not share tokens across environments or appIds', async () => {
@@ -277,7 +312,7 @@ describe('PhotonPayClient', () => {
 describe('PhotonPayCardSyncAdapter', () => {
   let prisma: {
     cardBinding: { findFirst: jest.Mock };
-    cardSpendEvent: { upsert: jest.Mock };
+    cardSpendEvent: { findUnique: jest.Mock; upsert: jest.Mock };
   };
   let client: { listCardTransactions: jest.Mock };
   let unmatchedEvents: { recordUnmatchedEvent: jest.Mock; resolveAfterSuccessfulImport: jest.Mock };
@@ -287,7 +322,10 @@ describe('PhotonPayCardSyncAdapter', () => {
   beforeEach(() => {
     prisma = {
       cardBinding: { findFirst: jest.fn() },
-      cardSpendEvent: { upsert: jest.fn().mockResolvedValue({ id: 'spend-1' }) },
+      cardSpendEvent: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({ id: 'spend-1' }),
+      },
     };
     client = { listCardTransactions: jest.fn() };
     unmatchedEvents = {
@@ -313,18 +351,56 @@ describe('PhotonPayCardSyncAdapter', () => {
     expect(window.settlementDelayDays).toBe(10);
   });
 
+  it('splits provider queries into continuous windows no longer than 30 days', () => {
+    expect(splitPhotonPayQueryWindow(
+      new Date('2026-05-31T16:00:00.000Z'),
+      new Date('2026-07-10T16:00:00.000Z'),
+    )).toEqual([
+      { from: new Date('2026-05-31T16:00:00.000Z'), to: new Date('2026-06-30T16:00:00.000Z') },
+      { from: new Date('2026-06-30T16:00:00.000Z'), to: new Date('2026-07-10T16:00:00.000Z') },
+    ]);
+  });
+
+  it('accepts only the previous 1 or 7 complete Asia/Shanghai days for verification', () => {
+    const now = new Date('2026-06-19T04:00:00.000Z');
+    expect(parsePhotonPayVerificationWindow({
+      from: '2026-06-17T16:00:00.000Z',
+      to: '2026-06-18T16:00:00.000Z',
+    }, settlementMonth, now).durationDays).toBe(1);
+    expect(() => parsePhotonPayVerificationWindow({
+      from: '2026-06-16T16:00:00.000Z',
+      to: '2026-06-18T16:00:00.000Z',
+    }, settlementMonth, now)).toThrow('exactly 1 or 7');
+  });
+
   it('uses configured settlementDelayDays to extend requestWindow', async () => {
     mockTransactions([]);
 
     await adapter.execute(context({ settlementDelayDays: 3 }));
 
-    expect(client.listCardTransactions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        from: new Date('2026-05-31T16:00:00.000Z'),
-        to: new Date('2026-07-03T16:00:00.000Z'),
-        credential: expect.objectContaining({ settlementDelayDays: 3 }),
-      }),
-    );
+    expect(client.listCardTransactions).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      from: new Date('2026-05-31T16:00:00.000Z'),
+      to: new Date('2026-06-30T16:00:00.000Z'),
+      credential: expect.objectContaining({ settlementDelayDays: 3 }),
+    }));
+    expect(client.listCardTransactions).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      from: new Date('2026-06-30T16:00:00.000Z'),
+      to: new Date('2026-07-03T16:00:00.000Z'),
+      credential: expect.objectContaining({ settlementDelayDays: 3 }),
+    }));
+  });
+
+  it('uses an explicitly validated one-day verification window without querying the full month', async () => {
+    mockTransactions([]);
+    const result = await adapter.execute(context({}, {
+      verificationWindow: { from: '2026-06-17T16:00:00.000Z', to: '2026-06-18T16:00:00.000Z' },
+    }));
+    expect(client.listCardTransactions).toHaveBeenCalledTimes(1);
+    expect(client.listCardTransactions).toHaveBeenCalledWith(expect.objectContaining({
+      from: new Date('2026-06-17T16:00:00.000Z'),
+      to: new Date('2026-06-18T16:00:00.000Z'),
+    }));
+    expect(result.resultPayload).toMatchObject({ verificationMode: true, settlementDelayDays: 0 });
   });
 
   it('falls back to the default settlementDelayDays when credential value is invalid', async () => {
@@ -542,6 +618,35 @@ describe('PhotonPayCardSyncAdapter', () => {
     });
   });
 
+  it('skips an unchanged external transaction on the second identical sync', async () => {
+    mockTransactions([settledTransaction()]);
+    prisma.cardSpendEvent.findUnique.mockResolvedValue({
+      cardId: 'card-1',
+      employeeId,
+      transactionAt: new Date('2026-06-15T12:00:00.000Z'),
+      amount: new Prisma.Decimal('12.34'),
+      currency: 'USD',
+      spendUsd: new Prisma.Decimal('12.34'),
+      settledAt: new Date('2026-06-20T00:00:00.000Z'),
+      sourceStatus: 'Settled|succeed|auth',
+      sourceUpdatedAt: new Date('2026-07-02T00:00:00.000Z'),
+      status: CommonStatus.confirmed,
+    });
+    const result = await adapter.execute(context());
+    expect(result.resultPayload).toMatchObject({ createdCount: 0, updatedCount: 0, skippedCount: 1 });
+    expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
+  });
+
+  it('treats zone-less PhotonPay transaction timestamps as UTC before GMT+8 month assignment', () => {
+    const record = normalizePhotonPayTransaction({
+      ...settledTransaction(),
+      txnDate: '2026-06-30T15:59:59',
+      createdAt: '2026-06-30T15:59:59',
+    });
+    expect(record.transactionAt).toEqual(new Date('2026-06-30T15:59:59.000Z'));
+    expect(record.sourceUpdatedAt).toEqual(new Date('2026-06-30T15:59:59.000Z'));
+  });
+
   it('redacts plaintext credentials from resultPayload, message, and errorMessage', async () => {
     client.listCardTransactions.mockRejectedValue(
       new Error('PhotonPay failed with plain-app-id plain-app-secret in upstream response.'),
@@ -591,7 +696,7 @@ function settledTransaction() {
   };
 }
 
-function context(payloadOverrides: Record<string, unknown> = {}) {
+function context(payloadOverrides: Record<string, unknown> = {}, requestPayload?: Record<string, unknown>) {
   return {
     taskId: '20000000-0000-0000-0000-000000000001',
     sourceType: SyncTaskSourceType.card_spend,
@@ -600,6 +705,7 @@ function context(payloadOverrides: Record<string, unknown> = {}) {
     provider: Provider.photonpay,
     settlementMonth,
     requestedBy: actorUserId,
+    requestPayload,
     credential: {
       credentialId: 'cred-1',
       hasCredential: true as const,

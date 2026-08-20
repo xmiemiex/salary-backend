@@ -270,6 +270,26 @@ describe('ApiCredentialsService', () => {
     });
     expect(JSON.stringify(result)).not.toContain('photon-app-id-123456');
     expect(JSON.stringify(result)).not.toContain('photon-app-secret-123456');
+    const encrypted = prisma.cardProviderCredential.upsert.mock.calls[0][0].create.encryptedPayload;
+    expect(new CredentialCryptoService().decryptJson(encrypted)).toMatchObject({
+      baseUrl: 'https://x-api.photonpay.com',
+      tokenPath: '/oauth2/token/accessToken',
+      cardsPath: '/vcc/openApi/v4/pagingVccCard',
+      cardDetailPath: '/vcc/openApi/v4/getCardDetail',
+      transactionsPath: '/vcc/openApi/v4/pagingVccTradeOrder',
+    });
+  });
+
+  it.each([
+    { baseUrl: 'https://x-api.sandbox.photontech.cc' },
+    { cardsPath: '/vcc/openApi/v4/getCvv' },
+    { transactionsPath: '/vcc/open/v2/sandBoxTransaction' },
+  ])('rejects non-production PhotonPay endpoints: %j', async (override) => {
+    prisma.cardProviderCredential.findUnique.mockResolvedValue(null);
+    await expect(service.upsertCardProvider('photonpay', {
+      payload: { appId: 'app-id', appSecret: 'app-secret', ...override },
+    }, actor)).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
+    expect(prisma.cardProviderCredential.upsert).not.toHaveBeenCalled();
   });
 
   it.each([

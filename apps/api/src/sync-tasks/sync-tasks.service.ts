@@ -14,6 +14,7 @@ import { optionalNonBlank, requireNonBlank } from '../base-data/base-data.utils'
 import { AppError } from '../common/app-error';
 import { MonthLockService } from '../month-lock/month-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { parsePhotonPayVerificationWindow } from './photonpay/photonpay-card-sync.adapter';
 
 const AFFILIATE_PLATFORMS = [SyncTaskPlatform.everflow, SyncTaskPlatform.cake] as const;
 const CARD_PROVIDERS = [Provider.airwallex, Provider.photonpay] as const;
@@ -25,6 +26,10 @@ export type CreateAffiliateIncomeSyncTaskInput = {
 
 export type CreateCardSpendSyncTaskInput = {
   settlementMonth: string | Date;
+  verificationWindow?: {
+    from: string;
+    to: string;
+  };
 };
 
 export type SyncTasksQuery = {
@@ -123,8 +128,24 @@ export class SyncTasksService {
     try {
       const provider = normalizeCardProvider(providerInput);
       action = `sync_task.create.${provider}_card`;
+      assertCardSpendInputKeys(input);
       const settlementMonth = parseSettlementMonth(input.settlementMonth, 'settlementMonth');
-      await this.assertWritable(settlementMonth, action, undefined, { provider, ...input }, actor);
+      if (input.verificationWindow && provider !== Provider.photonpay) {
+        throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'verificationWindow is supported only for PhotonPay production verification.');
+      }
+      const verificationWindow = input.verificationWindow
+        ? parsePhotonPayVerificationWindow(input.verificationWindow, settlementMonth)
+        : null;
+      const normalizedInput = {
+        settlementMonth: input.settlementMonth,
+        ...(verificationWindow ? {
+          verificationWindow: {
+            from: verificationWindow.from.toISOString(),
+            to: verificationWindow.to.toISOString(),
+          },
+        } : {}),
+      };
+      await this.assertWritable(settlementMonth, action, undefined, { provider, ...normalizedInput }, actor);
 
       const taskType = provider === Provider.airwallex ? SyncTaskType.airwallex_card : SyncTaskType.photonpay_card;
       const platform = provider === Provider.airwallex ? SyncTaskPlatform.airwallex : SyncTaskPlatform.photonpay;
@@ -138,11 +159,11 @@ export class SyncTasksService {
           status: SyncTaskStatus.pending,
           message: null,
           requestedBy: actor.userId,
-          requestPayload: { provider, ...input } as Prisma.InputJsonObject,
+          requestPayload: { provider, ...normalizedInput } as Prisma.InputJsonObject,
         },
       });
 
-      await this.audit.success(auditInput(actor, action, task.id, settlementMonth, task, { provider, ...input }));
+      await this.audit.success(auditInput(actor, action, task.id, settlementMonth, task, { provider, ...normalizedInput }));
       return toDto(task);
     } catch (error) {
       await this.auditFailureUnlessMonthLocked(error, actor, action, { provider: providerInput, ...input });
@@ -183,6 +204,16 @@ export class SyncTasksService {
       ipAddress: actor.ipAddress,
       userAgent: actor.userAgent,
     });
+  }
+}
+
+function assertCardSpendInputKeys(input: CreateCardSpendSyncTaskInput) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'card spend sync input is required.');
+  }
+  const unexpected = Object.keys(input).filter((key) => !['settlementMonth', 'verificationWindow'].includes(key));
+  if (unexpected.length > 0) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `Unexpected card spend sync fields: ${unexpected.join(', ')}.`);
   }
 }
 

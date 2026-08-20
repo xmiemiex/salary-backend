@@ -150,6 +150,7 @@ export class SyncTaskExecutionService {
         affiliateAccountId: runningTask.affiliateAccountId ?? undefined,
         affiliateAccountCode: runningTask.affiliateAccount?.accountCode ?? credential.affiliateAccountCode,
         requestedBy: runningTask.requestedBy,
+        requestPayload: runningTask.requestPayload,
         credential: {
           credentialId: credential.credentialId,
           hasCredential: true,

@@ -89,7 +89,7 @@ async function readProviderErrorDetails(response: Response) {
       : undefined;
     return {
       code: safeScalar(record.code ?? record.error_code ?? nested?.code),
-      message: safeScalar(record.message ?? record.error_message ?? nested?.message),
+      message: safeScalar(record.message ?? record.msg ?? record.error_message ?? nested?.message),
       requestId: requestId ?? safeScalar(record.request_id ?? record.requestId),
       apiVersion,
     };

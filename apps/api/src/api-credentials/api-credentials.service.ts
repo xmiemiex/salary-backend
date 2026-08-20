@@ -10,6 +10,13 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const AFFILIATE_PLATFORMS = ['everflow', 'cake'] as const;
 const CARD_PROVIDERS = [Provider.airwallex, Provider.photonpay] as const;
+const PHOTONPAY_PRODUCTION_BASE_URL = 'https://x-api.photonpay.com';
+const PHOTONPAY_PRODUCTION_PATHS = {
+  tokenPath: '/oauth2/token/accessToken',
+  cardsPath: '/vcc/openApi/v4/pagingVccCard',
+  cardDetailPath: '/vcc/openApi/v4/getCardDetail',
+  transactionsPath: '/vcc/openApi/v4/pagingVccTradeOrder',
+} as const;
 
 export type UpsertApiCredentialInput = {
   payload: Record<string, unknown>;
@@ -348,11 +355,11 @@ function validatePhotonPayCredentialPayload(payloadInput: unknown): Record<strin
   const payload = validatePayload(payloadInput);
   const appId = requiredString(payload.appId ?? payload.app_id, 'appId');
   const appSecret = requiredString(payload.appSecret ?? payload.app_secret, 'appSecret');
-  const baseUrl = optionalString(payload.baseUrl ?? payload.base_url, 'baseUrl');
-  const tokenPath = optionalApiPath(payload.tokenPath ?? payload.token_path, 'tokenPath');
-  const cardsPath = optionalApiPath(payload.cardsPath ?? payload.cards_path, 'cardsPath');
-  const cardDetailPath = optionalApiPath(payload.cardDetailPath ?? payload.card_detail_path, 'cardDetailPath');
-  const transactionsPath = optionalApiPath(payload.transactionsPath ?? payload.transactions_path, 'transactionsPath');
+  const baseUrl = validatePhotonPayProductionBaseUrl(payload.baseUrl ?? payload.base_url);
+  const tokenPath = validatePhotonPayProductionPath(payload.tokenPath ?? payload.token_path, 'tokenPath');
+  const cardsPath = validatePhotonPayProductionPath(payload.cardsPath ?? payload.cards_path, 'cardsPath');
+  const cardDetailPath = validatePhotonPayProductionPath(payload.cardDetailPath ?? payload.card_detail_path, 'cardDetailPath');
+  const transactionsPath = validatePhotonPayProductionPath(payload.transactionsPath ?? payload.transactions_path, 'transactionsPath');
   const settlementDelayDays = optionalInteger(payload.settlementDelayDays, 'settlementDelayDays', 0, 31);
   rejectUnexpectedKeys(payload, [
     'appId', 'app_id', 'appSecret', 'app_secret', 'baseUrl', 'base_url',
@@ -362,13 +369,34 @@ function validatePhotonPayCredentialPayload(payloadInput: unknown): Record<strin
   return {
     appId,
     appSecret,
-    ...(baseUrl ? { baseUrl: validateHttpsUrl(baseUrl, 'baseUrl') } : {}),
-    ...(tokenPath ? { tokenPath } : {}),
-    ...(cardsPath ? { cardsPath } : {}),
-    ...(cardDetailPath ? { cardDetailPath } : {}),
-    ...(transactionsPath ? { transactionsPath } : {}),
+    baseUrl,
+    tokenPath,
+    cardsPath,
+    cardDetailPath,
+    transactionsPath,
     ...(settlementDelayDays !== undefined ? { settlementDelayDays } : {}),
   };
+}
+
+function validatePhotonPayProductionBaseUrl(value: unknown): string {
+  const configured = optionalString(value, 'baseUrl');
+  const normalized = validateHttpsUrl(configured ?? PHOTONPAY_PRODUCTION_BASE_URL, 'baseUrl');
+  if (normalized !== PHOTONPAY_PRODUCTION_BASE_URL) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'PhotonPay production credentials require the official production API host.');
+  }
+  return PHOTONPAY_PRODUCTION_BASE_URL;
+}
+
+function validatePhotonPayProductionPath(
+  value: unknown,
+  field: keyof typeof PHOTONPAY_PRODUCTION_PATHS,
+): string {
+  const expected = PHOTONPAY_PRODUCTION_PATHS[field];
+  const configured = optionalApiPath(value, field);
+  if (configured && configured !== expected) {
+    throw new AppError(ERROR_CODES.VALIDATION_ERROR, `PhotonPay production ${field} is not allowlisted.`);
+  }
+  return expected;
 }
 
 function requiredString(value: unknown, field: string): string {

@@ -18,6 +18,11 @@ import {
   PhotonPayCredentialPayload,
 } from '../sync-tasks/photonpay/photonpay-client';
 import { ProviderRequestError } from '../sync-tasks/provider-request-error';
+import {
+  EffectiveSubIdMappingReader,
+  isUsableEffectiveSubIdMapping,
+  resolveEffectiveSubIdMappings,
+} from '../sub-id-mappings/effective-sub-id-mappings';
 
 const AIRWALLEX_FIRST_CARD_DATE = new Date('2018-01-01T00:00:00.000Z');
 const AIRWALLEX_WINDOW_DAYS = 30;
@@ -46,6 +51,24 @@ export type CardInventorySyncResult = {
   invalidCardCount: number;
   retainedHistoricalCards: true;
   apiVersion?: string;
+  mappingDiagnostics?: {
+    employeeNotFound: number;
+    employeeDisabled: number;
+    employeeWithoutSub: number;
+    multipleEmployeeEmail: number;
+    multipleBusinessSubValues: number;
+  };
+  connectionDiagnostics?: {
+    tokenRequestCount: number;
+    tokenCacheHitCount: number;
+    tokenRefreshCount: number;
+    cardListRequestCount: number;
+    cardDetailRequestCount: number;
+    cardPages: number;
+    cardStatusCounts: Record<string, number>;
+    cardOrganizationCounts: Record<string, number>;
+    lastAuth: ReturnType<PhotonPayClient['getSafeDiagnostics']>['lastAuth'];
+  };
   error?: ReturnType<typeof safeProviderError>;
 };
 
@@ -145,22 +168,54 @@ export class ProviderCardInventoryService {
     return result;
   }
 
-  async syncProviderWithPayload(provider: Provider, payload: unknown): Promise<CardInventorySyncResult> {
+  async syncProviderWithPayload(
+    provider: Provider,
+    payload: unknown,
+    settlementMonth = currentShanghaiSettlementMonth(),
+  ): Promise<CardInventorySyncResult> {
     const result = provider === Provider.airwallex
       ? await this.loadAirwallex(parseAirwallexCredential(payload))
       : await this.loadPhotonPay(parsePhotonPayCredential(payload));
     const employees = await this.prisma.employee.findMany({
       select: { id: true, email: true, status: true },
     });
+    const effectiveMappings = provider === Provider.photonpay
+      ? await resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, { settlementMonth })
+      : [];
+    const mappingsByEmployee = new Map<string, typeof effectiveMappings>();
+    for (const mapping of effectiveMappings.filter(isUsableEffectiveSubIdMapping)) {
+      const mappings = mappingsByEmployee.get(mapping.employeeId) ?? [];
+      mappings.push(mapping);
+      mappingsByEmployee.set(mapping.employeeId, mappings);
+    }
     let matchedCount = 0;
     let unmatchedCount = 0;
     let conflictCount = 0;
+    const mappingDiagnostics = {
+      employeeNotFound: 0,
+      employeeDisabled: 0,
+      employeeWithoutSub: 0,
+      multipleEmployeeEmail: 0,
+      multipleBusinessSubValues: 0,
+    };
     const syncedAt = new Date();
     for (const card of result.cards) {
       const match = matchEmployee(card, employees);
       if (match.status === ProviderCardMatchStatus.matched) matchedCount += 1;
       else if (match.status === ProviderCardMatchStatus.conflict) conflictCount += 1;
       else unmatchedCount += 1;
+      if (match.reasonCode === 'EMPLOYEE_NOT_FOUND') mappingDiagnostics.employeeNotFound += 1;
+      if (match.reasonCode === 'EMPLOYEE_DISABLED') mappingDiagnostics.employeeDisabled += 1;
+      if (match.reasonCode === 'EMPLOYEE_EMAIL_AMBIGUOUS') mappingDiagnostics.multipleEmployeeEmail += 1;
+      if (provider === Provider.photonpay && match.employeeId) {
+        const businessSubValues = new Set(
+          (mappingsByEmployee.get(match.employeeId) ?? [])
+            .map((mapping) => mapping.subValue.trim())
+            .filter(Boolean),
+        );
+        if (businessSubValues.size === 0) mappingDiagnostics.employeeWithoutSub += 1;
+        else if (businessSubValues.size > 1) mappingDiagnostics.multipleBusinessSubValues += 1;
+      }
       await this.prisma.providerCard.upsert({
         where: { provider_cardId: { provider, cardId: card.cardId } },
         update: {
@@ -203,6 +258,8 @@ export class ProviderCardInventoryService {
       invalidCardCount: result.invalidCardCount,
       retainedHistoricalCards: true,
       apiVersion: 'apiVersion' in result && typeof result.apiVersion === 'string' ? result.apiVersion : undefined,
+      mappingDiagnostics: provider === Provider.photonpay ? mappingDiagnostics : undefined,
+      connectionDiagnostics: 'connectionDiagnostics' in result ? result.connectionDiagnostics : undefined,
       error: result.partialError,
     };
   }
@@ -304,11 +361,16 @@ export class ProviderCardInventoryService {
   }
 
   private async loadPhotonPay(credential: PhotonPayCredentialPayload) {
+    const diagnosticsBefore = photonPayDiagnostics(this.photonpay);
     const cards: SafeProviderCard[] = [];
     let invalidCardCount = 0;
     let partialError: ReturnType<typeof safeProviderError> | undefined;
+    let cardPages = 0;
+    const cardStatusCounts: Record<string, number> = {};
+    const cardOrganizationCounts: Record<string, number> = {};
     for (let page = 1; page < MAX_PAGES; page += 1) {
       const response = await this.photonpay.listCards({ credential, page, pageSize: PAGE_SIZE });
+      cardPages += 1;
       for (const listed of response.cards) {
         if (!listed.cardId) { invalidCardCount += 1; continue; }
         let detail: PhotonPayCardRecord = listed;
@@ -330,11 +392,29 @@ export class ProviderCardInventoryService {
           sourceUpdatedAt: parseDate(detail.updatedAt ?? listed.updatedAt),
           forcedReasonCode: detail.email ? undefined : partialError ? 'CARDHOLDER_LOOKUP_FAILED' : undefined,
         });
+        incrementCount(cardStatusCounts, detail.cardStatus ?? listed.cardStatus ?? 'UNKNOWN');
+        incrementCount(cardOrganizationCounts, detail.cardOrganization ?? listed.cardOrganization ?? 'UNKNOWN');
       }
       if (!response.hasMore || response.cards.length === 0) break;
       if (page === MAX_PAGES - 1) throw new Error('PhotonPay card pagination exceeded the safety limit.');
     }
-    return { cards, partialError, invalidCardCount };
+    const diagnosticsAfter = photonPayDiagnostics(this.photonpay);
+    return {
+      cards,
+      partialError,
+      invalidCardCount,
+      connectionDiagnostics: {
+        tokenRequestCount: diagnosticsAfter.tokenRequestCount - diagnosticsBefore.tokenRequestCount,
+        tokenCacheHitCount: diagnosticsAfter.tokenCacheHitCount - diagnosticsBefore.tokenCacheHitCount,
+        tokenRefreshCount: diagnosticsAfter.tokenRefreshCount - diagnosticsBefore.tokenRefreshCount,
+        cardListRequestCount: diagnosticsAfter.cardListRequestCount - diagnosticsBefore.cardListRequestCount,
+        cardDetailRequestCount: diagnosticsAfter.cardDetailRequestCount - diagnosticsBefore.cardDetailRequestCount,
+        cardPages,
+        cardStatusCounts,
+        cardOrganizationCounts,
+        lastAuth: diagnosticsAfter.lastAuth,
+      },
+    };
   }
 }
 
@@ -382,8 +462,8 @@ function matchEmployee(
   if (!email) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'CARDHOLDER_EMAIL_MISSING' };
   if (!isValidEmail(email)) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'CARDHOLDER_EMAIL_INVALID' };
   const exact = employees.filter((employee) => normalizeEmail(employee.email) === email);
+  if (exact.length > 1) return { employeeId: null, status: ProviderCardMatchStatus.conflict, reasonCode: 'EMPLOYEE_EMAIL_AMBIGUOUS' };
   const active = exact.filter((employee) => employee.status === CommonStatus.active);
-  if (active.length > 1) return { employeeId: null, status: ProviderCardMatchStatus.conflict, reasonCode: 'EMPLOYEE_EMAIL_AMBIGUOUS' };
   if (active.length === 0 && exact.length > 0) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'EMPLOYEE_DISABLED' };
   if (active.length === 0) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'EMPLOYEE_NOT_FOUND' };
   return { employeeId: active[0].id, status: ProviderCardMatchStatus.matched, reasonCode: null };
@@ -500,6 +580,29 @@ function settlementDelay(value: unknown): number | undefined {
 function normalizeEmail(value: string | null): string | null {
   const email = value?.trim().toLowerCase() ?? '';
   return email ? email.slice(0, 255) : null;
+}
+
+function currentShanghaiSettlementMonth(now = new Date()) {
+  const shifted = new Date(now.getTime() + 8 * 60 * 60 * 1_000);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), 1));
+}
+
+function photonPayDiagnostics(client: PhotonPayClient): ReturnType<PhotonPayClient['getSafeDiagnostics']> {
+  if (typeof client.getSafeDiagnostics === 'function') return client.getSafeDiagnostics();
+  return {
+    tokenRequestCount: 0,
+    tokenCacheHitCount: 0,
+    tokenRefreshCount: 0,
+    cardListRequestCount: 0,
+    cardDetailRequestCount: 0,
+    transactionListRequestCount: 0,
+    lastAuth: null,
+  };
+}
+
+function incrementCount(counts: Record<string, number>, value: string) {
+  const key = value.trim() || 'UNKNOWN';
+  counts[key] = (counts[key] ?? 0) + 1;
 }
 
 function isValidEmail(value: string): boolean {

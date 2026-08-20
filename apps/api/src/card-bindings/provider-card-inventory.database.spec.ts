@@ -1,7 +1,8 @@
 import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { PrismaClient, Provider, ProviderCardMatchStatus } from '@prisma/client';
+import { PrismaClient, Provider, ProviderCardMatchStatus, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
+import { PhotonPayCardSyncAdapter } from '../sync-tasks/photonpay/photonpay-card-sync.adapter';
 import { ProviderCardInventoryService } from './provider-card-inventory.service';
 
 const databaseDescribe = process.env.TASK97_DATABASE_TESTS === '1' ? describe : describe.skip;
@@ -71,6 +72,68 @@ databaseDescribe('task97 provider card inventory on isolated PostgreSQL', () => 
 
   it('enforces provider plus card ID uniqueness at PostgreSQL level', async () => {
     await expect(prisma.providerCard.create({ data: providerCardData() })).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('imports a GMT+8 August settled transaction once and skips it on the identical second sync', async () => {
+    const client = {
+      listCardTransactions: jest.fn().mockResolvedValue({
+        transactions: [{
+          transactionId: 'IT-task100-api-only',
+          cardId: 'card-1',
+          transactionType: 'auth',
+          status: 'succeed',
+          transactionAmount: '1.000000',
+          transactionCurrency: 'USD',
+          txnDate: '2026-07-31T16:00:00',
+          settleStatus: 'Settled',
+          settlementDate: '2026-08-15T00:00:00',
+          createdAt: '2026-08-15T00:00:01',
+        }],
+        hasMore: false,
+      }),
+    };
+    const inventory = {
+      syncProviderWithPayload: jest.fn().mockResolvedValue({ provider: Provider.photonpay, status: 'completed' }),
+      resolveSpendOwner: jest.fn().mockResolvedValue({ ok: true, employeeId }),
+      markTransactionSync: jest.fn().mockResolvedValue(undefined),
+      markUntouchedTransactionSync: jest.fn().mockResolvedValue(undefined),
+    };
+    const unmatched = {
+      resolveAfterSuccessfulImport: jest.fn().mockResolvedValue(undefined),
+      recordUnmatchedEvent: jest.fn().mockResolvedValue(undefined),
+    };
+    const adapter = new PhotonPayCardSyncAdapter(prisma as never, client as never, unmatched as never, inventory as never);
+    const context = {
+      taskId: randomUUID(),
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      platform: SyncTaskPlatform.photonpay,
+      provider: Provider.photonpay,
+      settlementMonth: new Date('2026-08-01T00:00:00.000Z'),
+      requestedBy: null,
+      credential: {
+        credentialId: randomUUID(),
+        hasCredential: true as const,
+        maskedPayload: {},
+        payload: { appId: 'task100-app', appSecret: 'task100-secret' },
+      },
+    };
+
+    const firstResult = await adapter.execute(context);
+    expect(firstResult).toMatchObject({ status: 'completed', successCount: 1, failedCount: 0 });
+    expect(firstResult.resultPayload).toMatchObject({ createdCount: 1, updatedCount: 0, skippedCount: 0 });
+    const first = await prisma.cardSpendEvent.findUniqueOrThrow({
+      where: { provider_externalEventId: { provider: Provider.photonpay, externalEventId: 'IT-task100-api-only' } },
+    });
+    expect(first.employeeId).toBe(employeeId);
+    expect(first.spendUsd.toString()).toBe('1');
+    expect(first.settlementMonth.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+
+    const secondResult = await adapter.execute(context);
+    expect(secondResult).toMatchObject({ status: 'completed', successCount: 1, failedCount: 0 });
+    expect(secondResult.resultPayload).toMatchObject({ createdCount: 0, updatedCount: 0, skippedCount: 1 });
+    await expect(prisma.cardSpendEvent.count({ where: { externalEventId: 'IT-task100-api-only' } })).resolves.toBe(1);
+    expect(unmatched.recordUnmatchedEvent).not.toHaveBeenCalled();
   });
 
   function providerCardData() {

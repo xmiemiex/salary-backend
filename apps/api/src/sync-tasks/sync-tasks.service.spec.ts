@@ -183,6 +183,48 @@ describe('SyncTasksService', () => {
     expect(audit.success).toHaveBeenCalledWith(expect.objectContaining({ action: 'sync_task.create.airwallex_card' }));
   });
 
+  it('creates a PhotonPay task only for the previous complete Shanghai 1-day verification window', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-19T04:00:00.000Z'));
+    prisma.syncTask.create.mockResolvedValue(syncTask({
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      platform: SyncTaskPlatform.photonpay,
+      provider: Provider.photonpay,
+      settlementMonth: new Date(Date.UTC(2026, 5, 1)),
+      status: SyncTaskStatus.pending,
+    }));
+    try {
+      await service.createCardSpend('photonpay', {
+        settlementMonth: '2026-06',
+        verificationWindow: {
+          from: '2026-06-17T16:00:00.000Z',
+          to: '2026-06-18T16:00:00.000Z',
+        },
+      }, actor);
+      expect(prisma.syncTask.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          requestPayload: {
+            provider: Provider.photonpay,
+            settlementMonth: '2026-06',
+            verificationWindow: {
+              from: '2026-06-17T16:00:00.000Z',
+              to: '2026-06-18T16:00:00.000Z',
+            },
+          },
+        }),
+      }));
+      await expect(service.createCardSpend('airwallex', {
+        settlementMonth: '2026-06',
+        verificationWindow: {
+          from: '2026-06-17T16:00:00.000Z',
+          to: '2026-06-18T16:00:00.000Z',
+        },
+      }, actor)).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('lists tasks with settlementMonth/taskType/platform/affiliateAccountId/status filters and pagination', async () => {
     const record = syncTask({
       taskType: SyncTaskType.affiliate_income,
@@ -311,6 +353,7 @@ describe('SyncTaskExecutionService', () => {
     expect(adapters.cake.execute).toHaveBeenCalledWith(
       expect.objectContaining({
         credential: expect.objectContaining({ credentialId: 'affiliate-cred-1', hasCredential: true, payload: { apiKey: 'plain-secret' } }),
+        requestPayload: original.requestPayload,
       }),
     );
     expect(result.status).toBe(SyncTaskStatus.failed);

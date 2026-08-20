@@ -30,11 +30,28 @@ export type PhotonPayCardRecord = {
   maskCardNo: string | null;
   nickname: string | null;
   cardStatus: string | null;
+  cardOrganization: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 };
 export type PhotonPayTransactionsResponse = { transactions: PhotonPayTransactionRecord[]; hasMore: boolean };
 export type PhotonPayCardsResponse = { cards: PhotonPayCardRecord[]; hasMore: boolean };
+export type PhotonPaySafeDiagnostics = {
+  tokenRequestCount: number;
+  tokenCacheHitCount: number;
+  tokenRefreshCount: number;
+  cardListRequestCount: number;
+  cardDetailRequestCount: number;
+  transactionListRequestCount: number;
+  lastAuth: {
+    httpStatus: number | null;
+    providerCode: string | null;
+    providerMessage: string | null;
+    requestId: string | null;
+    tokenPresent: boolean;
+    elapsedMs: number;
+  } | null;
+};
 
 type FetchLike = typeof fetch;
 
@@ -42,10 +59,20 @@ type FetchLike = typeof fetch;
 export class PhotonPayClient {
   private readonly tokenCache = new Map<string, { token: string; expiresAt: number }>();
   private readonly tokenRequests = new Map<string, Promise<string>>();
+  private readonly safeDiagnostics: PhotonPaySafeDiagnostics = {
+    tokenRequestCount: 0,
+    tokenCacheHitCount: 0,
+    tokenRefreshCount: 0,
+    cardListRequestCount: 0,
+    cardDetailRequestCount: 0,
+    transactionListRequestCount: 0,
+    lastAuth: null,
+  };
 
   constructor(@Optional() @Inject(PHOTONPAY_FETCH) private readonly fetchImpl: FetchLike = fetch) {}
 
   async listCards(input: { credential: PhotonPayCredentialPayload; page: number; pageSize: number }): Promise<PhotonPayCardsResponse> {
+    this.safeDiagnostics.cardListRequestCount += 1;
     const raw = await this.authorizedGet(input.credential, input.credential.cardsPath ?? PHOTONPAY_DEFAULT_CARDS_PATH, {
       pageIndex: input.page, pageSize: input.pageSize,
     });
@@ -55,6 +82,7 @@ export class PhotonPayClient {
   }
 
   async getCardDetail(input: { credential: PhotonPayCredentialPayload; cardId: string }): Promise<PhotonPayCardRecord> {
+    this.safeDiagnostics.cardDetailRequestCount += 1;
     const raw = await this.authorizedGet(input.credential, input.credential.cardDetailPath ?? PHOTONPAY_DEFAULT_CARD_DETAIL_PATH, {
       cardId: input.cardId,
     });
@@ -65,9 +93,12 @@ export class PhotonPayClient {
   async listCardTransactions(input: {
     credential: PhotonPayCredentialPayload; from: Date; to: Date; page: number; pageSize: number;
   }): Promise<PhotonPayTransactionsResponse> {
+    this.safeDiagnostics.transactionListRequestCount += 1;
     const raw = await this.authorizedGet(input.credential, input.credential.transactionsPath ?? PHOTONPAY_DEFAULT_TRANSACTIONS_PATH, {
-      createdAtStart: formatGmt8DateTime(input.from),
-      createdAtEnd: formatGmt8DateTime(input.to),
+      // PhotonPay uses a zone-less LocalDateTime containing a UTC wall-clock
+      // value. Sending GMT+8 text shifts the requested interval by eight hours.
+      createdAtStart: formatUtcLocalDateTime(input.from),
+      createdAtEnd: formatUtcLocalDateTime(input.to),
       pageIndex: input.page,
       pageSize: input.pageSize,
     });
@@ -76,7 +107,15 @@ export class PhotonPayClient {
     return { transactions, hasMore: total === null ? transactions.length >= input.pageSize : input.page * input.pageSize < total };
   }
 
+  getSafeDiagnostics(): PhotonPaySafeDiagnostics {
+    return {
+      ...this.safeDiagnostics,
+      lastAuth: this.safeDiagnostics.lastAuth ? { ...this.safeDiagnostics.lastAuth } : null,
+    };
+  }
+
   private async authorizedGet(credential: PhotonPayCredentialPayload, path: string, query: Record<string, string | number>) {
+    assertProductionSafeEndpoint(credential, path);
     const url = new URL(path, normalizeBaseUrl(credential.baseUrl));
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
 
@@ -106,8 +145,12 @@ export class PhotonPayClient {
     const cacheKey = tokenCacheKey(credential);
     if (!forceRefresh) {
       const cached = this.tokenCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) return cached.token;
+      if (cached && cached.expiresAt > Date.now()) {
+        this.safeDiagnostics.tokenCacheHitCount += 1;
+        return cached.token;
+      }
     } else {
+      this.safeDiagnostics.tokenRefreshCount += 1;
       this.tokenCache.delete(cacheKey);
     }
 
@@ -124,6 +167,9 @@ export class PhotonPayClient {
   }
 
   private async requestAccessToken(credential: PhotonPayCredentialPayload, cacheKey: string): Promise<string> {
+    assertProductionSafeEndpoint(credential, credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH);
+    this.safeDiagnostics.tokenRequestCount += 1;
+    const startedAt = Date.now();
     const url = new URL(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, normalizeBaseUrl(credential.baseUrl));
     const encodedCredential = Buffer.from(`${credential.appId}/${credential.appSecret}`, 'utf8').toString('base64');
     const authorization = `basic ${encodedCredential}`;
@@ -136,11 +182,21 @@ export class PhotonPayClient {
           Authorization: authorization,
         },
       });
-      const raw = assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.CREDENTIAL_INVALID, [
+      const rawJson = await readJsonResponse(response, SyncExecutionErrorCategory.CREDENTIAL_INVALID);
+      const rawRecord = isRecord(rawJson) ? rawJson : {};
+      const raw = assertBusinessSuccess(rawJson, SyncExecutionErrorCategory.CREDENTIAL_INVALID, [
         credential.appId, credential.appSecret, encodedCredential, authorization,
       ]);
       const data = extractDataObject(raw);
       const token = firstString(data.accessToken, data.access_token, data.token, raw.accessToken);
+      this.safeDiagnostics.lastAuth = {
+        httpStatus: typeof response.status === 'number' ? response.status : 200,
+        providerCode: safeProviderCode(firstString(rawRecord.code), [credential.appId, credential.appSecret, encodedCredential, authorization]),
+        providerMessage: redactSensitiveText(firstString(rawRecord.message, rawRecord.msg), [credential.appId, credential.appSecret, encodedCredential, authorization]),
+        requestId: redactSensitiveText(firstString(rawRecord.requestId, rawRecord.request_id, rawRecord.traceId), [credential.appId, credential.appSecret, encodedCredential, authorization]),
+        tokenPresent: Boolean(token),
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+      };
       if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
       const expiresIn = Math.max(1, firstNumber(data.expiresIn, data.expires_in) ?? 7_200);
       const refreshLeadSeconds = Math.min(300, Math.max(60, Math.floor(expiresIn * 0.1)));
@@ -148,7 +204,18 @@ export class PhotonPayClient {
       this.tokenCache.set(cacheKey, { token, expiresAt: Date.now() + cacheLifetimeSeconds * 1_000 });
       return token;
     } catch (error) {
-      throw redactProviderRequestError(error, [credential.appId, credential.appSecret, encodedCredential, authorization]);
+      const sanitized = redactProviderRequestError(error, [credential.appId, credential.appSecret, encodedCredential, authorization]);
+      if (sanitized instanceof ProviderRequestError) {
+        this.safeDiagnostics.lastAuth = {
+          httpStatus: sanitized.httpStatus ?? null,
+          providerCode: sanitized.providerCode ?? null,
+          providerMessage: sanitized.providerMessage ?? null,
+          requestId: sanitized.requestId ?? null,
+          tokenPresent: false,
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+        };
+      }
+      throw sanitized;
     }
   }
 }
@@ -176,17 +243,30 @@ function assertBusinessSuccess(
   sensitiveValues: string[] = [],
 ): Record<string, unknown> {
   if (!isRecord(raw)) throw new ProviderRequestError(category, 'PhotonPay response was invalid.');
-  const code = redactSensitiveText(firstString(raw.code), sensitiveValues);
-  if (code && code !== '0000') {
+  const rawCode = firstString(raw.code);
+  if (rawCode && rawCode !== '0000') {
+    const code = redactSensitiveText(rawCode, sensitiveValues);
     const providerMessage = redactSensitiveText(firstString(raw.message, raw.msg), sensitiveValues);
     const requestId = redactSensitiveText(firstString(raw.requestId, raw.request_id, raw.traceId), sensitiveValues);
     throw new ProviderRequestError(
       category,
       `PhotonPay rejected the request. ${code}${providerMessage ? `: ${providerMessage}` : ''}`,
-      200, code, providerMessage ?? undefined, requestId ?? undefined,
+      200, code ?? undefined, providerMessage ?? undefined, requestId ?? undefined,
     );
   }
   return raw;
+}
+
+function safeProviderCode(value: string | null, sensitiveValues: string[]): string | null {
+  return value === '0000' ? value : redactSensitiveText(value, sensitiveValues);
+}
+
+async function readJsonResponse(response: Response, category: SyncExecutionErrorCategory): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw new ProviderRequestError(category, 'PhotonPay response was not valid JSON.', response.status);
+  }
 }
 
 function redactProviderRequestError(error: unknown, sensitiveValues: string[]): unknown {
@@ -242,6 +322,7 @@ function toSafeCardDetail(record: Record<string, unknown>, fallbackCardId: strin
     maskCardNo: maskOnly(firstString(record.maskCardNo)),
     nickname: firstString(record.nickname),
     cardStatus: firstString(record.cardStatus),
+    cardOrganization: firstString(record.cardOrganization, record.cardOrg, record.cardBrand, record.cardNetwork),
     createdAt: firstString(record.createdAt),
     updatedAt: firstString(record.updatedAt),
   };
@@ -253,17 +334,34 @@ function maskOnly(value: string | null): string | null {
   return digits.length >= 4 ? `****${digits.slice(-4)}` : null;
 }
 
-function formatGmt8DateTime(date: Date): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(date);
-  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
-  return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:${value('minute')}:${value('second')}`;
+function formatUtcLocalDateTime(date: Date): string {
+  return date.toISOString().slice(0, 19);
 }
 
 function normalizeBaseUrl(baseUrl: string | undefined): string {
   return (baseUrl ?? PHOTONPAY_DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
+}
+
+function assertProductionSafeEndpoint(credential: PhotonPayCredentialPayload, path: string) {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (normalizeBaseUrl(credential.baseUrl) !== PHOTONPAY_DEFAULT_BASE_URL) {
+    throw new ProviderRequestError(SyncExecutionErrorCategory.INVALID_CONFIGURATION, 'PhotonPay production requires the official production API host.');
+  }
+  const allowedPaths = new Set([
+    credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH,
+    credential.cardsPath ?? PHOTONPAY_DEFAULT_CARDS_PATH,
+    credential.cardDetailPath ?? PHOTONPAY_DEFAULT_CARD_DETAIL_PATH,
+    credential.transactionsPath ?? PHOTONPAY_DEFAULT_TRANSACTIONS_PATH,
+  ]);
+  const requiredDefaults = new Set([
+    PHOTONPAY_DEFAULT_TOKEN_PATH,
+    PHOTONPAY_DEFAULT_CARDS_PATH,
+    PHOTONPAY_DEFAULT_CARD_DETAIL_PATH,
+    PHOTONPAY_DEFAULT_TRANSACTIONS_PATH,
+  ]);
+  if (!allowedPaths.has(path) || !requiredDefaults.has(path)) {
+    throw new ProviderRequestError(SyncExecutionErrorCategory.INVALID_CONFIGURATION, 'PhotonPay production endpoint is not allowlisted.');
+  }
 }
 
 function firstString(...values: unknown[]): string | null {
