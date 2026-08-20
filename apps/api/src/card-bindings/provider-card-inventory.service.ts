@@ -28,8 +28,9 @@ const AIRWALLEX_FIRST_CARD_DATE = new Date('2018-01-01T00:00:00.000Z');
 const AIRWALLEX_WINDOW_DAYS = 30;
 const PAGE_SIZE = 200;
 const MAX_PAGES = 10_000;
-const PHOTONPAY_PRODUCTION_CARD_DETAIL_INTERVAL_MS = 500;
+const PHOTONPAY_PRODUCTION_CARD_DETAIL_INTERVAL_MS = 250;
 const PHOTONPAY_PRODUCTION_RATE_LIMIT_RETRY_MS = 30_000;
+const PHOTONPAY_PRODUCTION_CARD_DETAIL_BATCH_SIZE = 150;
 
 type SafeProviderCard = {
   cardId: string;
@@ -66,6 +67,8 @@ export type CardInventorySyncResult = {
     authenticationRefreshCount: number;
     cardListRequestCount: number;
     cardDetailRequestCount: number;
+    reusedCardDetailCount: number;
+    deferredCardDetailCount: number;
     cardPages: number;
     cardStatusCounts: Record<string, number>;
     cardOrganizationCounts: Record<string, number>;
@@ -252,7 +255,7 @@ export class ProviderCardInventoryService {
     }
     return {
       provider,
-      status: result.partialError || result.invalidCardCount > 0 ? 'partial' : 'completed',
+      status: result.partialError || result.invalidCardCount > 0 || ('detailDeferredCount' in result && result.detailDeferredCount > 0) ? 'partial' : 'completed',
       discoveredCount: result.cards.length + result.invalidCardCount,
       matchedCount,
       unmatchedCount: unmatchedCount + result.invalidCardCount,
@@ -364,10 +367,26 @@ export class ProviderCardInventoryService {
 
   private async loadPhotonPay(credential: PhotonPayCredentialPayload) {
     const diagnosticsBefore = photonPayDiagnostics(this.photonpay);
+    const existingCards = new Map((await this.prisma.providerCard.findMany({
+      where: { provider: Provider.photonpay },
+      select: {
+        cardId: true,
+        cardholderId: true,
+        cardholderEmailNormalized: true,
+        maskedCardNumber: true,
+        nickname: true,
+        providerStatus: true,
+        sourceCreatedAt: true,
+        sourceUpdatedAt: true,
+      },
+    })).map((card) => [card.cardId, card]));
     const cards: SafeProviderCard[] = [];
     let invalidCardCount = 0;
     let partialError: ReturnType<typeof safeProviderError> | undefined;
     let cardPages = 0;
+    let cardDetailBatchCount = 0;
+    let reusedCardDetailCount = 0;
+    let detailDeferredCount = 0;
     let lastCardDetailRequestAt = 0;
     const cardStatusCounts: Record<string, number> = {};
     const cardOrganizationCounts: Record<string, number> = {};
@@ -376,12 +395,32 @@ export class ProviderCardInventoryService {
       cardPages += 1;
       for (const listed of response.cards) {
         if (!listed.cardId) { invalidCardCount += 1; continue; }
+        const existing = existingCards.get(listed.cardId);
         let detail: PhotonPayCardRecord = listed;
+        let forcedReasonCode: string | undefined;
         try {
+          if (existing?.cardholderEmailNormalized) {
+            reusedCardDetailCount += 1;
+            detail = {
+              ...listed,
+              cardholderId: existing.cardholderId ?? listed.cardholderId,
+              email: existing.cardholderEmailNormalized,
+              maskCardNo: existing.maskedCardNumber ?? listed.maskCardNo,
+              nickname: listed.nickname ?? existing.nickname,
+              cardStatus: listed.cardStatus ?? existing.providerStatus,
+              createdAt: listed.createdAt ?? existing.sourceCreatedAt?.toISOString() ?? null,
+              updatedAt: listed.updatedAt ?? existing.sourceUpdatedAt?.toISOString() ?? null,
+            };
+          } else if (process.env.NODE_ENV === 'production' && cardDetailBatchCount >= PHOTONPAY_PRODUCTION_CARD_DETAIL_BATCH_SIZE) {
+            detailDeferredCount += 1;
+            forcedReasonCode = 'CARDHOLDER_LOOKUP_DEFERRED';
+            detail = { ...listed, email: null };
+          } else {
           if (process.env.NODE_ENV === 'production') {
             const remainingDelay = PHOTONPAY_PRODUCTION_CARD_DETAIL_INTERVAL_MS - (Date.now() - lastCardDetailRequestAt);
             if (remainingDelay > 0) await pause(remainingDelay);
           }
+          cardDetailBatchCount += 1;
           try {
             lastCardDetailRequestAt = Date.now();
             detail = await this.photonpay.getCardDetail({ credential, cardId: listed.cardId });
@@ -390,6 +429,7 @@ export class ProviderCardInventoryService {
             await pause(PHOTONPAY_PRODUCTION_RATE_LIMIT_RETRY_MS);
             lastCardDetailRequestAt = Date.now();
             detail = await this.photonpay.getCardDetail({ credential, cardId: listed.cardId });
+          }
           }
         } catch (error) {
           partialError ??= safeProviderError(error);
@@ -405,7 +445,7 @@ export class ProviderCardInventoryService {
           providerStatus: detail.cardStatus ?? listed.cardStatus,
           sourceCreatedAt: parseDate(detail.createdAt ?? listed.createdAt),
           sourceUpdatedAt: parseDate(detail.updatedAt ?? listed.updatedAt),
-          forcedReasonCode: detail.email ? undefined : partialError ? 'CARDHOLDER_LOOKUP_FAILED' : undefined,
+          forcedReasonCode: detail.email ? undefined : forcedReasonCode ?? (partialError ? 'CARDHOLDER_LOOKUP_FAILED' : undefined),
         });
         incrementCount(cardStatusCounts, detail.cardStatus ?? listed.cardStatus ?? 'UNKNOWN');
         incrementCount(cardOrganizationCounts, detail.cardOrganization ?? listed.cardOrganization ?? 'UNKNOWN');
@@ -417,6 +457,7 @@ export class ProviderCardInventoryService {
     return {
       cards,
       partialError,
+      detailDeferredCount,
       invalidCardCount,
       connectionDiagnostics: {
         authenticationRequestCount: diagnosticsAfter.authenticationRequestCount - diagnosticsBefore.authenticationRequestCount,
@@ -424,6 +465,8 @@ export class ProviderCardInventoryService {
         authenticationRefreshCount: diagnosticsAfter.authenticationRefreshCount - diagnosticsBefore.authenticationRefreshCount,
         cardListRequestCount: diagnosticsAfter.cardListRequestCount - diagnosticsBefore.cardListRequestCount,
         cardDetailRequestCount: diagnosticsAfter.cardDetailRequestCount - diagnosticsBefore.cardDetailRequestCount,
+        reusedCardDetailCount,
+        deferredCardDetailCount: detailDeferredCount,
         cardPages,
         cardStatusCounts,
         cardOrganizationCounts,

@@ -163,6 +163,25 @@ describe('ProviderCardInventoryService', () => {
     }
   });
 
+  it('reuses a previously discovered safe email without another card detail request', async () => {
+    prisma.providerCard.findMany.mockResolvedValueOnce([{
+      cardId: 'card-1',
+      cardholderId: 'holder-1',
+      cardholderEmailNormalized: 'cached@example.test',
+      maskedCardNumber: '****1234',
+      nickname: 'Cached',
+      providerStatus: 'ACTIVE',
+      sourceCreatedAt: null,
+      sourceUpdatedAt: null,
+    }]);
+    employeeRows([{ id: 'employee-1', email: 'cached@example.test', status: CommonStatus.active }]);
+    photonpay.listCards.mockResolvedValue({ cards: [listedCard('card-1', 'ACTIVE')], hasMore: false });
+    const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
+    expect(result).toMatchObject({ status: 'completed', matchedCount: 1 });
+    expect(result.connectionDiagnostics).toMatchObject({ reusedCardDetailCount: 1, deferredCardDetailCount: 0 });
+    expect(photonpay.getCardDetail).not.toHaveBeenCalled();
+  });
+
   it('continues PhotonPay when Airwallex is externally blocked during a combined sync', async () => {
     credentials.getCardProviderCredentialPayload.mockImplementation((provider: Provider) => Promise.resolve({
       payload: provider === Provider.airwallex ? { clientId: 'client', apiKey: 'secret' } : photonCredential(),
