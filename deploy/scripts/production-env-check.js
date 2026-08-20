@@ -63,7 +63,7 @@ check('API_CREDENTIAL_ENCRYPTION_KEY', () => {
 check('BUILD_TIMESTAMP', () => required('BUILD_TIMESTAMP') && !Number.isNaN(Date.parse(process.env.BUILD_TIMESTAMP)));
 check('RELEASE_IMAGE_TAG', () => {
   const value = process.env.RELEASE_IMAGE_TAG ?? '';
-  return value === 'rc-20260712-2' || /^task(?:96|97|98)-[0-9a-f]{12}$/.test(value);
+  return value === 'rc-20260712-2' || /^task(?:96|97|98|100)-[0-9a-f]{12}$/.test(value);
 });
 check('VITE_API_BASE_URL', () => process.env.VITE_API_BASE_URL === 'https://api-salary.lovemiemie.com');
 check('PRODUCTION_ENV_FILE', () => process.env.PRODUCTION_ENV_FILE === '/opt/salary-settlement-admin/shared/.env');
