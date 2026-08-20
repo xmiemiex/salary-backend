@@ -28,6 +28,8 @@ const AIRWALLEX_FIRST_CARD_DATE = new Date('2018-01-01T00:00:00.000Z');
 const AIRWALLEX_WINDOW_DAYS = 30;
 const PAGE_SIZE = 200;
 const MAX_PAGES = 10_000;
+const PHOTONPAY_PRODUCTION_CARD_DETAIL_INTERVAL_MS = 500;
+const PHOTONPAY_PRODUCTION_RATE_LIMIT_RETRY_MS = 30_000;
 
 type SafeProviderCard = {
   cardId: string;
@@ -59,9 +61,9 @@ export type CardInventorySyncResult = {
     multipleBusinessSubValues: number;
   };
   connectionDiagnostics?: {
-    tokenRequestCount: number;
-    tokenCacheHitCount: number;
-    tokenRefreshCount: number;
+    authenticationRequestCount: number;
+    authenticationCacheHitCount: number;
+    authenticationRefreshCount: number;
     cardListRequestCount: number;
     cardDetailRequestCount: number;
     cardPages: number;
@@ -366,6 +368,7 @@ export class ProviderCardInventoryService {
     let invalidCardCount = 0;
     let partialError: ReturnType<typeof safeProviderError> | undefined;
     let cardPages = 0;
+    let lastCardDetailRequestAt = 0;
     const cardStatusCounts: Record<string, number> = {};
     const cardOrganizationCounts: Record<string, number> = {};
     for (let page = 1; page < MAX_PAGES; page += 1) {
@@ -375,7 +378,19 @@ export class ProviderCardInventoryService {
         if (!listed.cardId) { invalidCardCount += 1; continue; }
         let detail: PhotonPayCardRecord = listed;
         try {
-          detail = await this.photonpay.getCardDetail({ credential, cardId: listed.cardId });
+          if (process.env.NODE_ENV === 'production') {
+            const remainingDelay = PHOTONPAY_PRODUCTION_CARD_DETAIL_INTERVAL_MS - (Date.now() - lastCardDetailRequestAt);
+            if (remainingDelay > 0) await pause(remainingDelay);
+          }
+          try {
+            lastCardDetailRequestAt = Date.now();
+            detail = await this.photonpay.getCardDetail({ credential, cardId: listed.cardId });
+          } catch (error) {
+            if (process.env.NODE_ENV !== 'production' || !isPhotonPayRateLimit(error)) throw error;
+            await pause(PHOTONPAY_PRODUCTION_RATE_LIMIT_RETRY_MS);
+            lastCardDetailRequestAt = Date.now();
+            detail = await this.photonpay.getCardDetail({ credential, cardId: listed.cardId });
+          }
         } catch (error) {
           partialError ??= safeProviderError(error);
           partialError.message = redactCredentialValues(partialError.message, [credential.appId, credential.appSecret]);
@@ -404,9 +419,9 @@ export class ProviderCardInventoryService {
       partialError,
       invalidCardCount,
       connectionDiagnostics: {
-        tokenRequestCount: diagnosticsAfter.tokenRequestCount - diagnosticsBefore.tokenRequestCount,
-        tokenCacheHitCount: diagnosticsAfter.tokenCacheHitCount - diagnosticsBefore.tokenCacheHitCount,
-        tokenRefreshCount: diagnosticsAfter.tokenRefreshCount - diagnosticsBefore.tokenRefreshCount,
+        authenticationRequestCount: diagnosticsAfter.authenticationRequestCount - diagnosticsBefore.authenticationRequestCount,
+        authenticationCacheHitCount: diagnosticsAfter.authenticationCacheHitCount - diagnosticsBefore.authenticationCacheHitCount,
+        authenticationRefreshCount: diagnosticsAfter.authenticationRefreshCount - diagnosticsBefore.authenticationRefreshCount,
         cardListRequestCount: diagnosticsAfter.cardListRequestCount - diagnosticsBefore.cardListRequestCount,
         cardDetailRequestCount: diagnosticsAfter.cardDetailRequestCount - diagnosticsBefore.cardDetailRequestCount,
         cardPages,
@@ -590,14 +605,25 @@ function currentShanghaiSettlementMonth(now = new Date()) {
 function photonPayDiagnostics(client: PhotonPayClient): ReturnType<PhotonPayClient['getSafeDiagnostics']> {
   if (typeof client.getSafeDiagnostics === 'function') return client.getSafeDiagnostics();
   return {
-    tokenRequestCount: 0,
-    tokenCacheHitCount: 0,
-    tokenRefreshCount: 0,
+    authenticationRequestCount: 0,
+    authenticationCacheHitCount: 0,
+    authenticationRefreshCount: 0,
     cardListRequestCount: 0,
     cardDetailRequestCount: 0,
     transactionListRequestCount: 0,
     lastAuth: null,
   };
+}
+
+function isPhotonPayRateLimit(error: unknown) {
+  if (!(error instanceof ProviderRequestError)) return false;
+  return error.httpStatus === 429
+    || error.providerCode === '1008'
+    || /too many requests|rate limit/i.test(`${error.message} ${error.providerMessage ?? ''}`);
+}
+
+function pause(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function incrementCount(counts: Record<string, number>, value: string) {

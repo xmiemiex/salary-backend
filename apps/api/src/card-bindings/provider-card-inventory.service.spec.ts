@@ -142,6 +142,27 @@ describe('ProviderCardInventoryService', () => {
     expect(prisma.providerCard.upsert.mock.calls[0][0].create).toMatchObject({ unmatchedReasonCode: 'CARDHOLDER_LOOKUP_FAILED' });
   });
 
+  it('paces production card details and retries provider rate limiting only once', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T12:00:00.000Z'));
+    process.env.NODE_ENV = 'production';
+    photonpay.listCards.mockResolvedValue({ cards: [listedCard('card-1', 'ACTIVE'), listedCard('card-2', 'FROZEN')], hasMore: false });
+    photonpay.getCardDetail
+      .mockRejectedValueOnce(new ProviderRequestError(SyncExecutionErrorCategory.BUSINESS_REJECTED, 'Too many requests.', 200, '1008'))
+      .mockResolvedValueOnce({ ...listedCard('card-1', 'ACTIVE'), email: null })
+      .mockResolvedValueOnce({ ...listedCard('card-2', 'FROZEN'), email: null });
+    try {
+      const pending = service.syncProviderWithPayload(Provider.photonpay, photonCredential());
+      await jest.advanceTimersByTimeAsync(30_500);
+      const result = await pending;
+      expect(result.status).toBe('completed');
+      expect(photonpay.getCardDetail).toHaveBeenCalledTimes(3);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      jest.useRealTimers();
+    }
+  });
+
   it('continues PhotonPay when Airwallex is externally blocked during a combined sync', async () => {
     credentials.getCardProviderCredentialPayload.mockImplementation((provider: Provider) => Promise.resolve({
       payload: provider === Provider.airwallex ? { clientId: 'client', apiKey: 'secret' } : photonCredential(),

@@ -37,9 +37,9 @@ export type PhotonPayCardRecord = {
 export type PhotonPayTransactionsResponse = { transactions: PhotonPayTransactionRecord[]; hasMore: boolean };
 export type PhotonPayCardsResponse = { cards: PhotonPayCardRecord[]; hasMore: boolean };
 export type PhotonPaySafeDiagnostics = {
-  tokenRequestCount: number;
-  tokenCacheHitCount: number;
-  tokenRefreshCount: number;
+  authenticationRequestCount: number;
+  authenticationCacheHitCount: number;
+  authenticationRefreshCount: number;
   cardListRequestCount: number;
   cardDetailRequestCount: number;
   transactionListRequestCount: number;
@@ -48,7 +48,7 @@ export type PhotonPaySafeDiagnostics = {
     providerCode: string | null;
     providerMessage: string | null;
     requestId: string | null;
-    tokenPresent: boolean;
+    accessGranted: boolean;
     elapsedMs: number;
   } | null;
 };
@@ -60,9 +60,9 @@ export class PhotonPayClient {
   private readonly tokenCache = new Map<string, { token: string; expiresAt: number }>();
   private readonly tokenRequests = new Map<string, Promise<string>>();
   private readonly safeDiagnostics: PhotonPaySafeDiagnostics = {
-    tokenRequestCount: 0,
-    tokenCacheHitCount: 0,
-    tokenRefreshCount: 0,
+    authenticationRequestCount: 0,
+    authenticationCacheHitCount: 0,
+    authenticationRefreshCount: 0,
     cardListRequestCount: 0,
     cardDetailRequestCount: 0,
     transactionListRequestCount: 0,
@@ -146,11 +146,11 @@ export class PhotonPayClient {
     if (!forceRefresh) {
       const cached = this.tokenCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
-        this.safeDiagnostics.tokenCacheHitCount += 1;
+        this.safeDiagnostics.authenticationCacheHitCount += 1;
         return cached.token;
       }
     } else {
-      this.safeDiagnostics.tokenRefreshCount += 1;
+      this.safeDiagnostics.authenticationRefreshCount += 1;
       this.tokenCache.delete(cacheKey);
     }
 
@@ -168,7 +168,7 @@ export class PhotonPayClient {
 
   private async requestAccessToken(credential: PhotonPayCredentialPayload, cacheKey: string): Promise<string> {
     assertProductionSafeEndpoint(credential, credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH);
-    this.safeDiagnostics.tokenRequestCount += 1;
+    this.safeDiagnostics.authenticationRequestCount += 1;
     const startedAt = Date.now();
     const url = new URL(credential.tokenPath ?? PHOTONPAY_DEFAULT_TOKEN_PATH, normalizeBaseUrl(credential.baseUrl));
     const encodedCredential = Buffer.from(`${credential.appId}/${credential.appSecret}`, 'utf8').toString('base64');
@@ -194,7 +194,7 @@ export class PhotonPayClient {
         providerCode: safeProviderCode(firstString(rawRecord.code), [credential.appId, credential.appSecret, encodedCredential, authorization]),
         providerMessage: redactSensitiveText(firstString(rawRecord.message, rawRecord.msg), [credential.appId, credential.appSecret, encodedCredential, authorization]),
         requestId: redactSensitiveText(firstString(rawRecord.requestId, rawRecord.request_id, rawRecord.traceId), [credential.appId, credential.appSecret, encodedCredential, authorization]),
-        tokenPresent: Boolean(token),
+        accessGranted: Boolean(token),
         elapsedMs: Math.max(0, Date.now() - startedAt),
       };
       if (!token) throw new ProviderRequestError(SyncExecutionErrorCategory.CREDENTIAL_INVALID, 'PhotonPay authentication response was invalid.');
@@ -211,7 +211,7 @@ export class PhotonPayClient {
           providerCode: sanitized.providerCode ?? null,
           providerMessage: sanitized.providerMessage ?? null,
           requestId: sanitized.requestId ?? null,
-          tokenPresent: false,
+          accessGranted: false,
           elapsedMs: Math.max(0, Date.now() - startedAt),
         };
       }

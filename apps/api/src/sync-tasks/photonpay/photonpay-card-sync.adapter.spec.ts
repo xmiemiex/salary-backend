@@ -57,9 +57,9 @@ describe('PhotonPayClient', () => {
     expect(init.method).toBe('GET');
     expect(init.headers[PHOTONPAY_TOKEN_HEADER]).toBe('access-token');
     expect(client.getSafeDiagnostics()).toMatchObject({
-      tokenRequestCount: 1,
+      authenticationRequestCount: 1,
       transactionListRequestCount: 1,
-      lastAuth: { httpStatus: 200, providerCode: '0000', tokenPresent: true },
+      lastAuth: { httpStatus: 200, providerCode: '0000', accessGranted: true },
     });
     jest.useRealTimers();
   });
@@ -191,7 +191,7 @@ describe('PhotonPayClient', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls.filter(([url]) => (url as URL).pathname === PHOTONPAY_DEFAULT_TOKEN_PATH)).toHaveLength(1);
-    expect(client.getSafeDiagnostics()).toMatchObject({ tokenRequestCount: 1, tokenCacheHitCount: 1, cardListRequestCount: 2 });
+    expect(client.getSafeDiagnostics()).toMatchObject({ authenticationRequestCount: 1, authenticationCacheHitCount: 1, cardListRequestCount: 2 });
     jest.useRealTimers();
   });
 
