@@ -188,6 +188,7 @@ run_migration_evidence() {
   local output="$1"
   set +e
   docker run --rm \
+    --user 0:0 \
     --network salary-settlement-admin_app \
     --add-host host.docker.internal:172.30.80.1 \
     --env-file "$prod_env" \
@@ -220,6 +221,7 @@ echo 'TASK101_MIGRATION_PRECHECK=pass pending=1 drift=false'
 
 echo "TASK101_PHASE=migration_deploy timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker run --rm \
+  --user 0:0 \
   --network salary-settlement-admin_app \
   --add-host host.docker.internal:172.30.80.1 \
   --env-file "$prod_env" \

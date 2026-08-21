@@ -202,8 +202,10 @@ test('task101 rollout gates its one additive migration behind backup and preserv
   assert.match(script, /salary-postgres-backup\.service/);
   assert.match(script, /check-local-backup-health/);
   assert.match(script, /migration-before\.json/);
+  assert.match(script, /run_migration_evidence[\s\S]*?docker run --rm \\\n+    --user 0:0 \\\n+    --network salary-settlement-admin_app/);
   assert.match(script, /pendingMigrations\.length===1/);
   assert.match(script, /prisma migrate deploy/);
+  assert.match(script, /TASK101_PHASE=migration_deploy[\s\S]*?docker run --rm \\\n+  --user 0:0 \\\n+  --network salary-settlement-admin_app/);
   assert.match(script, /migration-after\.json/);
   assert.match(script, /TASK101_DATABASE_ROLLBACK=not_attempted_additive_schema_retained/);
   assert.match(script, /SYNC_PLANNER_ENABLED/);
