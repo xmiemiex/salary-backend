@@ -48,6 +48,16 @@ enum ProviderCardMatchStatus {
   matched
   unmatched
   conflict
+  excluded
+}
+
+enum ProviderCardMatchSource {
+  employee_primary_email
+  provider_email_alias
+}
+
+enum ProviderCardExclusionReason {
+  admin_test_card
 }
 
 enum AuditResult {
@@ -212,6 +222,8 @@ model Employee {
   subIdMappings                   SubIdMapping[]
   cardBindings                    CardBinding[]
   providerCards                   ProviderCard[]
+  providerEmailAliases            ProviderEmailAlias[]
+  providerCardMatchResolutions    ProviderCardMatchResolution[]
   incomeRecords                   IncomeRecord[]
   cardSpendEvents                 CardSpendEvent[]
   manualCardSpendEntries          ManualCardSpendEntry[]
@@ -309,6 +321,7 @@ model ProviderCard {
   providerStatus            String?                 @map("provider_status") @db.VarChar(64)
   employeeId                String?                 @map("employee_id") @db.Uuid
   matchStatus               ProviderCardMatchStatus @default(unmatched) @map("match_status")
+  matchSource               ProviderCardMatchSource? @map("match_source")
   unmatchedReasonCode       String?                 @map("unmatched_reason_code") @db.VarChar(64)
   lastCardSyncedAt          DateTime?                @map("last_card_synced_at")
   lastTransactionSyncedAt   DateTime?                @map("last_transaction_synced_at")
@@ -318,11 +331,83 @@ model ProviderCard {
   createdAt                 DateTime                 @default(now()) @map("created_at")
   updatedAt                 DateTime                 @updatedAt @map("updated_at")
   employee                  Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  accountingExclusions      ProviderCardAccountingExclusion[]
+  matchResolutions          ProviderCardMatchResolution[]
 
   @@unique([provider, cardId])
   @@index([provider, matchStatus])
   @@index([employeeId])
   @@map("provider_cards")
+}
+
+/// Provider-specific historical email aliases. PhotonPay is enforced by a database CHECK.
+model ProviderEmailAlias {
+  id                   String       @id @default(uuid()) @db.Uuid
+  provider             Provider     @default(photonpay)
+  aliasEmailNormalized String       @map("alias_email_normalized") @db.VarChar(255)
+  employeeId           String       @map("employee_id") @db.Uuid
+  status               CommonStatus @default(active)
+  validFrom            DateTime     @map("valid_from")
+  validTo              DateTime?    @map("valid_to")
+  reason               String?      @db.Text
+  createdBy            String       @map("created_by") @db.Uuid
+  updatedBy            String       @map("updated_by") @db.Uuid
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+  employee             Employee     @relation(fields: [employeeId], references: [id])
+  matchResolutions     ProviderCardMatchResolution[]
+
+  @@unique([provider, aliasEmailNormalized, validFrom])
+  @@index([provider, aliasEmailNormalized, status, validFrom])
+  @@index([employeeId, status])
+  @@map("provider_email_aliases")
+}
+
+/// Time-bounded accounting exclusions reference an already discovered ProviderCard.
+model ProviderCardAccountingExclusion {
+  id             String                      @id @default(uuid()) @db.Uuid
+  providerCardId String                      @map("provider_card_id") @db.Uuid
+  reason         ProviderCardExclusionReason @default(admin_test_card)
+  status         CommonStatus                @default(active)
+  effectiveFrom  DateTime                    @map("effective_from")
+  effectiveTo    DateTime?                   @map("effective_to")
+  note           String?                     @db.Text
+  createdBy      String                      @map("created_by") @db.Uuid
+  updatedBy      String                      @map("updated_by") @db.Uuid
+  createdAt      DateTime                    @default(now()) @map("created_at")
+  updatedAt      DateTime                    @updatedAt @map("updated_at")
+  providerCard   ProviderCard                @relation(fields: [providerCardId], references: [id])
+  matchResolutions ProviderCardMatchResolution[]
+
+  @@unique([providerCardId, effectiveFrom])
+  @@index([providerCardId, status, effectiveFrom])
+  @@map("provider_card_accounting_exclusions")
+}
+
+/// Append-only evidence preserving the previous card exception and its safe resolution.
+model ProviderCardMatchResolution {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  providerCardId      String                  @map("provider_card_id") @db.Uuid
+  resolutionType      String                  @map("resolution_type") @db.VarChar(64)
+  previousMatchStatus ProviderCardMatchStatus @map("previous_match_status")
+  previousReasonCode  String?                 @map("previous_reason_code") @db.VarChar(64)
+  newMatchStatus      ProviderCardMatchStatus @map("new_match_status")
+  newReasonCode       String?                 @map("new_reason_code") @db.VarChar(64)
+  employeeId          String?                 @map("employee_id") @db.Uuid
+  aliasId             String?                 @map("alias_id") @db.Uuid
+  exclusionId         String?                 @map("exclusion_id") @db.Uuid
+  resolvedBy          String                  @map("resolved_by") @db.Uuid
+  resolvedAt          DateTime                @default(now()) @map("resolved_at")
+  safeMetadata        Json?                   @map("safe_metadata")
+  providerCard        ProviderCard            @relation(fields: [providerCardId], references: [id])
+  employee            Employee?               @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  alias               ProviderEmailAlias?     @relation(fields: [aliasId], references: [id], onDelete: SetNull)
+  exclusion           ProviderCardAccountingExclusion? @relation(fields: [exclusionId], references: [id], onDelete: SetNull)
+
+  @@index([providerCardId, resolvedAt])
+  @@index([aliasId])
+  @@index([exclusionId])
+  @@map("provider_card_match_resolutions")
 }
 
 model IncomeRecord {

@@ -20,6 +20,8 @@ describe('ProviderCardInventoryService', () => {
         findUnique: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      providerEmailAlias: { findMany: jest.fn().mockResolvedValue([]) },
+      providerCardAccountingExclusion: { findMany: jest.fn().mockResolvedValue([]) },
       subIdMapping: { findMany: jest.fn().mockResolvedValue([]) },
     };
     credentials = { getCardProviderCredentialPayload: jest.fn() };
@@ -29,8 +31,46 @@ describe('ProviderCardInventoryService', () => {
     service = new ProviderCardInventoryService(prisma, credentials, airwallex, photonpay, audit);
   });
 
+  it('does not expose provider card identifiers to narrowly scoped PhotonPay readers', async () => {
+    prisma.providerCard.findMany.mockResolvedValue([{
+      id: 'internal-provider-card-id',
+      provider: Provider.photonpay,
+      cardId: 'external-provider-card-id',
+      cardholderId: 'external-cardholder-id',
+      maskedCardNumber: '****1234',
+      nickname: 'Safe card',
+      providerStatus: 'NORMAL',
+      cardholderEmailNormalized: 'old@example.test',
+      employeeId: null,
+      employee: null,
+      matchStatus: ProviderCardMatchStatus.unmatched,
+      matchSource: null,
+      unmatchedReasonCode: 'EMPLOYEE_NOT_FOUND',
+      lastCardSyncedAt: null,
+      lastTransactionSyncedAt: null,
+      lastTransactionSyncStatus: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]);
+    const result = await service.list({}, { permissions: ['photonpay_unmatched.read'] } as any);
+    expect(result.items[0]).toMatchObject({
+      id: 'internal-provider-card-id',
+      cardholderEmail: 'old@example.test',
+      cardId: undefined,
+      cardholderId: undefined,
+    });
+
+    const inventoryManager = await service.list({}, { permissions: ['card_binding.manage'] } as any);
+    expect(inventoryManager.items[0]).toMatchObject({
+      cardId: 'external-provider-card-id',
+      cardholderId: 'external-cardholder-id',
+      cardholderEmail: 'ol***@e***.test',
+    });
+  });
+
   it('normalizes email and maps exactly one active employee', async () => {
     employeeRows([{ id: 'employee-1', email: ' USER@Example.Test ', status: CommonStatus.active }]);
+    withEffectiveSub();
     photonCards({ email: '  user@example.test ' });
 
     const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
@@ -45,7 +85,20 @@ describe('ProviderCardInventoryService', () => {
       }),
     }));
     expect(JSON.stringify(prisma.providerCard.upsert.mock.calls)).not.toContain('sensitive-card-value');
-    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 1, multipleBusinessSubValues: 0 });
+    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 0, multipleBusinessSubValues: 0 });
+  });
+
+  it('keeps a PhotonPay card unmatched when the employee has no effective SUB mapping', async () => {
+    employeeRows([{ id: 'employee-1', email: 'user@example.test', status: CommonStatus.active }]);
+    photonCards({ email: 'user@example.test' });
+    const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
+    expect(result).toMatchObject({ matchedCount: 0, unmatchedCount: 1 });
+    expect(result.mappingDiagnostics).toMatchObject({ employeeWithoutSub: 1 });
+    expect(prisma.providerCard.upsert.mock.calls[0][0].create).toMatchObject({
+      employeeId: null,
+      matchStatus: ProviderCardMatchStatus.unmatched,
+      unmatchedReasonCode: 'EMPLOYEE_WITHOUT_SUB',
+    });
   });
 
   it('treats the same effective business SUB value across accounts as valid', async () => {
@@ -175,6 +228,7 @@ describe('ProviderCardInventoryService', () => {
       sourceUpdatedAt: null,
     }]);
     employeeRows([{ id: 'employee-1', email: 'cached@example.test', status: CommonStatus.active }]);
+    withEffectiveSub();
     photonpay.listCards.mockResolvedValue({ cards: [listedCard('card-1', 'ACTIVE')], hasMore: false });
     const result = await service.syncProviderWithPayload(Provider.photonpay, photonCredential());
     expect(result).toMatchObject({ status: 'completed', matchedCount: 1 });
@@ -208,6 +262,29 @@ describe('ProviderCardInventoryService', () => {
     await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', new Date('2026-06-01'))).resolves.toMatchObject({ ok: false, reasonCode: 'EMPLOYEE_DISABLED' });
   });
 
+  it('applies accounting exclusion boundaries at the transaction timestamp', async () => {
+    prisma.providerCard.findUnique
+      .mockResolvedValueOnce({
+        matchStatus: ProviderCardMatchStatus.excluded,
+        employeeId: null,
+        employee: null,
+        accountingExclusions: [{ id: 'exclusion-1', reason: 'admin_test_card' }],
+      })
+      .mockResolvedValueOnce({
+        matchStatus: ProviderCardMatchStatus.matched,
+        employeeId: 'employee-1',
+        employee: { id: 'employee-1', status: CommonStatus.active },
+        accountingExclusions: [],
+      });
+    const month = new Date('2026-08-01T00:00:00.000Z');
+    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', month, new Date('2026-08-20T23:59:59.999Z')))
+      .resolves.toMatchObject({ ok: false, excluded: true, reasonCode: 'ADMIN_TEST_CARD' });
+    await expect(service.resolveSpendOwner(Provider.photonpay, 'card-1', month, new Date('2026-08-21T00:00:00.000Z')))
+      .resolves.toEqual({ ok: true, employeeId: 'employee-1' });
+    expect(prisma.providerCard.findUnique.mock.calls[0][0].include.accountingExclusions.where)
+      .toMatchObject({ effectiveFrom: { lte: new Date('2026-08-20T23:59:59.999Z') } });
+  });
+
   it('assigns spend to the uniquely matched active employee without requiring an affiliate SUB mapping', async () => {
     matchedCard(CommonStatus.active);
     const month = new Date('2026-06-01T00:00:00.000Z');
@@ -224,8 +301,9 @@ describe('ProviderCardInventoryService', () => {
   });
 
   function employeeRows(rows: any[]) { prisma.employee.findMany.mockResolvedValue(rows); }
+  function withEffectiveSub() { prisma.subIdMapping.findMany.mockResolvedValue([effectiveSub('account-cake', 'SUB-A')]); }
   function matchedCard(status: CommonStatus) {
-    prisma.providerCard.findUnique.mockResolvedValue({ matchStatus: ProviderCardMatchStatus.matched, employeeId: 'employee-1', employee: { id: 'employee-1', status } });
+    prisma.providerCard.findUnique.mockResolvedValue({ matchStatus: ProviderCardMatchStatus.matched, employeeId: 'employee-1', employee: { id: 'employee-1', status }, accountingExclusions: [] });
   }
   function photonCards(detail: { email: string | null }) {
     photonpay.listCards.mockResolvedValue({ cards: [listedCard('card-1', 'ACTIVE')], hasMore: false });

@@ -23,6 +23,7 @@ import {
   isUsableEffectiveSubIdMapping,
   resolveEffectiveSubIdMappings,
 } from '../sub-id-mappings/effective-sub-id-mappings';
+import { maskEmail, matchProviderCard, normalizeEmail } from './provider-card-matching';
 
 const AIRWALLEX_FIRST_CARD_DATE = new Date('2018-01-01T00:00:00.000Z');
 const AIRWALLEX_WINDOW_DAYS = 30;
@@ -51,6 +52,7 @@ export type CardInventorySyncResult = {
   matchedCount: number;
   unmatchedCount: number;
   conflictCount: number;
+  excludedCount: number;
   invalidCardCount: number;
   retainedHistoricalCards: true;
   apiVersion?: string;
@@ -87,7 +89,7 @@ export class ProviderCardInventoryService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(query: Record<string, string> = {}) {
+  async list(query: Record<string, string> = {}, actor?: Actor) {
     const provider = parseProvider(query.provider, true);
     const matchStatus = parseMatchStatus(query.matchStatus);
     const items = await this.prisma.providerCard.findMany({
@@ -102,16 +104,19 @@ export class ProviderCardInventoryService {
       items: items.map((card) => ({
         id: card.id,
         provider: card.provider,
-        cardId: card.cardId,
+        cardId: actor?.permissions.includes('card_binding.manage') ? card.cardId : undefined,
         maskedCardNumber: card.maskedCardNumber,
         nickname: card.nickname,
         providerStatus: card.providerStatus,
-        cardholderId: card.cardholderId,
-        cardholderEmail: card.cardholderEmailNormalized,
+        cardholderId: actor?.permissions.includes('card_binding.manage') ? card.cardholderId : undefined,
+        cardholderEmail: actor?.permissions.includes('photonpay_unmatched.read')
+          ? card.cardholderEmailNormalized
+          : maskEmail(card.cardholderEmailNormalized),
         employeeId: card.employeeId,
         employeeCode: card.employee?.employeeCode ?? null,
         employeeName: card.employee?.name ?? null,
         matchStatus: card.matchStatus,
+        matchSource: card.matchSource,
         unmatchedReasonCode: card.unmatchedReasonCode,
         lastCardSyncedAt: card.lastCardSyncedAt,
         lastTransactionSyncedAt: card.lastTransactionSyncedAt,
@@ -193,9 +198,41 @@ export class ProviderCardInventoryService {
       mappings.push(mapping);
       mappingsByEmployee.set(mapping.employeeId, mappings);
     }
+    const subMappedEmployeeIds = new Set(mappingsByEmployee.keys());
+    const matchingAt = new Date();
+    const aliases = provider === Provider.photonpay
+      ? await this.prisma.providerEmailAlias.findMany({
+        where: {
+          provider: Provider.photonpay,
+          status: CommonStatus.active,
+          validFrom: { lte: matchingAt },
+          OR: [{ validTo: null }, { validTo: { gt: matchingAt } }],
+        },
+        select: {
+          id: true,
+          provider: true,
+          aliasEmailNormalized: true,
+          employeeId: true,
+          status: true,
+          validFrom: true,
+          validTo: true,
+        },
+      })
+      : [];
+    const activeExclusions = await this.prisma.providerCardAccountingExclusion.findMany({
+      where: {
+        status: CommonStatus.active,
+        effectiveFrom: { lte: matchingAt },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gt: matchingAt } }],
+        providerCard: { provider },
+      },
+      select: { id: true, providerCard: { select: { cardId: true } } },
+    });
+    const exclusionsByCardId = new Map(activeExclusions.map((item) => [item.providerCard.cardId, item]));
     let matchedCount = 0;
     let unmatchedCount = 0;
     let conflictCount = 0;
+    let excludedCount = 0;
     const mappingDiagnostics = {
       employeeNotFound: 0,
       employeeDisabled: 0,
@@ -203,14 +240,32 @@ export class ProviderCardInventoryService {
       multipleEmployeeEmail: 0,
       multipleBusinessSubValues: 0,
     };
-    const syncedAt = new Date();
+    const syncedAt = matchingAt;
     for (const card of result.cards) {
-      const match = matchEmployee(card, employees);
+      const match = exclusionsByCardId.has(card.cardId)
+        ? {
+          employeeId: null,
+          status: ProviderCardMatchStatus.excluded,
+          source: null,
+          reasonCode: 'ADMIN_TEST_CARD',
+          aliasId: null,
+        }
+        : matchProviderCard({
+          provider,
+          email: card.email,
+          forcedReasonCode: card.forcedReasonCode,
+          employees,
+          aliases,
+          subMappedEmployeeIds: provider === Provider.photonpay ? subMappedEmployeeIds : undefined,
+          matchingAt,
+        });
       if (match.status === ProviderCardMatchStatus.matched) matchedCount += 1;
       else if (match.status === ProviderCardMatchStatus.conflict) conflictCount += 1;
+      else if (match.status === ProviderCardMatchStatus.excluded) excludedCount += 1;
       else unmatchedCount += 1;
       if (match.reasonCode === 'EMPLOYEE_NOT_FOUND') mappingDiagnostics.employeeNotFound += 1;
       if (match.reasonCode === 'EMPLOYEE_DISABLED') mappingDiagnostics.employeeDisabled += 1;
+      if (match.reasonCode === 'EMPLOYEE_WITHOUT_SUB') mappingDiagnostics.employeeWithoutSub += 1;
       if (match.reasonCode === 'EMPLOYEE_EMAIL_AMBIGUOUS') mappingDiagnostics.multipleEmployeeEmail += 1;
       if (provider === Provider.photonpay && match.employeeId) {
         const businessSubValues = new Set(
@@ -218,8 +273,7 @@ export class ProviderCardInventoryService {
             .map((mapping) => mapping.subValue.trim())
             .filter(Boolean),
         );
-        if (businessSubValues.size === 0) mappingDiagnostics.employeeWithoutSub += 1;
-        else if (businessSubValues.size > 1) mappingDiagnostics.multipleBusinessSubValues += 1;
+        if (businessSubValues.size > 1) mappingDiagnostics.multipleBusinessSubValues += 1;
       }
       await this.prisma.providerCard.upsert({
         where: { provider_cardId: { provider, cardId: card.cardId } },
@@ -231,6 +285,7 @@ export class ProviderCardInventoryService {
           providerStatus: card.providerStatus,
           employeeId: match.employeeId,
           matchStatus: match.status,
+          matchSource: match.source,
           unmatchedReasonCode: match.reasonCode,
           lastCardSyncedAt: syncedAt,
           sourceCreatedAt: card.sourceCreatedAt,
@@ -246,6 +301,7 @@ export class ProviderCardInventoryService {
           providerStatus: card.providerStatus,
           employeeId: match.employeeId,
           matchStatus: match.status,
+          matchSource: match.source,
           unmatchedReasonCode: match.reasonCode,
           lastCardSyncedAt: syncedAt,
           sourceCreatedAt: card.sourceCreatedAt,
@@ -260,6 +316,7 @@ export class ProviderCardInventoryService {
       matchedCount,
       unmatchedCount: unmatchedCount + result.invalidCardCount,
       conflictCount,
+      excludedCount,
       invalidCardCount: result.invalidCardCount,
       retainedHistoricalCards: true,
       apiVersion: 'apiVersion' in result && typeof result.apiVersion === 'string' ? result.apiVersion : undefined,
@@ -269,11 +326,30 @@ export class ProviderCardInventoryService {
     };
   }
 
-  async resolveSpendOwner(provider: Provider, cardId: string, settlementMonth: Date) {
+  async resolveSpendOwner(provider: Provider, cardId: string, settlementMonth: Date, transactionAt = new Date()) {
     const card = await this.prisma.providerCard.findUnique({
       where: { provider_cardId: { provider, cardId } },
-      include: { employee: { select: { id: true, status: true } } },
+      include: {
+        employee: { select: { id: true, status: true } },
+        accountingExclusions: {
+          where: {
+            status: CommonStatus.active,
+            effectiveFrom: { lte: transactionAt },
+            OR: [{ effectiveTo: null }, { effectiveTo: { gt: transactionAt } }],
+          },
+          select: { id: true, reason: true },
+          take: 1,
+        },
+      },
     });
+    if (card?.accountingExclusions?.length) {
+      return {
+        ok: false as const,
+        excluded: true as const,
+        reasonCode: 'ADMIN_TEST_CARD',
+        reasonMessage: 'The provider card is excluded from accounting.',
+      };
+    }
     if (!card || card.matchStatus !== ProviderCardMatchStatus.matched || !card.employeeId || !card.employee) {
       return { ok: false as const, reasonCode: 'CARD_NOT_MAPPED', reasonMessage: `${provider} card is not uniquely mapped to an employee.` };
     }
@@ -505,28 +581,6 @@ function normalizeAirwallexCard(
   };
 }
 
-function matchEmployee(
-  card: SafeProviderCard,
-  employees: Array<{ id: string; email: string | null; status: CommonStatus }>,
-) {
-  if (card.forcedReasonCode) {
-    return {
-      employeeId: null,
-      status: card.forcedReasonCode === 'MULTIPLE_CARDHOLDERS' ? ProviderCardMatchStatus.conflict : ProviderCardMatchStatus.unmatched,
-      reasonCode: card.forcedReasonCode,
-    };
-  }
-  const email = normalizeEmail(card.email);
-  if (!email) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'CARDHOLDER_EMAIL_MISSING' };
-  if (!isValidEmail(email)) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'CARDHOLDER_EMAIL_INVALID' };
-  const exact = employees.filter((employee) => normalizeEmail(employee.email) === email);
-  if (exact.length > 1) return { employeeId: null, status: ProviderCardMatchStatus.conflict, reasonCode: 'EMPLOYEE_EMAIL_AMBIGUOUS' };
-  const active = exact.filter((employee) => employee.status === CommonStatus.active);
-  if (active.length === 0 && exact.length > 0) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'EMPLOYEE_DISABLED' };
-  if (active.length === 0) return { employeeId: null, status: ProviderCardMatchStatus.unmatched, reasonCode: 'EMPLOYEE_NOT_FOUND' };
-  return { employeeId: active[0].id, status: ProviderCardMatchStatus.matched, reasonCode: null };
-}
-
 function parseAirwallexCredential(payload: unknown): AirwallexCredentialPayload {
   const record = objectPayload(payload, 'Airwallex');
   const clientId = firstString(record.clientId, record.client_id);
@@ -570,6 +624,7 @@ function failedResult(provider: Provider, error: unknown, payload?: unknown): Ca
     matchedCount: 0,
     unmatchedCount: 0,
     conflictCount: 0,
+    excludedCount: 0,
     invalidCardCount: 0,
     retainedHistoricalCards: true,
     error: details,
@@ -635,11 +690,6 @@ function settlementDelay(value: unknown): number | undefined {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 31 ? parsed : undefined;
 }
 
-function normalizeEmail(value: string | null): string | null {
-  const email = value?.trim().toLowerCase() ?? '';
-  return email ? email.slice(0, 255) : null;
-}
-
 function currentShanghaiSettlementMonth(now = new Date()) {
   const shifted = new Date(now.getTime() + 8 * 60 * 60 * 1_000);
   return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), 1));
@@ -672,10 +722,6 @@ function pause(milliseconds: number) {
 function incrementCount(counts: Record<string, number>, value: string) {
   const key = value.trim() || 'UNKNOWN';
   counts[key] = (counts[key] ?? 0) + 1;
-}
-
-function isValidEmail(value: string): boolean {
-  return value.length <= 255 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function maskOnly(value: string | null): string | null {

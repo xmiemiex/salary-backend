@@ -8,11 +8,12 @@ import { PhotonPayClient } from '../sync-tasks/photonpay/photonpay-client';
 import { CardBindingsController } from './card-bindings.controller';
 import { CardBindingsService } from './card-bindings.service';
 import { ProviderCardInventoryService } from './provider-card-inventory.service';
+import { PhotonPayCardGovernanceService } from './photonpay-card-governance.service';
 
 @Module({
   imports: [PrismaModule, MonthLockModule, AuditModule, ApiCredentialsModule],
   controllers: [CardBindingsController],
-  providers: [CardBindingsService, AirwallexClient, PhotonPayClient, ProviderCardInventoryService],
-  exports: [CardBindingsService, AirwallexClient, PhotonPayClient, ProviderCardInventoryService],
+  providers: [CardBindingsService, AirwallexClient, PhotonPayClient, ProviderCardInventoryService, PhotonPayCardGovernanceService],
+  exports: [CardBindingsService, AirwallexClient, PhotonPayClient, ProviderCardInventoryService, PhotonPayCardGovernanceService],
 })
 export class CardBindingsModule {}

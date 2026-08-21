@@ -2,6 +2,8 @@ import { Alert, Button, Form, Input, Modal, Select, Space, Table, Tag, Typograph
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, apiClient } from '../lib/api-client';
+import { getStoredActor } from '../lib/auth-storage';
+import { PhotonPayCardGovernancePanel } from './PhotonPayCardGovernancePanel';
 
 type CommonStatus = 'active' | 'disabled' | 'draft' | 'confirmed' | 'locked';
 type FieldType = 'text' | 'date' | 'month' | 'select' | 'textarea' | 'json';
@@ -495,7 +497,8 @@ type ProviderCardRow = BaseRecord & {
   cardholderEmail?: string | null;
   employeeCode?: string | null;
   employeeName?: string | null;
-  matchStatus: 'matched' | 'unmatched' | 'conflict';
+  matchStatus: 'matched' | 'unmatched' | 'conflict' | 'excluded';
+  matchSource?: 'employee_primary_email' | 'provider_email_alias' | null;
   unmatchedReasonCode?: string | null;
   lastCardSyncedAt?: string | null;
   lastTransactionSyncedAt?: string | null;
@@ -516,6 +519,7 @@ type ProviderSyncResult = {
 };
 
 function ProviderCardsPage() {
+  const canSync = getStoredActor()?.permissions.includes('card_binding.manage') ?? false;
   const [messageApi, messageHolder] = message.useMessage();
   const [rows, setRows] = useState<ProviderCardRow[]>([]);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -567,7 +571,7 @@ function ProviderCardsPage() {
     { title: '匹配员工', key: 'employee', render: (_, row) => row.employeeName ? `${row.employeeCode ?? ''} ${row.employeeName}`.trim() : '-' },
     {
       title: '匹配结果', dataIndex: 'matchStatus',
-      render: (value, row) => <Space><Tag color={value === 'matched' ? 'green' : value === 'conflict' ? 'red' : 'orange'}>{value}</Tag>{row.unmatchedReasonCode ?? ''}</Space>,
+      render: (value, row) => <Space><Tag color={value === 'matched' ? 'green' : value === 'conflict' ? 'red' : value === 'excluded' ? 'purple' : 'orange'}>{value}</Tag>{row.unmatchedReasonCode ?? ''}</Space>,
     },
     { title: '最近卡同步', dataIndex: 'lastCardSyncedAt', render: formatDate },
     {
@@ -586,12 +590,13 @@ function ProviderCardsPage() {
         </div>
         <Space wrap>
           <Button onClick={() => void loadCards(filters)} loading={loading}>刷新列表</Button>
-          <Button onClick={() => void syncCards('airwallex')} loading={syncing === 'airwallex'}>同步 Airwallex</Button>
-          <Button onClick={() => void syncCards('photonpay')} loading={syncing === 'photonpay'}>同步 PhotonPay</Button>
-          <Button type="primary" onClick={() => void syncCards()} loading={syncing === 'all'}>同步全部卡</Button>
+          {canSync ? <Button onClick={() => void syncCards('airwallex')} loading={syncing === 'airwallex'}>同步 Airwallex</Button> : null}
+          {canSync ? <Button onClick={() => void syncCards('photonpay')} loading={syncing === 'photonpay'}>同步 PhotonPay</Button> : null}
+          {canSync ? <Button type="primary" onClick={() => void syncCards()} loading={syncing === 'all'}>同步全部卡</Button> : null}
         </Space>
       </div>
       <Alert type="info" showIcon message="无需填写外部卡 ID、员工 ID 或生效月份。未匹配、重复邮箱、停用员工和冲突映射不会进入工资花费。" />
+      <PhotonPayCardGovernancePanel cards={rows} onChanged={() => loadCards(filters)} />
       {results.map((result) => (
         <Alert
           key={result.provider}
@@ -604,7 +609,7 @@ function ProviderCardsPage() {
       ))}
       <Form layout="inline" className="data-filter" onFinish={(values) => { setFilters(values); void loadCards(values); }}>
         <Form.Item name="provider" label="Provider"><Select allowClear style={{ width: 160 }} options={PROVIDER_OPTIONS} /></Form.Item>
-        <Form.Item name="matchStatus" label="匹配状态"><Select allowClear style={{ width: 160 }} options={['matched', 'unmatched', 'conflict'].map((value) => ({ label: value, value }))} /></Form.Item>
+        <Form.Item name="matchStatus" label="匹配状态"><Select allowClear style={{ width: 160 }} options={['matched', 'unmatched', 'conflict', 'excluded'].map((value) => ({ label: value, value }))} /></Form.Item>
         <Form.Item><Button type="primary" htmlType="submit">查询</Button></Form.Item>
       </Form>
       <Space wrap className="data-page-notice">

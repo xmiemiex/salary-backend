@@ -24,7 +24,7 @@ export const ADMIN_MENU: AdminMenuItem[] = [
   { key: 'affiliate-accounts', title: '联盟账号', path: '/affiliate-accounts', permissions: ['api_config.manage'] },
   { key: 'api-credentials', title: 'API 凭证配置', path: '/api-credentials', permissions: ['api_config.manage'] },
   { key: 'sub-id-mappings', title: 'SUB ID 映射', path: '/sub-id-mappings', permissions: ['sub_id_mapping.manage'] },
-  { key: 'card-bindings', title: '虚拟卡绑定', path: '/card-bindings', permissions: ['card_binding.manage'] },
+  { key: 'card-bindings', title: '虚拟卡绑定', path: '/card-bindings', permissions: ['card_binding.manage', 'photonpay_unmatched.read', 'photonpay_email_alias.manage', 'provider_card_exclusion.manage'] },
   {
     key: 'monthly-exchange-rates',
     title: '汇率设置',

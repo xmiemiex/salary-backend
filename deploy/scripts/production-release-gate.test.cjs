@@ -12,6 +12,7 @@ const envCheck = resolve(scriptsDir, 'production-env-check.js');
 const gateScript = resolve(scriptsDir, 'production-release-gate.sh');
 const permissionsScript = resolve(scriptsDir, 'production-permissions-smoke.sh');
 const task96RolloutScript = resolve(scriptsDir, 'task96-production-rollout.sh');
+const task101RolloutScript = resolve(scriptsDir, 'task101-production-rollout.sh');
 
 function validProductionEnv() {
   return {
@@ -115,6 +116,14 @@ test('production env check accepts the immutable task100 release format', () => 
   assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
 });
 
+test('production env check accepts the immutable task101 release format', () => {
+  const environment = validProductionEnv();
+  environment.RELEASE_IMAGE_TAG = 'task101-0123456789ab';
+  const result = spawnSync(process.execPath, [envCheck], { env: environment, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
+});
+
 test('production env check rejects unsafe or malformed release tags', () => {
   const invalidTags = [
     '',
@@ -127,6 +136,8 @@ test('production env check rejects unsafe or malformed release tags', () => {
     'task99-0123456789ab',
     'task100-0123456789a',
     'task100-0123456789abc',
+    'task101-0123456789a',
+    'task101-0123456789abc',
     'task98-0123456789aG',
   ];
   for (const releaseTag of invalidTags) {
@@ -145,6 +156,7 @@ test('standard gate refreshes read-only evidence and mounts it into the gate', (
   assert.match(script, /task97-\[0-9a-f\]/);
   assert.match(script, /task98-\[0-9a-f\]/);
   assert.match(script, /task100-\[0-9a-f\]/);
+  assert.match(script, /task101-\[0-9a-f\]/);
   assert.match(script, /api_image="salary-settlement-api:\$\{release_tag\}"/);
   assert.match(script, /production-env-check\.js/);
   assert.match(script, /production-migration-evidence\.js/);
@@ -182,4 +194,21 @@ test('task96 rollout is scoped to API/web and preserves database and nginx bound
   assert.doesNotMatch(script, /docker compose (down|restart)/);
   assert.doesNotMatch(script, /systemctl|service (postgres|nginx)|nginx -s/i);
   assert.doesNotMatch(script, /--remove-orphans/);
+});
+
+test('task101 rollout gates its one additive migration behind backup and preserves automation boundaries', () => {
+  const script = readFileSync(task101RolloutScript, 'utf8');
+  assert.match(script, /20260821010000_add_photonpay_alias_and_card_exclusion/);
+  assert.match(script, /salary-postgres-backup\.service/);
+  assert.match(script, /check-local-backup-health/);
+  assert.match(script, /migration-before\.json/);
+  assert.match(script, /pendingMigrations\.length===1/);
+  assert.match(script, /prisma migrate deploy/);
+  assert.match(script, /migration-after\.json/);
+  assert.match(script, /TASK101_DATABASE_ROLLBACK=not_attempted_additive_schema_retained/);
+  assert.match(script, /SYNC_PLANNER_ENABLED/);
+  assert.match(script, /SYNC_AUTO_EXECUTION_ENABLED/);
+  assert.match(script, /PHOTONPAY.*WEBHOOK/);
+  assert.doesNotMatch(script, /git push --force|git tag -f|refund|void|simulate|cvv/i);
+  assert.doesNotMatch(script, /docker compose .*down|systemctl restart postgresql|systemctl restart nginx/);
 });

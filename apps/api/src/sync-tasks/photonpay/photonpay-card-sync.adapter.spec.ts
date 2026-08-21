@@ -430,7 +430,7 @@ describe('PhotonPayCardSyncAdapter', () => {
       },
       settlementDelayDays: 10,
     });
-    expect(inventory.resolveSpendOwner).toHaveBeenCalledWith(Provider.photonpay, 'card-1', settlementMonth);
+    expect(inventory.resolveSpendOwner).toHaveBeenCalledWith(Provider.photonpay, 'card-1', settlementMonth, new Date('2026-06-15T12:00:00.000Z'));
     expect(prisma.cardSpendEvent.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { provider_externalEventId: { provider: Provider.photonpay, externalEventId: 'txn-1' } },
@@ -563,6 +563,24 @@ describe('PhotonPayCardSyncAdapter', () => {
         thirdPartyEventId: 'txn-1',
       }),
     );
+  });
+
+  it('counts an excluded admin test card without creating spend or increasing failedCount', async () => {
+    mockTransactions([settledTransaction()]);
+    inventory.resolveSpendOwner.mockResolvedValue({
+      ok: false,
+      excluded: true,
+      reasonCode: 'ADMIN_TEST_CARD',
+      reasonMessage: 'excluded',
+    });
+
+    const result = await adapter.execute(context());
+
+    expect(result).toMatchObject({ status: 'completed', successCount: 0, failedCount: 0 });
+    expect(result.resultPayload).toMatchObject({ excludedCardTransactionCount: 1 });
+    expect(prisma.cardSpendEvent.upsert).not.toHaveBeenCalled();
+    expect(unmatchedEvents.recordUnmatchedEvent).not.toHaveBeenCalled();
+    expect(inventory.markTransactionSync).toHaveBeenCalledWith(Provider.photonpay, 'card-1', 'excluded:admin_test_card');
   });
 
   it('rejects non-USD transactions without writing or converting FX', async () => {

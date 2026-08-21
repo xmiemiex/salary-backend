@@ -6,6 +6,7 @@ import { PermissionsGuard } from '../auth/permissions.guard';
 import { AppExceptionFilter } from '../common/app-exception.filter';
 import { CardBindingsController } from './card-bindings.controller';
 import { ProviderCardInventoryService } from './provider-card-inventory.service';
+import { PhotonPayCardGovernanceService } from './photonpay-card-governance.service';
 
 const request: any = require('supertest');
 
@@ -34,12 +35,31 @@ describe('CardBindingsController auth integration', () => {
     syncProvider: jest.fn().mockResolvedValue({ provider: 'airwallex', status: 'completed' }),
   };
   const audit = { failure: jest.fn().mockResolvedValue({}) };
+  const governance = {
+    listUnmatchedGroups: jest.fn().mockResolvedValue({ groups: [], totalCards: 0 }),
+    safeSummary: jest.fn().mockResolvedValue({ totalCards: 0, unmatched: 0 }),
+    listEmployeeOptions: jest.fn().mockResolvedValue([]),
+    listAliases: jest.fn().mockResolvedValue({ items: [] }),
+    previewAlias: jest.fn().mockResolvedValue({}),
+    createAlias: jest.fn().mockResolvedValue({}),
+    correctAlias: jest.fn().mockResolvedValue({}),
+    previewAliasCorrection: jest.fn().mockResolvedValue({}),
+    disableAlias: jest.fn().mockResolvedValue({}),
+    previewDisableAlias: jest.fn().mockResolvedValue({}),
+    previewRematch: jest.fn().mockResolvedValue({}),
+    executeRematch: jest.fn().mockResolvedValue({}),
+    listExclusions: jest.fn().mockResolvedValue({ items: [] }),
+    previewExclusion: jest.fn().mockResolvedValue({}),
+    createExclusion: jest.fn().mockResolvedValue({}),
+    disableExclusion: jest.fn().mockResolvedValue({}),
+  };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CardBindingsController],
       providers: [
         { provide: ProviderCardInventoryService, useValue: inventory },
+        { provide: PhotonPayCardGovernanceService, useValue: governance },
         { provide: AuditService, useValue: audit },
         { provide: APP_FILTER, useClass: AppExceptionFilter },
         { provide: APP_GUARD, useClass: TestAuthGuard },
@@ -55,6 +75,12 @@ describe('CardBindingsController auth integration', () => {
 
   it.each([
     ['get', '/card-bindings'],
+    ['get', '/card-bindings/photonpay/unmatched-groups'],
+    ['get', '/card-bindings/photonpay/summary'],
+    ['get', '/card-bindings/photonpay/employee-options'],
+    ['get', '/card-bindings/photonpay/aliases'],
+    ['get', '/card-bindings/photonpay/rematch/preview'],
+    ['get', '/card-bindings/photonpay/exclusions'],
     ['post', '/card-bindings/sync'],
     ['post', '/card-bindings/sync/airwallex'],
   ])('returns 401 for unauthenticated %s %s', async (method, path) => {
@@ -82,5 +108,31 @@ describe('CardBindingsController auth integration', () => {
       .set('x-test-permissions', 'salary.view_all')
       .expect(403);
     expect(audit.failure).toHaveBeenCalledWith(expect.objectContaining({ failureReason: 'PERMISSION_DENIED' }));
+  });
+
+  it('enforces split PhotonPay read, alias, rematch, and exclusion permissions', async () => {
+    const auth = { 'x-test-auth': 'authenticated', 'x-test-role': 'operations_manager' };
+    await request(app.getHttpServer()).get('/card-bindings/photonpay/unmatched-groups')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_unmatched.read' }).expect(200);
+    await request(app.getHttpServer()).get('/card-bindings/photonpay/summary')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_unmatched.read' }).expect(200);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/aliases/preview')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_unmatched.read' }).send({}).expect(403);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/aliases/preview')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_unmatched.read,photonpay_email_alias.manage' }).send({}).expect(201);
+    await request(app.getHttpServer()).get('/card-bindings/photonpay/employee-options')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_email_alias.manage' }).expect(200);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/aliases/alias-1/preview')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_email_alias.manage' }).send({}).expect(201);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/aliases')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_email_alias.manage' }).send({}).expect(403);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/aliases')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_email_alias.manage,photonpay_rematch.execute' }).send({}).expect(201);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/rematch')
+      .set({ ...auth, 'x-test-permissions': 'photonpay_rematch.execute' }).send({ confirm: true }).expect(201);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/exclusions/preview')
+      .set({ ...auth, 'x-test-permissions': 'provider_card_exclusion.manage' }).send({}).expect(201);
+    await request(app.getHttpServer()).post('/card-bindings/photonpay/exclusions')
+      .set({ ...auth, 'x-test-permissions': 'provider_card_exclusion.manage' }).send({ confirm: true }).expect(201);
   });
 });

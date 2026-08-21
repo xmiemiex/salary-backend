@@ -34,9 +34,9 @@ databaseDescribe('task97 provider card inventory on isolated PostgreSQL', () => 
     await cleanup.$disconnect();
   });
 
-  it('applies all 18 migrations and creates only allowlisted card columns', async () => {
+  it('applies all 19 migrations and creates only allowlisted card columns', async () => {
     const migrations = await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::bigint AS count FROM "_prisma_migrations" WHERE finished_at IS NOT NULL`;
-    expect(Number(migrations[0].count)).toBe(18);
+    expect(Number(migrations[0].count)).toBe(19);
     const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
       SELECT column_name FROM information_schema.columns WHERE table_schema = ${schema} AND table_name = 'provider_cards' ORDER BY column_name
     `;

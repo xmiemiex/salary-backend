@@ -49,7 +49,7 @@ type PhotonPayAdapterPrisma = {
   };
 };
 
-type ImportOutcome = 'created' | 'updated' | 'skipped' | 'failed';
+type ImportOutcome = 'created' | 'updated' | 'skipped' | 'excluded' | 'failed';
 
 type PhotonPayExecutionStats = {
   createdCount: number;
@@ -61,6 +61,7 @@ type PhotonPayExecutionStats = {
   duplicateBoundaryCount: number;
   outOfWindowCount: number;
   nonUsdSettledCount: number;
+  excludedCardTransactionCount: number;
   settledAmountByCurrency: Record<string, string>;
 };
 
@@ -92,6 +93,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       duplicateBoundaryCount: 0,
       outOfWindowCount: 0,
       nonUsdSettledCount: 0,
+      excludedCardTransactionCount: 0,
       settledAmountByCurrency: {},
     };
     const transactionSyncStartedAt = new Date();
@@ -147,6 +149,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
 
             const outcome = await this.upsertCardSpendEvent(record, context);
             if (outcome === 'failed') failedCount += 1;
+            else if (outcome === 'excluded') stats.excludedCardTransactionCount += 1;
             else {
               successCount += 1;
               if (outcome === 'created') stats.createdCount += 1;
@@ -235,8 +238,12 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       return 'failed';
     }
 
-    const ownership = await this.inventory.resolveSpendOwner(Provider.photonpay, record.cardId, context.settlementMonth);
+    const ownership = await this.inventory.resolveSpendOwner(Provider.photonpay, record.cardId, context.settlementMonth, record.transactionAt);
     if (!ownership.ok) {
+      if ('excluded' in ownership && ownership.excluded) {
+        await this.inventory.markTransactionSync(Provider.photonpay, record.cardId, 'excluded:admin_test_card');
+        return 'excluded';
+      }
       await this.recordUnmatchedCardSpend(record, context, ownership.reasonCode, ownership.reasonMessage);
       await this.inventory.markTransactionSync(Provider.photonpay, record.cardId, `unmatched:${ownership.reasonCode}`);
       return 'failed';
