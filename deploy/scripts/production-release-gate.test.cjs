@@ -124,6 +124,14 @@ test('production env check accepts the immutable task101 release format', () => 
   assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
 });
 
+test('production env check accepts the immutable task102 release format', () => {
+  const environment = validProductionEnv();
+  environment.RELEASE_IMAGE_TAG = 'task102-0123456789ab';
+  const result = spawnSync(process.execPath, [envCheck], { env: environment, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ENV_CHECK name=RELEASE_IMAGE_TAG status=pass/);
+});
+
 test('production env check rejects unsafe or malformed release tags', () => {
   const invalidTags = [
     '',
@@ -138,6 +146,8 @@ test('production env check rejects unsafe or malformed release tags', () => {
     'task100-0123456789abc',
     'task101-0123456789a',
     'task101-0123456789abc',
+    'task102-0123456789a',
+    'task102-0123456789abc',
     'task98-0123456789aG',
   ];
   for (const releaseTag of invalidTags) {
@@ -157,6 +167,7 @@ test('standard gate refreshes read-only evidence and mounts it into the gate', (
   assert.match(script, /task98-\[0-9a-f\]/);
   assert.match(script, /task100-\[0-9a-f\]/);
   assert.match(script, /task101-\[0-9a-f\]/);
+  assert.match(script, /task102-\[0-9a-f\]/);
   assert.match(script, /api_image="salary-settlement-api:\$\{release_tag\}"/);
   assert.match(script, /production-env-check\.js/);
   assert.match(script, /production-migration-evidence\.js/);
