@@ -225,6 +225,45 @@ describe('SyncTasksService', () => {
     }
   });
 
+  it('creates a bounded PhotonPay historical preview and rejects provider or mode expansion', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-22T04:00:00.000Z'));
+    prisma.syncTask.create.mockResolvedValue(syncTask({
+      sourceType: SyncTaskSourceType.card_spend,
+      taskType: SyncTaskType.photonpay_card,
+      platform: SyncTaskPlatform.photonpay,
+      provider: Provider.photonpay,
+      settlementMonth: new Date(Date.UTC(2026, 6, 1)),
+      status: SyncTaskStatus.pending,
+    }));
+    const historicalBackfill = {
+      from: '2026-06-30T16:00:00.000Z',
+      to: '2026-07-07T16:00:00.000Z',
+      previewOnly: true,
+    };
+    try {
+      await service.createCardSpend('photonpay', { settlementMonth: '2026-07', historicalBackfill }, actor);
+      expect(prisma.syncTask.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          requestPayload: {
+            provider: Provider.photonpay,
+            settlementMonth: '2026-07',
+            historicalBackfill,
+          },
+        }),
+      }));
+      await expect(service.createCardSpend('airwallex', {
+        settlementMonth: '2026-07', historicalBackfill,
+      }, actor)).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
+      await expect(service.createCardSpend('photonpay', {
+        settlementMonth: '2026-07',
+        verificationWindow: { from: '2026-07-20T16:00:00.000Z', to: '2026-07-21T16:00:00.000Z' },
+        historicalBackfill,
+      }, actor)).rejects.toMatchObject({ code: ERROR_CODES.VALIDATION_ERROR });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('lists tasks with settlementMonth/taskType/platform/affiliateAccountId/status filters and pagination', async () => {
     const record = syncTask({
       taskType: SyncTaskType.affiliate_income,

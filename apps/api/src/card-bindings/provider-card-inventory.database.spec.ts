@@ -84,6 +84,8 @@ databaseDescribe('task97 provider card inventory on isolated PostgreSQL', () => 
           status: 'succeed',
           transactionAmount: '1.000000',
           transactionCurrency: 'USD',
+          txnPrincipalChangeSettledAmount: '-1.000000',
+          txnPrincipalChangeCurrency: 'USD',
           txnDate: '2026-07-31T16:00:00',
           settleStatus: 'Settled',
           settlementDate: '2026-08-15T00:00:00',

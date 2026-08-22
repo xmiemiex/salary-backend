@@ -14,7 +14,10 @@ import { optionalNonBlank, requireNonBlank } from '../base-data/base-data.utils'
 import { AppError } from '../common/app-error';
 import { MonthLockService } from '../month-lock/month-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { parsePhotonPayVerificationWindow } from './photonpay/photonpay-card-sync.adapter';
+import {
+  parsePhotonPayHistoricalBackfillWindow,
+  parsePhotonPayVerificationWindow,
+} from './photonpay/photonpay-card-sync.adapter';
 
 const AFFILIATE_PLATFORMS = [SyncTaskPlatform.everflow, SyncTaskPlatform.cake] as const;
 const CARD_PROVIDERS = [Provider.airwallex, Provider.photonpay] as const;
@@ -29,6 +32,11 @@ export type CreateCardSpendSyncTaskInput = {
   verificationWindow?: {
     from: string;
     to: string;
+  };
+  historicalBackfill?: {
+    from: string;
+    to: string;
+    previewOnly: boolean;
   };
 };
 
@@ -133,8 +141,17 @@ export class SyncTasksService {
       if (input.verificationWindow && provider !== Provider.photonpay) {
         throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'verificationWindow is supported only for PhotonPay production verification.');
       }
+      if (input.historicalBackfill && provider !== Provider.photonpay) {
+        throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'historicalBackfill is supported only for PhotonPay.');
+      }
+      if (input.verificationWindow && input.historicalBackfill) {
+        throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'verificationWindow and historicalBackfill are mutually exclusive.');
+      }
       const verificationWindow = input.verificationWindow
         ? parsePhotonPayVerificationWindow(input.verificationWindow, settlementMonth)
+        : null;
+      const historicalBackfill = input.historicalBackfill
+        ? parsePhotonPayHistoricalBackfillWindow(input.historicalBackfill, settlementMonth)
         : null;
       const normalizedInput = {
         settlementMonth: input.settlementMonth,
@@ -142,6 +159,13 @@ export class SyncTasksService {
           verificationWindow: {
             from: verificationWindow.from.toISOString(),
             to: verificationWindow.to.toISOString(),
+          },
+        } : {}),
+        ...(historicalBackfill ? {
+          historicalBackfill: {
+            from: historicalBackfill.from.toISOString(),
+            to: historicalBackfill.to.toISOString(),
+            previewOnly: historicalBackfill.previewOnly,
           },
         } : {}),
       };
@@ -211,7 +235,7 @@ function assertCardSpendInputKeys(input: CreateCardSpendSyncTaskInput) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, 'card spend sync input is required.');
   }
-  const unexpected = Object.keys(input).filter((key) => !['settlementMonth', 'verificationWindow'].includes(key));
+  const unexpected = Object.keys(input).filter((key) => !['settlementMonth', 'verificationWindow', 'historicalBackfill'].includes(key));
   if (unexpected.length > 0) {
     throw new AppError(ERROR_CODES.VALIDATION_ERROR, `Unexpected card spend sync fields: ${unexpected.join(', ')}.`);
   }
