@@ -24,6 +24,7 @@ import {
   PHOTONPAY_DEFAULT_TRANSACTIONS_PATH,
   PHOTONPAY_TOKEN_HEADER,
   PhotonPayClient,
+  parsePhotonPayJsonPreservingUsdDebit,
 } from './photonpay-client';
 
 const actorUserId = '00000000-0000-0000-0000-000000000001';
@@ -31,6 +32,17 @@ const employeeId = '30000000-0000-0000-0000-000000000001';
 const settlementMonth = new Date(Date.UTC(2026, 5, 1));
 
 describe('PhotonPayClient', () => {
+  it('preserves provider USD debit JSON number lexemes as strings without touching unrelated numbers or text', () => {
+    const parsed = parsePhotonPayJsonPreservingUsdDebit(
+      '{"code":"0000","data":[{"txnPrincipalChangeSettledAmount":-12.340000,"other":1.25,"note":"\\\"txnPrincipalChangeSettledAmount\\\":99"},{"txn_principal_change_settled_amount":-9.74}]}'
+    ) as { data: Array<Record<string, unknown>> };
+
+    expect(parsed.data[0].txnPrincipalChangeSettledAmount).toBe('-12.340000');
+    expect(parsed.data[0].other).toBe(1.25);
+    expect(parsed.data[0].note).toBe('"txnPrincipalChangeSettledAmount":99');
+    expect(parsed.data[1].txn_principal_change_settled_amount).toBe('-9.74');
+  });
+
   it('uses the official production token URL, slash-delimited Basic credential, and v4 transaction paging fields', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-06-19T00:00:00.000Z'));
     const fetchMock = jest.fn()

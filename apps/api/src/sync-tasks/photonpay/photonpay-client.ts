@@ -125,7 +125,10 @@ export class PhotonPayClient {
         const response = await providerFetch(this.fetchImpl, 'PhotonPay', url, {
           method: 'GET', headers: { Accept: 'application/json', [PHOTONPAY_TOKEN_HEADER]: token },
         });
-        return assertBusinessSuccess(await response.json(), SyncExecutionErrorCategory.BUSINESS_REJECTED, [
+        const parsed = typeof response.text === 'function'
+          ? parsePhotonPayJsonPreservingUsdDebit(await response.text())
+          : await response.json();
+        return assertBusinessSuccess(parsed, SyncExecutionErrorCategory.BUSINESS_REJECTED, [
           credential.appId, credential.appSecret, token,
         ]);
       } catch (error) {
@@ -218,6 +221,76 @@ export class PhotonPayClient {
       throw sanitized;
     }
   }
+}
+
+const PHOTONPAY_USD_DEBIT_JSON_KEYS = new Set([
+  'txnPrincipalChangeSettledAmount',
+  'txn_principal_change_settled_amount',
+]);
+
+export function parsePhotonPayJsonPreservingUsdDebit(source: string): unknown {
+  const output: string[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    if (source[cursor] !== '"') {
+      output.push(source[cursor]);
+      cursor += 1;
+      continue;
+    }
+
+    const stringEnd = findJsonStringEnd(source, cursor);
+    const stringToken = source.slice(cursor, stringEnd + 1);
+    output.push(stringToken);
+    const key = JSON.parse(stringToken) as unknown;
+    let colon = skipJsonWhitespace(source, stringEnd + 1);
+    if (typeof key !== 'string' || !PHOTONPAY_USD_DEBIT_JSON_KEYS.has(key) || source[colon] !== ':') {
+      cursor = stringEnd + 1;
+      continue;
+    }
+
+    colon += 1;
+    const valueStart = skipJsonWhitespace(source, colon);
+    const numberToken = readJsonNumber(source, valueStart);
+    if (!numberToken) {
+      cursor = stringEnd + 1;
+      continue;
+    }
+    output.push(source.slice(stringEnd + 1, valueStart));
+    output.push(JSON.stringify(numberToken));
+    cursor = valueStart + numberToken.length;
+  }
+  return JSON.parse(output.join('')) as unknown;
+}
+
+function findJsonStringEnd(source: string, start: number): number {
+  let escaped = false;
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') return index;
+  }
+  throw new SyntaxError('Unterminated JSON string.');
+}
+
+function skipJsonWhitespace(source: string, start: number): number {
+  let cursor = start;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  return cursor;
+}
+
+function readJsonNumber(source: string, start: number): string | null {
+  const match = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(source.slice(start));
+  if (!match) return null;
+  const end = start + match[0].length;
+  const delimiter = source[skipJsonWhitespace(source, end)];
+  return delimiter === ',' || delimiter === '}' || delimiter === ']' ? match[0] : null;
 }
 
 function tokenCacheKey(credential: PhotonPayCredentialPayload): string {

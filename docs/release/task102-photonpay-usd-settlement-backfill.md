@@ -21,6 +21,7 @@ The corrected source field is `txnPrincipalChangeSettledAmount`, paired with `tx
 - PhotonPay official settlement documentation independently defines settlement amount/currency as the actual settlement values. Webhook delivery is not enabled and is not introduced by this task.
 - The production 2026-08-19 Asia/Shanghai Portal window contains 158 rows and 147 settled consumption rows. Portal columns show original `交易金额`, USD `交易本金金额`, and USD `交易本金已结算金额` for the same transaction.
 - The production paging API exposes `txnPrincipalChangeSettledAmount` on all 147 settled consumption rows, always paired with `txnPrincipalChangeCurrency=USD` and a negative account-change sign.
+- The production JSON representation is a JSON number on all 147 rows. The PhotonPay client therefore reads the raw response text and preserves only this allowlisted field's exact decimal lexeme as a string before `JSON.parse`; no JavaScript floating-point value is used for validation, persistence, or aggregation.
 - Portal export and API aggregates match exactly:
 
 | Original currency | Settled count | Original amount | Provider settled USD debit |
@@ -51,7 +52,7 @@ These are account-level baselines, not the 60-card backfill totals. Production p
 - The absolute value of the negative `txnPrincipalChangeSettledAmount` is stored in `CardSpendEvent.spendUsd`; its currency must be USD.
 - The raw negative provider account change, its USD currency, the positive posted USD amount, and the source field name are retained in allowlisted `rawData`.
 - Missing provider amount fails with `PROVIDER_USD_DEBIT_AMOUNT_MISSING`.
-- Non-string, non-USD, zero, positive, more-than-six-decimal, or out-of-range provider values fail with `PROVIDER_USD_DEBIT_AMOUNT_INVALID`.
+- After the client preserves the official JSON number lexeme, non-string adapter input, non-USD, zero, positive, more-than-six-decimal, or out-of-range provider values fail with `PROVIDER_USD_DEBIT_AMOUNT_INVALID`.
 - Existing identical external IDs are skipped. Any financial or attribution difference fails closed with `PROVIDER_USD_DEBIT_AMOUNT_MISMATCH`; no update branch exists.
 - Refund, refund correction, reversal, void, authorization-only, failed, and non-settled rows do not create positive consumption events.
 - An accounting-excluded card is rejected before event creation and does not increment `failedCount`.
