@@ -1,4 +1,4 @@
-import { isMonthlyLedgerRequest, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
+import { hasSufficientMonthlyCoverage, isMonthlyLedgerRequest, monthlyCoverageRequirement, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import { Prisma, Provider, SyncTaskPlatform, SyncTaskType } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
@@ -27,7 +27,7 @@ export function financeAmounts(income: Prisma.Decimal.Value, spends: Record<stri
 export class MonthlyFinanceService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
-  async read(input: string) {
+  async read(input: string, now = new Date()) {
     const month = parseSettlementMonthParam(input);
     const [accounts, mappings, income, spend, manual, fees, adposFee, settlement, refreshState, employeeRows, sampleCount] = await Promise.all([
       this.prisma.affiliateAccount.findMany({ orderBy: { createdAt: 'asc' }, include: { credential: { select: { status: true } } } }),
@@ -38,7 +38,7 @@ export class MonthlyFinanceService {
       this.prisma.monthlyCardProviderFeeRate.findMany({ where: { settlementMonth: month, status: { in: ['active', 'confirmed'] } } }),
       this.prisma.monthlyAdposFeeRate.findUnique({ where: { settlementMonth: month } }),
       this.prisma.monthlySettlement.findUnique({ where: { settlementMonth: month }, select: { status: true } }),
-      this.status(input),
+      this.status(input, now),
       this.prisma.employee.findMany({ select: { id: true, businessSubId: true } }),
       this.prisma.incomeRecord.count({ where: { settlementMonth: month, rawData: { path: ['fixture'], equals: 'SIMULATED_LOCAL_ONLY' } } }),
     ]);
@@ -91,11 +91,12 @@ export class MonthlyFinanceService {
       totals.profit = D(totals.totalIncome).minus(totals.totalSpend).toString();
       totals.margin = D(totals.totalSpend).isZero() ? null : D(totals.profit).div(totals.totalSpend).times(100).toFixed(2);
     }
-    return { localSample: sampleCount > 0, month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, complete: sources.every(s => s.coveredThrough !== null && s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), ...refreshState };
+    return { localSample: sampleCount > 0, month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, complete: sources.every(s => s.coverageComplete && s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), ...refreshState };
   }
 
-  async status(input: string) {
+  async status(input: string, now = new Date()) {
     const month = parseSettlementMonthParam(input);
+    const requirement = monthlyCoverageRequirement(input, now);
     const [accounts, latestBatch, refreshing] = await Promise.all([
       this.prisma.affiliateAccount.findMany({ where: { status: 'active' }, select: { id: true, accountName: true, accountCode: true } }),
       this.prisma.monthlyRefreshBatch.findFirst({ where: { settlementMonth: month }, orderBy: { createdAt: 'desc' } }),
@@ -110,11 +111,12 @@ export class MonthlyFinanceService {
         this.prisma.syncTask.findFirst({ where: { ...where, ...ordinary, status: 'completed', failedCount: 0, resultPayload: { path: ['monthlyCoverage', 'posted'], equals: true } }, orderBy: [{ finishedAt: 'desc' }, { id: 'desc' }] }),
       ]);
       const coveredThrough = success && isMonthlyLedgerRequest(success.requestPayload) ? readMonthlyCoverage(success.resultPayload, input) : null;
-      const status = !latest ? 'missing' : latest.status === 'completed' && !readMonthlyCoverage(latest.resultPayload, input) ? 'partial' : latest.failedCount > 0 && latest.successCount > 0 ? 'partial' : latest.status;
-      const reason = latest?.lastErrorCategory === 'CREDENTIAL_MISSING' ? '尚未配置有效凭据' : latest?.lastErrorCategory === 'TIMEOUT' ? '来源响应超时' : latest?.lastErrorCategory === 'RATE_LIMITED' ? '来源请求限流' : status === 'partial' ? '缺少完整正式入账证据' : status === 'failed' ? '来源未完成，请重试或查看同步详情' : null;
-      return { ...source, status, reason, coveredThrough, lastSuccessAt: coveredThrough ? success!.finishedAt : null, updatedAt: latest?.finishedAt ?? null };
+      const coverageComplete = hasSufficientMonthlyCoverage(input, coveredThrough, now);
+      const status = !latest ? 'missing' : latest.status === 'completed' && (!coverageComplete || !readMonthlyCoverage(latest.resultPayload, input)) ? 'partial' : latest.failedCount > 0 && latest.successCount > 0 ? 'partial' : latest.status;
+      const reason = latest?.lastErrorCategory === 'CREDENTIAL_MISSING' ? '尚未配置有效凭据' : latest?.lastErrorCategory === 'TIMEOUT' ? '来源响应超时' : latest?.lastErrorCategory === 'RATE_LIMITED' ? '来源请求限流' : status === 'partial' ? coveredThrough && requirement.scope === 'full_month' && !coverageComplete ? '历史月份尚未覆盖至月末，请补刷' : '缺少完整正式入账证据' : status === 'failed' ? '来源未完成，请重试或查看同步详情' : null;
+      return { ...source, status, reason, coveredThrough, coverageComplete, lastSuccessAt: coveredThrough ? success!.finishedAt : null, updatedAt: latest?.finishedAt ?? null };
     }));
-    return { sources, batchId: latestBatch?.id ?? null, refreshing: refreshing > 0, queriedAt: new Date(), coveredThrough: sources.length && sources.every(s => s.coveredThrough) ? new Date(Math.min(...sources.map(s => s.coveredThrough!.getTime()))) : null };
+    return { sources, batchId: latestBatch?.id ?? null, refreshing: refreshing > 0, queriedAt: now, coverageScope: requirement.scope, requiredMonthEnd: requirement.end, coveredThrough: sources.length && sources.every(s => s.coveredThrough) ? new Date(Math.min(...sources.map(s => s.coveredThrough!.getTime()))) : null };
   }
 
   async details(input: string, rowKey: string, pageInput = '1', category = 'income') {

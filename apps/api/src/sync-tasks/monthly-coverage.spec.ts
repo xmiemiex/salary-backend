@@ -1,4 +1,4 @@
-import { monthlyCoverage, readMonthlyCoverage } from './monthly-coverage';
+import { hasSufficientMonthlyCoverage, monthlyCoverage, monthlyCoverageRequirement, readMonthlyCoverage } from './monthly-coverage';
 import { SyncAdapterContext } from './sync-adapter';
 
 describe('monthly posted coverage contract', () => {
@@ -20,5 +20,24 @@ describe('monthly posted coverage contract', () => {
     const proof = monthlyCoverage({ ...context, coverageStartedAt: new Date('2026-09-01') }, 'completed', 0)!;
     expect(proof.through).toBe('2026-01-31T16:00:00.000Z');
     for (const changed of [{ posted: false }, { scope: 'subset' }, { through: '2026-02-01T00:00:00Z' }, { through: 'bad-date' }]) expect(readMonthlyCoverage({ monthlyCoverage: { ...proof, ...changed } }, '2026-01')).toBeNull();
+  });
+});
+
+
+describe('coverage sufficiency at deterministic GMT+8 boundaries', () => {
+  it.each([
+    ['2026-08', '2026-08-31T16:00:00.000Z'],
+    ['2025-12', '2025-12-31T16:00:00.000Z'],
+    ['2024-02', '2024-02-29T16:00:00.000Z'],
+  ])('changes %s snapshots to historical coverage exactly at %s', (month, ending) => {
+    const mid = new Date(`${month}-15T00:00:00Z`), end = new Date(ending);
+    expect(monthlyCoverageRequirement(month, mid).end).toEqual(end);
+    expect(hasSufficientMonthlyCoverage(month, mid, mid)).toBe(true);
+    expect(hasSufficientMonthlyCoverage(month, mid, new Date(end.getTime() - 1))).toBe(true);
+    expect(hasSufficientMonthlyCoverage(month, mid, end)).toBe(false);
+    expect(hasSufficientMonthlyCoverage(month, new Date(end.getTime() - 1), end)).toBe(false);
+    expect(hasSufficientMonthlyCoverage(month, end, end)).toBe(true);
+    expect(hasSufficientMonthlyCoverage(month, end, new Date(end.getTime() + 1))).toBe(true);
+    expect(hasSufficientMonthlyCoverage(month, end, mid)).toBe(false);
   });
 });

@@ -27,3 +27,18 @@ export function readMonthlyCoverage(payload: unknown, month: string) {
   const through = new Date(proof.through);
   return Number.isFinite(through.getTime()) && through > from && through <= end ? through : null;
 }
+
+/** A month-to-date snapshot stops being sufficient when its GMT+8 month ends. */
+export function monthlyCoverageRequirement(month: string, now: Date) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const from = new Date(Date.UTC(year, monthNumber - 1, 1) - 8 * 3600000);
+  const end = new Date(Date.UTC(year, monthNumber, 1) - 8 * 3600000);
+  const scope = now >= end ? 'full_month' : now >= from ? 'month_to_date' : 'future';
+  return { from, end, scope };
+}
+
+export function hasSufficientMonthlyCoverage(month: string, through: Date | null, now: Date) {
+  const { from, end, scope } = monthlyCoverageRequirement(month, now);
+  if (!through || scope === 'future' || through <= from || through > end || through > now) return false;
+  return scope === 'full_month' ? through.getTime() === end.getTime() : true;
+}

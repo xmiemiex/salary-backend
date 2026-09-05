@@ -211,6 +211,53 @@ integration('monthly finance real PostgreSQL (provider adapters explicitly simul
     expect(Math.max(...elapsed)).toBeLessThan(5000); expect(bytes).toBeLessThan(250000); expect(statusBytes).toBeLessThan(10000);
   });
 
+  it.each(['2026-08', '2025-12'])('expires the %s mid-month snapshot at GMT+8 month end, keeps failed refresh data, and accepts a genuine month-end refill', async (selectedMonth) => {
+    const selected = new Date(`${selectedMonth}-01T00:00:00Z`);
+    const midpoint = new Date(`${selectedMonth}-15T00:00:00Z`);
+    const end = new Date(Date.UTC(selected.getUTCFullYear(), selected.getUTCMonth() + 1, 1) - 8 * 3600000);
+    const afterEnd = new Date(end.getTime() + 86400000);
+    // Existing August fixture is retained; use its confirmed amounts as the invariant.
+    await service.saveFees(selectedMonth, { airwallex: '0.03', photonpay: '0.05', adpos: '0.02' }, actor);
+    if (selectedMonth === '2025-12') await db.incomeRecord.create({ data: { settlementMonth: selected, employeeId: employee, source: 'snapshot-fixture', incomeUsd: '200', status: 'confirmed' } });
+    // Isolate task chronology from earlier cases in this disposable schema; ledger rows remain unchanged.
+    await db.syncTask.updateMany({ where: { settlementMonth: selected }, data: { status: 'cancelled' } });
+    const batch = await service.refresh(selectedMonth, actor);
+    const tasks = await db.syncTask.findMany({ where: { refreshBatchId: batch.batchId! } });
+    const context = { settlementMonth: selected, coverageStartedAt: midpoint } as any;
+    const proof = monthlyCoverage(context, 'completed', 0)!;
+    const order = Date.now() + 10000;
+    for (const task of tasks) await db.syncTask.update({ where: { id: task.id }, data: { status: 'completed', failedCount: 0, createdAt: new Date(order), finishedAt: midpoint, resultPayload: { monthlyCoverage: proof } } });
+    const current = await service.read(selectedMonth, midpoint);
+    expect(current.complete).toBe(true);
+    expect(current.coverageScope).toBe('month_to_date');
+    expect(current.coveredThrough).toEqual(midpoint);
+    expect((await service.read(selectedMonth, new Date(end.getTime() - 1))).complete).toBe(true);
+    const historical = await service.read(selectedMonth, end);
+    expect(historical.complete).toBe(false);
+    expect(historical.coverageScope).toBe('full_month');
+    expect(historical.sources.every(source => source.status === 'partial' && source.reason?.includes('月末'))).toBe(true);
+    expect(historical.coveredThrough).toEqual(midpoint);
+    expect(historical.totals).toEqual(current.totals);
+    for (const task of tasks) await db.syncTask.create({ data: { settlementMonth: selected, sourceType: task.sourceType, taskType: task.taskType, platform: task.platform, provider: task.provider, affiliateAccountId: task.affiliateAccountId, status: 'failed', failedCount: 1, lastErrorCategory: 'TIMEOUT', createdAt: new Date(order + 1000), finishedAt: afterEnd, requestPayload: { settlementMonth: selectedMonth } } });
+    const failed = await service.read(selectedMonth, afterEnd);
+    expect(failed.complete).toBe(false);
+    expect(failed.sources.every(source => source.status === 'failed')).toBe(true);
+    expect(failed.coveredThrough).toEqual(midpoint);
+    expect(failed.totals).toEqual(current.totals);
+    // A normal dashboard request can schedule the missing tail; no ledger reset is used.
+    await db.monthlyRefreshBatch.update({ where: { id: batch.batchId! }, data: { createdAt: new Date(Date.now() - 60000) } });
+    const refill = await service.refresh(selectedMonth, actor);
+    expect(refill.batchId).not.toBe(batch.batchId);
+    const refillTasks = await db.syncTask.findMany({ where: { refreshBatchId: refill.batchId! } });
+    for (const task of refillTasks) await db.syncTask.update({ where: { id: task.id }, data: { status: 'completed', failedCount: 0, createdAt: new Date(order + 2000), finishedAt: afterEnd, resultPayload: { monthlyCoverage: monthlyCoverage({ ...context, coverageStartedAt: new Date(end.getTime() - 1) }, 'completed', 0) } } });
+    expect((await service.read(selectedMonth, afterEnd)).complete).toBe(false);
+    for (const task of refillTasks) await db.syncTask.update({ where: { id: task.id }, data: { resultPayload: { monthlyCoverage: monthlyCoverage({ ...context, coverageStartedAt: end }, 'completed', 0) } } });
+    const complete = await service.read(selectedMonth, afterEnd);
+    expect(complete.complete).toBe(true);
+    expect(complete.coveredThrough).toEqual(end);
+    expect(complete.totals).toEqual(current.totals);
+  });
+
   it('locked month rejects fees, Adpos and refresh including legacy direct writes', async () => {
     await db.monthlySettlement.create({ data: { settlementMonth: month, status: 'locked' } });
     await expect(service.saveFees('2026-08', { airwallex: '0', photonpay: '0', adpos: '0' }, actor)).rejects.toThrow('锁账');
