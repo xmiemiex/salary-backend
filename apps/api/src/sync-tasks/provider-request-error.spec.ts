@@ -1,7 +1,15 @@
 import { SyncExecutionErrorCategory } from '@prisma/client';
 import { providerFetch, providerHttpError } from './provider-request-error';
+import { withProviderBudget } from './provider-execution-budget';
 
 describe('provider request error classification', () => {
+  it('aborts an exhausted source budget without aborting an independent source', async () => {
+    const hanging = jest.fn((_url, init) => new Promise<Response>((_resolve, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))));
+    const slow = withProviderBudget(20, () => providerFetch(hanging as never, 'slow', new URL('https://example.test'), {}));
+    const independent = withProviderBudget(1000, () => providerFetch(jest.fn().mockResolvedValue(new Response('{}')), 'fast', new URL('https://example.test'), {}));
+    await expect(independent).resolves.toBeInstanceOf(Response);
+    await expect(slow).rejects.toMatchObject({ category: 'TIMEOUT' });
+  });
   it.each([[429, SyncExecutionErrorCategory.RATE_LIMITED], [500, SyncExecutionErrorCategory.PROVIDER_5XX], [503, SyncExecutionErrorCategory.PROVIDER_5XX], [401, SyncExecutionErrorCategory.CREDENTIAL_INVALID], [400, SyncExecutionErrorCategory.BUSINESS_REJECTED]])(
     'classifies HTTP %s', (status, category) => expect(providerHttpError('provider', status).category).toBe(category),
   );

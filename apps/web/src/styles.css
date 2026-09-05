@@ -44,6 +44,8 @@ body {
   min-height: 100vh;
 }
 
+.admin-shell > .ant-layout { min-width: 0; }
+
 .admin-sider {
   overflow: auto;
   border-right: 1px solid #d9dee7;

@@ -58,6 +58,8 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
 
     try {
       cardInventory = await this.inventory.syncProviderWithPayload(Provider.airwallex, context.credential.payload);
+      if (cardInventory.status !== 'completed') failedCount += 1;
+      if (context.requestPayload && typeof context.requestPayload === 'object' && !Array.isArray(context.requestPayload) && (context.requestPayload as Record<string, unknown>).inventoryOnly === true) return this.result(failedCount ? 'failed' : 'completed', cardInventory.discoveredCount, failedCount, window, '卡发现完成', context, cardInventory);
       while (true) {
         const response = await this.client.listCardTransactions({
           credential,
@@ -82,8 +84,9 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
           else failedCount += 1;
         }
 
-        if (!response.hasMore || response.transactions.length === 0 || response.nextPage === null) break;
-        page = response.nextPage;
+        if (response.hasMore && (response.transactions.length === 0 || response.nextPage === null || response.nextPage <= page || page >= 10000)) throw new Error('Airwallex transaction pagination incomplete.');
+        if (!response.hasMore) break;
+        page = response.nextPage!;
       }
     } catch (error) {
       failedCount += 1;

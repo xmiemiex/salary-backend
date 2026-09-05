@@ -16,7 +16,7 @@ export function isAdminMenuItemVisible(
 }
 
 export const ADMIN_MENU: AdminMenuItem[] = [
-  { key: 'dashboard', title: '运营总览', path: '/dashboard' },
+  { key: 'dashboard', title: '月度收支', path: '/dashboard' },
   { key: 'security', title: '个人安全', path: '/security' },
   { key: 'admin-users', title: '管理员账号', path: '/admin-users', permissions: ['admin_users.read'] },
   { key: 'roles', title: '角色与权限', path: '/roles', permissions: ['role.read'] },

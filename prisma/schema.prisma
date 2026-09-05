@@ -208,6 +208,7 @@ model RestoreDrillRecord {
 }
 
 model Employee {
+  businessSubId                   String?                          @unique @map("business_sub_id") @db.VarChar(255)
   id                              String                           @id @default(uuid()) @db.Uuid
   employeeCode                    String                           @unique @map("employee_code") @db.VarChar(64)
   name                            String                           @db.VarChar(128)
@@ -357,8 +358,8 @@ model ProviderEmailAlias {
   employee             Employee     @relation(fields: [employeeId], references: [id])
   matchResolutions     ProviderCardMatchResolution[]
 
-  @@unique([provider, aliasEmailNormalized, validFrom])
-  @@index([provider, aliasEmailNormalized, status, validFrom])
+  @@unique([provider, aliasEmailNormalized, validFrom], map: "provider_email_aliases_provider_alias_email_normalized_valid_fr")
+  @@index([provider, aliasEmailNormalized, status, validFrom], map: "provider_email_aliases_provider_alias_email_normalized_status_v")
   @@index([employeeId, status])
   @@map("provider_email_aliases")
 }
@@ -379,8 +380,8 @@ model ProviderCardAccountingExclusion {
   providerCard   ProviderCard                @relation(fields: [providerCardId], references: [id])
   matchResolutions ProviderCardMatchResolution[]
 
-  @@unique([providerCardId, effectiveFrom])
-  @@index([providerCardId, status, effectiveFrom])
+  @@unique([providerCardId, effectiveFrom], map: "provider_card_accounting_exclusions_provider_card_id_effective_")
+  @@index([providerCardId, status, effectiveFrom], map: "provider_card_accounting_exclusions_provider_card_id_status_eff")
   @@map("provider_card_accounting_exclusions")
 }
 
@@ -404,7 +405,7 @@ model ProviderCardMatchResolution {
   alias               ProviderEmailAlias?     @relation(fields: [aliasId], references: [id], onDelete: SetNull)
   exclusion           ProviderCardAccountingExclusion? @relation(fields: [exclusionId], references: [id], onDelete: SetNull)
 
-  @@index([providerCardId, resolvedAt])
+  @@index([providerCardId, resolvedAt], map: "provider_card_match_resolutions_provider_card_id_resolved_at_id")
   @@index([aliasId])
   @@index([exclusionId])
   @@map("provider_card_match_resolutions")
@@ -495,6 +496,31 @@ model MonthlyCardProviderFeeRate {
 
   @@unique([settlementMonth, provider])
   @@map("monthly_card_provider_fee_rates")
+}
+
+model MonthlyAdposFeeRate {
+  settlementMonth DateTime @id @map("settlement_month") @db.Date
+  feeRate Decimal @map("fee_rate") @db.Decimal(10, 6)
+  createdBy String @map("created_by") @db.Uuid
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("monthly_adpos_fee_rates")
+}
+
+model ProviderInventoryCheckpoint {
+  provider Provider @id
+  credentialFingerprint String @map("credential_fingerprint") @db.VarChar(64)
+  completedThrough DateTime @map("completed_through")
+  @@map("provider_inventory_checkpoints")
+}
+
+model MonthlyRefreshBatch {
+  id String @id @default(uuid()) @db.Uuid
+  settlementMonth DateTime @map("settlement_month") @db.Date
+  requestedBy String @map("requested_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  tasks SyncTask[]
+  @@index([settlementMonth, createdAt])
+  @@map("monthly_refresh_batches")
 }
 
 model CardProviderCredential {
@@ -718,6 +744,8 @@ model Notification {
 }
 
 model SyncTask {
+  refreshBatchId String? @map("refresh_batch_id") @db.Uuid
+  refreshBatch MonthlyRefreshBatch? @relation(fields: [refreshBatchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   id                 String             @id @default(uuid()) @db.Uuid
   sourceType         SyncTaskSourceType @map("source_type")
   taskType           SyncTaskType       @map("task_type")
@@ -749,6 +777,7 @@ model SyncTask {
   unmatchedEvents    SyncUnmatchedEvent[]
 
   @@index([settlementMonth, taskType])
+  @@index([refreshBatchId])
   @@index([platform, status])
   @@index([affiliateAccountId])
   @@index([triggerType, status, nextAttemptAt])

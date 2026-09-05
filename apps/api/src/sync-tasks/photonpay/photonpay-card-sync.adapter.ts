@@ -162,6 +162,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
     try {
       if (!window.previewOnly) {
         cardInventory = await this.inventory.syncProviderWithPayload(Provider.photonpay, context.credential.payload, context.settlementMonth);
+        if (cardInventory.status !== 'completed') failedCount += 1;
+        if (context.requestPayload && typeof context.requestPayload === 'object' && !Array.isArray(context.requestPayload) && (context.requestPayload as Record<string, unknown>).inventoryOnly === true) return { status: failedCount ? 'failed' : 'completed', successCount: cardInventory.discoveredCount, failedCount, message: '卡发现完成', errorMessage: failedCount ? '卡发现尚未完整' : null, resultPayload: { cardInventory } };
       }
       const targetCards = window.historicalBackfillMode
         ? await this.loadHistoricalBackfillCardSets()
@@ -257,7 +259,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
             }
           }
 
-          if (!response.hasMore || response.transactions.length === 0) break;
+          if (response.hasMore && (response.transactions.length === 0 || page >= 10000)) throw new Error('PhotonPay transaction pagination incomplete.');
+          if (!response.hasMore) break;
           page += 1;
         }
       }

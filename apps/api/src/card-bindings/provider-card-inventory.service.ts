@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { assertProviderBudget, withProviderBudget } from '../sync-tasks/provider-execution-budget';
 import { CommonStatus, Prisma, Provider, ProviderCardMatchStatus } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { Actor } from '../auth/auth.types';
@@ -129,17 +131,37 @@ export class ProviderCardInventoryService {
   }
 
   async syncAll(actor: Actor) {
-    const results: CardInventorySyncResult[] = [];
-    for (const provider of [Provider.airwallex, Provider.photonpay]) {
+    return this.enqueueInventory(actor, [Provider.airwallex, Provider.photonpay]);
+  }
+
+  private async enqueueInventory(actor: Actor, providers: Provider[]) {
+    const settlementMonth = currentShanghaiSettlementMonth();
+    return this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`monthly-finance:${settlementMonth.toISOString()}`}, 0))`;
+      const running = await tx.syncTask.findFirst({ where: { provider: { in: providers }, refreshBatchId: { not: null }, status: { in: ['pending', 'running', 'retry_wait'] } } });
+      if (running) return { status: 'pending', batchId: running.refreshBatchId, results: [] };
+      const batch = await tx.monthlyRefreshBatch.create({ data: { settlementMonth, requestedBy: actor.userId } });
+      for (const provider of providers) {
+        const credential = await tx.cardProviderCredential.findUnique({ where: { provider }, select: { status: true } });
+        const configured = credential?.status === 'active';
+        await tx.syncTask.create({ data: { settlementMonth, provider, platform: provider, sourceType: 'card_spend', taskType: provider === 'airwallex' ? 'airwallex_card' : 'photonpay_card', refreshBatchId: batch.id, planningKey: `inventory:${batch.id}:${provider}`, triggerType: 'manual', requestedBy: actor.userId, status: configured ? 'pending' : 'failed', lastErrorCategory: configured ? null : 'CREDENTIAL_MISSING', errorMessage: configured ? null : '尚未配置有效凭据', requestPayload: { inventoryOnly: true } } });
+      }
+      await this.audit.success({ actorUserId: actor.userId, actorRole: actor.roleCode, action: 'provider_card.inventory.enqueued', objectType: 'sync_tasks', objectId: batch.id, afterData: { providers }, changedFields: ['refreshBatchId'] }, tx);
+      return { status: 'pending', batchId: batch.id, results: [] };
+    });
+  }
+
+  async syncAllInline(actor: Actor) {
+    const results = await Promise.all([Provider.airwallex, Provider.photonpay].map(async provider => {
       let payload: unknown;
       try {
         const credential = await this.credentials.getCardProviderCredentialPayload(provider);
         payload = credential.payload;
-        results.push(await this.syncProviderWithPayload(provider, payload));
+        return await withProviderBudget(600_000, () => this.syncProviderWithPayload(provider, payload));
       } catch (error) {
-        results.push(failedResult(provider, error, payload));
+        return failedResult(provider, error, payload);
       }
-    }
+    }));
     await this.audit.success({
       actorUserId: actor.userId,
       actorRole: actor.roleCode,
@@ -155,6 +177,10 @@ export class ProviderCardInventoryService {
   }
 
   async syncProvider(provider: Provider, actor: Actor) {
+    return this.enqueueInventory(actor, [provider]);
+  }
+
+  async syncProviderInline(provider: Provider, actor: Actor) {
     let result: CardInventorySyncResult;
     let payload: unknown;
     try {
@@ -183,9 +209,15 @@ export class ProviderCardInventoryService {
     payload: unknown,
     settlementMonth = currentShanghaiSettlementMonth(),
   ): Promise<CardInventorySyncResult> {
+    const discoveryStartedAt = new Date();
     const result = provider === Provider.airwallex
       ? await this.loadAirwallex(parseAirwallexCredential(payload))
       : await this.loadPhotonPay(parsePhotonPayCredential(payload));
+    if (provider === Provider.airwallex) {
+      const discovered = new Set(result.cards.map(card => card.cardId));
+      const retained = await this.prisma.providerCard.findMany({ where: { provider } });
+      for (const card of retained) if (!discovered.has(card.cardId)) result.cards.push({ cardId: card.cardId, cardholderId: card.cardholderId, email: card.cardholderEmailNormalized, maskedCardNumber: card.maskedCardNumber, nickname: card.nickname, providerStatus: card.providerStatus, sourceCreatedAt: card.sourceCreatedAt, sourceUpdatedAt: card.sourceUpdatedAt });
+    }
     const employees = await this.prisma.employee.findMany({
       select: { id: true, email: true, status: true },
     });
@@ -242,6 +274,7 @@ export class ProviderCardInventoryService {
     };
     const syncedAt = matchingAt;
     for (const card of result.cards) {
+      assertProviderBudget();
       const match = exclusionsByCardId.has(card.cardId)
         ? {
           employeeId: null,
@@ -308,6 +341,10 @@ export class ProviderCardInventoryService {
           sourceUpdatedAt: card.sourceUpdatedAt,
         },
       });
+    }
+    if (provider === Provider.airwallex && !result.partialError && result.invalidCardCount === 0) {
+      const credentialFingerprint = createHash('sha256').update(JSON.stringify(parseAirwallexCredential(payload))).digest('hex');
+      await this.prisma.providerInventoryCheckpoint.upsert({ where: { provider }, create: { provider, credentialFingerprint, completedThrough: discoveryStartedAt }, update: { credentialFingerprint, completedThrough: discoveryStartedAt } });
     }
     return {
       provider,
@@ -380,6 +417,11 @@ export class ProviderCardInventoryService {
   }
 
   private async loadAirwallex(credential: AirwallexCredentialPayload) {
+    const credentialFingerprint = createHash('sha256').update(JSON.stringify(credential)).digest('hex');
+    const checkpoint = await this.prisma.providerInventoryCheckpoint.findUnique({ where: { provider: Provider.airwallex } });
+    const fromDate = checkpoint?.credentialFingerprint === credentialFingerprint
+      ? new Date(Math.max(AIRWALLEX_FIRST_CARD_DATE.getTime(), checkpoint.completedThrough.getTime() - 86_400_000))
+      : AIRWALLEX_FIRST_CARD_DATE;
     const versions = uniqueVersions(credential.apiVersion);
     let selected: string | null | undefined;
     let lastError: unknown;
@@ -400,7 +442,7 @@ export class ProviderCardInventoryService {
     const cardsById = new Map<string, AirwallexTransactionRecord>();
     let invalidCardCount = 0;
     const finalTo = new Date();
-    for (let from = new Date(AIRWALLEX_FIRST_CARD_DATE); from <= finalTo;) {
+    for (let from = new Date(fromDate); from <= finalTo;) {
       const to = new Date(Math.min(finalTo.getTime(), from.getTime() + AIRWALLEX_WINDOW_DAYS * 86_400_000 - 1));
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const response = await this.airwallex.listCards({ credential, page, pageSize: PAGE_SIZE, from, to });
@@ -409,7 +451,8 @@ export class ProviderCardInventoryService {
           if (id) cardsById.set(id, card);
           else invalidCardCount += 1;
         }
-        if (!response.hasMore || response.cards.length === 0) break;
+        if (response.hasMore && response.cards.length === 0) throw new Error('Airwallex card pagination returned an incomplete empty page.');
+        if (!response.hasMore) break;
         if (page === MAX_PAGES - 1) throw new Error('Airwallex card pagination exceeded the safety limit.');
       }
       from = new Date(to.getTime() + 1);
@@ -424,7 +467,8 @@ export class ProviderCardInventoryService {
           const id = firstString(holder.cardholder_id, holder.id);
           if (id) holders.set(id, holder);
         }
-        if (!response.hasMore || response.cardholders.length === 0) break;
+        if (response.hasMore && (response.cardholders.length === 0 || page === MAX_PAGES - 1)) throw new Error('Airwallex cardholder pagination incomplete.');
+        if (!response.hasMore) break;
       }
     } catch (error) {
       partialError = safeProviderError(error, credential.apiVersion);

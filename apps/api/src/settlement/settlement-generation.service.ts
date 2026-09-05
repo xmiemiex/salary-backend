@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { applyAdposMonthlyCost } from './adpos-monthly-cost';
 import {
   AttendanceStatus,
   CommonStatus,
@@ -156,7 +157,7 @@ export class SettlementGenerationService {
       }),
       this.prisma.manualCardSpendEntry.findMany({
         where: { settlementMonth, status: SettlementStatus.confirmed },
-        select: { employeeId: true, actualSpendUsd: true, status: true },
+        select: { employeeId: true, actualSpendUsd: true, status: true, providerName: true, settledSpendUsd: true },
       }),
       this.prisma.monthlyCardProviderFeeRate.findMany({
         where: { settlementMonth, status: { in: [...ACTIVE_RATE_STATUSES] } },
@@ -191,7 +192,7 @@ export class SettlementGenerationService {
       exchangeRate,
       incomeRecords,
       apiCardSpendEvents: apiCardSpendEvents as SettlementReadModel['apiCardSpendEvents'],
-      manualCardSpendEntries,
+      manualCardSpendEntries: await applyAdposMonthlyCost(this.prisma, settlementMonth, manualCardSpendEntries),
       cardProviderFeeRates: cardProviderFeeRates as SettlementReadModel['cardProviderFeeRates'],
       groupMembers,
       historicalNegativeProfits,

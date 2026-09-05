@@ -24,11 +24,13 @@ import { SyncPlannerScheduler } from './sync-planner.scheduler';
 import { SyncAutoExecutionController } from './sync-auto-execution.controller';
 import { SyncAutoExecutionService } from './sync-auto-execution.service';
 import { SyncAutoExecutorScheduler } from './sync-auto-executor.scheduler';
+import { DashboardRefreshWorker } from './dashboard-refresh-worker';
 
 @Module({
   imports: [PrismaModule, AuditModule, MonthLockModule, ApiCredentialsModule, SyncUnmatchedEventsModule, CardBindingsModule],
   controllers: [SyncTasksController, SyncPlanningController, SyncAutoExecutionController],
   providers: [
+    DashboardRefreshWorker,
     SyncTasksService,
     SyncPlanningService,
     SyncPlannerScheduler,

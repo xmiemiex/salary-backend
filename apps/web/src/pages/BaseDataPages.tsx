@@ -550,6 +550,12 @@ function ProviderCardsPage() {
       const response = provider
         ? await apiClient.request<ProviderSyncResult>(`/card-bindings/sync/${provider}`, { method: 'POST' })
         : await apiClient.request<{ results: ProviderSyncResult[] }>('/card-bindings/sync', { method: 'POST' });
+      if ('batchId' in response) {
+        messageApi.info('后台卡同步已提交，可在月度收支或同步详情查看进度。收到任务不代表同步完成。');
+        setResults([]);
+        await loadCards(filters);
+        return;
+      }
       const nextResults = provider ? [response as ProviderSyncResult] : (response as { results: ProviderSyncResult[] }).results;
       setResults(nextResults);
       if (nextResults.every((item) => item.status === 'completed')) messageApi.success('卡库存同步完成');

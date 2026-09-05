@@ -97,6 +97,9 @@ export class ApiClient {
     const response = await fetch(`${this.baseURL}${path}`, {
       ...options,
       headers,
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      throw new ApiError(0, 'NETWORK_ERROR', '无法连接服务，请检查网络后重试。已提交的刷新任务可在重新打开页面后查看状态。');
     });
     const payload = await this.readPayload(response);
 

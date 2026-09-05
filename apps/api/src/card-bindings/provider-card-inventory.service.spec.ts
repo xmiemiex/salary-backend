@@ -12,6 +12,7 @@ describe('ProviderCardInventoryService', () => {
 
   beforeEach(() => {
     prisma = {
+      providerInventoryCheckpoint: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockResolvedValue({}) },
       employee: { findMany: jest.fn().mockResolvedValue([]) },
       providerCard: {
         upsert: jest.fn().mockResolvedValue({}),
@@ -29,6 +30,29 @@ describe('ProviderCardInventoryService', () => {
     photonpay = { listCards: jest.fn(), getCardDetail: jest.fn() };
     audit = { success: jest.fn().mockResolvedValue(undefined) };
     service = new ProviderCardInventoryService(prisma, credentials, airwallex, photonpay, audit);
+  });
+
+  it('advances Airwallex discovery only after a complete first historical scan and overlaps subsequent discovery', async () => {
+    airwallex.listCards.mockResolvedValue({ cards: [], hasMore: false });
+    airwallex.listCardholders.mockResolvedValue({ cardholders: [], hasMore: false });
+    const credential = { clientId: 'fixture-client', apiKey: 'fixture-key' };
+    await service.syncProviderWithPayload(Provider.airwallex, credential);
+    const historical = airwallex.listCards.mock.calls.filter((call: any[]) => call[0].from);
+    expect(historical[0][0].from.toISOString()).toBe('2018-01-01T00:00:00.000Z');
+    const checkpoint = prisma.providerInventoryCheckpoint.upsert.mock.calls[0][0].create;
+    prisma.providerInventoryCheckpoint.findUnique.mockResolvedValue(checkpoint);
+    airwallex.listCards.mockClear();
+    await service.syncProviderWithPayload(Provider.airwallex, credential);
+    const incremental = airwallex.listCards.mock.calls.filter((call: any[]) => call[0].from);
+    expect(incremental[0][0].from.getTime()).toBe(checkpoint.completedThrough.getTime() - 86400000);
+    expect(incremental.length).toBeLessThan(historical.length);
+  });
+
+  it('does not advance discovery or delete historical cards when a promised page is empty', async () => {
+    airwallex.listCards.mockResolvedValueOnce({ cards: [], hasMore: false }).mockResolvedValue({ cards: [], hasMore: true });
+    await expect(service.syncProviderWithPayload(Provider.airwallex, { clientId: 'fixture-client', apiKey: 'fixture-key' })).rejects.toThrow('incomplete');
+    expect(prisma.providerInventoryCheckpoint.upsert).not.toHaveBeenCalled();
+    expect(prisma.providerCard.upsert).not.toHaveBeenCalled();
   });
 
   it('does not expose provider card identifiers to narrowly scoped PhotonPay readers', async () => {
@@ -242,7 +266,7 @@ describe('ProviderCardInventoryService', () => {
     }));
     airwallex.listCards.mockRejectedValue(new ProviderRequestError(SyncExecutionErrorCategory.BUSINESS_REJECTED, 'bad request', 400, 'PRODUCT_NOT_ENABLED', 'Issuing unavailable', 'req-air', '2024-02-22'));
     photonpay.listCards.mockResolvedValue({ cards: [], hasMore: false });
-    const response = await service.syncAll(actor());
+    const response = await service.syncAllInline(actor());
     expect(response.status).toBe('partial');
     expect(response.results[0]).toMatchObject({ provider: Provider.airwallex, status: 'external_blocked' });
     expect(response.results[1]).toMatchObject({ provider: Provider.photonpay, status: 'completed' });

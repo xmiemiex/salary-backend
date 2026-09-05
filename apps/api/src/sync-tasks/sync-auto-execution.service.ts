@@ -15,6 +15,7 @@ import { CredentialReaderService } from '../api-credentials/credential-reader.se
 import { PrismaService } from '../prisma/prisma.service';
 import { SyncAdapterResolver } from './sync-adapter-resolver';
 import { readSyncAutoExecutionConfig, retryDelaySeconds } from './sync-auto-execution-config';
+import { withProviderBudget } from './provider-execution-budget';
 
 type ClaimedTask = {
   id: string;
@@ -24,6 +25,7 @@ type ClaimedTask = {
   settlementMonth: Date;
   attemptCount: number;
   recovered: boolean;
+  triggerType?: SyncTaskTriggerType;
 };
 
 const RETRYABLE = new Set<SyncExecutionErrorCategory>([
@@ -58,6 +60,20 @@ export class SyncAutoExecutionService {
     return { claimedCount: tasks.length, disabled: false as const };
   }
 
+  async pollDashboard(now = new Date()) {
+    await this.prisma.$executeRaw`
+      UPDATE sync_tasks t SET status = 'failed', finished_at = ${now}, updated_at = ${now},
+        error_message = '来源凭据已停用或月份已锁账，请检查后重试。', last_error_category = 'BUSINESS_REJECTED'
+      WHERE t.refresh_batch_id IS NOT NULL AND t.status IN ('pending', 'retry_wait') AND (
+        EXISTS (SELECT 1 FROM monthly_settlements m WHERE m.settlement_month = t.settlement_month AND m.status = 'locked') OR
+        (t.source_type = 'affiliate_income' AND NOT EXISTS (SELECT 1 FROM affiliate_account_credentials c JOIN affiliate_accounts a ON a.id = c.affiliate_account_id WHERE c.affiliate_account_id = t.affiliate_account_id AND c.status = 'active' AND a.status = 'active')) OR
+        (t.source_type = 'card_spend' AND NOT EXISTS (SELECT 1 FROM card_provider_credentials c WHERE c.provider = t.provider AND c.status = 'active'))
+      )`;
+    const tasks = await this.claim(now, true);
+    await Promise.all(tasks.map(task => this.executeClaim(task).catch(() => undefined)));
+    return { claimedCount: tasks.length };
+  }
+
   async status(now = new Date()) {
     const [counts] = await this.prisma.$queryRaw<Array<{ active: bigint; pending: bigint; waiting: bigint; failed: bigint }>>`
       SELECT
@@ -88,9 +104,10 @@ export class SyncAutoExecutionService {
     };
   }
 
-  private async claim(now: Date): Promise<ClaimedTask[]> {
+  private async claim(now: Date, dashboard = false): Promise<ClaimedTask[]> {
     const leaseExpiresAt = new Date(now.getTime() + this.config.leaseSeconds * 1000);
     return this.prisma.$transaction(async (tx) => {
+      if (dashboard) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('dashboard-worker-claims', 0))`;
       const tasks = await tx.$queryRaw<ClaimedTask[]>`
         WITH candidates AS (
           SELECT t.id, (t.status = 'running') AS recovered
@@ -98,8 +115,12 @@ export class SyncAutoExecutionService {
           LEFT JOIN affiliate_accounts aa ON aa.id = t.affiliate_account_id
           LEFT JOIN affiliate_account_credentials ac ON ac.affiliate_account_id = aa.id AND ac.status = 'active'
           LEFT JOIN card_provider_credentials cc ON cc.provider = t.provider AND cc.status = 'active'
-          WHERE t.trigger_type = 'scheduled'
+          WHERE ((NOT ${dashboard} AND t.trigger_type = 'scheduled') OR (${dashboard} AND t.trigger_type = 'manual' AND t.refresh_batch_id IS NOT NULL))
             AND t.planning_key IS NOT NULL
+            AND (NOT ${dashboard} OR NOT EXISTS (
+              SELECT 1 FROM sync_tasks busy WHERE busy.id <> t.id AND busy.status = 'running' AND busy.lease_expires_at > ${now}
+                AND (busy.provider = t.provider OR busy.affiliate_account_id = t.affiliate_account_id)
+            ))
             AND t.attempt_count < ${this.config.maxAttempts}
             AND (
               (t.status = 'pending') OR
@@ -116,17 +137,17 @@ export class SyncAutoExecutionService {
             )
           ORDER BY t.created_at, t.id
           FOR UPDATE OF t SKIP LOCKED
-          LIMIT ${this.config.batchSize}
+          LIMIT CASE WHEN ${dashboard} THEN GREATEST(0, ${this.config.batchSize} - (SELECT COUNT(*)::integer FROM sync_tasks busy WHERE busy.status = 'running' AND busy.lease_expires_at > ${now})) ELSE ${this.config.batchSize} END
         ), claimed AS (
           UPDATE sync_tasks t
           SET status = 'running', lease_owner = ${this.instanceId}, lease_expires_at = ${leaseExpiresAt},
               attempt_count = t.attempt_count + 1, last_attempt_at = ${now}, next_attempt_at = NULL,
               started_at = COALESCE(t.started_at, ${now}), finished_at = NULL, updated_at = ${now}
           FROM candidates c WHERE t.id = c.id
-          RETURNING t.id, t.source_type, t.platform, t.provider, t.settlement_month, t.attempt_count, c.recovered
+          RETURNING t.id, t.source_type, t.platform, t.provider, t.settlement_month, t.attempt_count, t.trigger_type, c.recovered
         )
         SELECT id, source_type AS "sourceType", platform::text AS platform, provider,
-               settlement_month AS "settlementMonth", attempt_count AS "attemptCount", recovered
+               settlement_month AS "settlementMonth", attempt_count AS "attemptCount", trigger_type AS "triggerType", recovered
         FROM claimed
       `;
       for (const task of tasks) {
@@ -134,7 +155,7 @@ export class SyncAutoExecutionService {
           action: task.recovered ? 'sync_task.auto.lease_recovered' : 'sync_task.auto.claimed',
           objectType: 'sync_tasks', objectId: task.id, settlementMonth: task.settlementMonth,
           afterData: this.auditSummary(task), changedFields: ['status', 'attemptCount', 'lastAttemptAt'],
-          requestPayload: { triggerType: SyncTaskTriggerType.scheduled },
+          requestPayload: { triggerType: task.triggerType ?? SyncTaskTriggerType.scheduled },
         }, tx);
       }
       return tasks;
@@ -163,13 +184,14 @@ export class SyncAutoExecutionService {
         platform: task.sourceType === SyncTaskSourceType.affiliate_income ? task.affiliateAccount?.platform : task.platform,
         provider: task.provider,
       });
-      const result = await adapter.execute({
+      const result = await withProviderBudget(Math.min(600_000, (this.config.leaseSeconds - 1) * 1000), () => adapter.execute({
         taskId: task.id, sourceType: task.sourceType, taskType: task.taskType, platform: task.platform,
         provider: task.provider ?? undefined, settlementMonth: task.settlementMonth,
-        affiliateAccountId: task.affiliateAccountId ?? undefined, requestedBy: null,
+        affiliateAccountId: task.affiliateAccountId ?? undefined, requestedBy: task.requestedBy,
+        requestPayload: task.requestPayload,
         affiliateAccountCode: task.affiliateAccount?.accountCode ?? credential.affiliateAccountCode,
         credential: { credentialId: credential.credentialId, hasCredential: true, maskedPayload: credential.maskedPayload, payload: credential.payload },
-      });
+      }));
       if (result.status === 'completed') await this.finishSuccess(task.id, claim, result);
       else await this.finishFailure(task.id, claim, result.errorCategory ?? SyncExecutionErrorCategory.BUSINESS_REJECTED, result.errorMessage ?? 'Provider sync failed.', result);
     } catch (error) {
@@ -203,7 +225,7 @@ export class SyncAutoExecutionService {
       if (!updated.count) return;
       await this.audit.success({ action: 'sync_task.auto.succeeded', objectType: 'sync_tasks', objectId: taskId,
         settlementMonth: claim.settlementMonth, afterData: this.auditSummary(claim), changedFields: ['status', 'finishedAt'],
-        requestPayload: { triggerType: SyncTaskTriggerType.scheduled } }, tx);
+        requestPayload: { triggerType: claim.triggerType ?? SyncTaskTriggerType.scheduled } }, tx);
     });
   }
 
@@ -224,7 +246,7 @@ export class SyncAutoExecutionService {
       const action = retry ? 'sync_task.auto.retry_scheduled' : 'sync_task.auto.failed';
       const auditInput = { action, objectType: 'sync_tasks', objectId: taskId, settlementMonth: claim.settlementMonth,
         afterData: { ...this.auditSummary(claim), errorCategory: category, nextAttemptAt }, changedFields: ['status', 'nextAttemptAt', 'lastErrorCategory'],
-        requestPayload: { triggerType: SyncTaskTriggerType.scheduled }, failureReason: category, errorMessage: safeMessage };
+        requestPayload: { triggerType: claim.triggerType ?? SyncTaskTriggerType.scheduled }, failureReason: category, errorMessage: safeMessage };
       if (retry) await this.audit.success(auditInput, tx); else await this.audit.failure(auditInput, tx);
     });
   }
@@ -232,7 +254,7 @@ export class SyncAutoExecutionService {
   private auditSummary(task: ClaimedTask) {
     return { taskId: task.id, settlementMonth: task.settlementMonth.toISOString().slice(0, 10), sourceType: task.sourceType,
       platform: task.sourceType === SyncTaskSourceType.affiliate_income ? task.platform : undefined,
-      provider: task.provider, attemptCount: task.attemptCount, triggerType: SyncTaskTriggerType.scheduled, system: true };
+      provider: task.provider, attemptCount: task.attemptCount, triggerType: task.triggerType ?? SyncTaskTriggerType.scheduled, system: true };
   }
 }
 

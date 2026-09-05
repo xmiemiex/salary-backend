@@ -60,8 +60,8 @@ export function AdminLayout({ actor, currentPath, onNavigate, onLogout, onCurren
         <Layout.Header className="admin-header">
           <Space size={8} wrap>
             <Tag color="blue">{actor.roleCode}</Tag>
-            <Typography.Text>用户：{actor.userId}</Typography.Text>
-            {actor.employeeId ? <Typography.Text type="secondary">员工：{actor.employeeId}</Typography.Text> : null}
+            {currentItem.path !== '/dashboard' && <Typography.Text>用户：{actor.userId}</Typography.Text>}
+            {currentItem.path !== '/dashboard' && actor.employeeId ? <Typography.Text type="secondary">员工：{actor.employeeId}</Typography.Text> : null}
           </Space>
           <Space>
             <NotificationBell actor={actor} onNavigate={onNavigate} />

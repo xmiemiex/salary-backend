@@ -1,83 +1,69 @@
-import { Alert, Button, DatePicker, Descriptions, Empty, List, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, Button, DatePicker, Drawer, Form, Input, InputNumber, Space, Table, Tag, Typography } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiClient, ApiError } from '../lib/api-client';
+import { apiClient } from '../lib/api-client';
 import type { Actor } from '../types/session';
-import { canNavigateDashboardTarget, currentGmt8Month, formatDashboardMoney, formatDashboardTime } from './dashboard-utils';
+import { currentGmt8Month, formatDashboardMoney, formatDashboardTime } from './dashboard-utils';
 
-type Todo = { code: string; severity: 'info' | 'warning' | 'error'; title: string; description: string; count: number; targetPath: string };
-type Overview = {
-  settlementMonth: string;
-  refreshedAt: string;
-  permissions: { sync: boolean; reconciliation: boolean; unmatched: boolean; settlement: boolean };
-  sectionErrors?: Record<string, string>;
-  monthStatus?: { isLocked: boolean; lockedAt: string | null; lockedBy: { id: string; displayName: string } | null; settlementStatus: string; generatedAt: string | null; finalizedAt: string | null; exportedAt: string | null };
-  sync?: { taskCount: number; pendingCount: number; runningCount: number; completedCount: number; failedCount: number; cancelledCount: number; lastSuccessfulSyncAt: string | null; lastFailedSyncAt: string | null; byPlatform: Array<{ platform: string; taskCount: number; statuses: Record<string, number> }> };
-  reconciliation?: Record<'affiliateRevenueUsd' | 'apiCardSpendUsd' | 'manualCardSpendUsd' | 'rawGrossProfitUsd' | 'matchedRevenueUsd' | 'unmatchedRevenueUsd' | 'matchedSpendUsd' | 'unmatchedSpendUsd', string>;
-  unmatched?: { totalCount: number; affiliateIncomeCount: number; cardSpendCount: number; byReason: Record<string, number>; oldestUnresolvedAt: string | null; latestUnresolvedAt: string | null };
-  employeesAndSettlement?: { activeEmployeeCount: number; employeesWithRevenueCount: number; employeesWithSpendCount: number; settlementDetailCount: number; totalSalaryRmb: string; settlementStatus: string };
-  todos: Todo[];
-};
-
-const statusText: Record<string, string> = { not_generated: '未生成', draft: '草稿', confirmed: '已确认', locked: '已锁账', pending: '待执行', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消', not_implemented: '未接入' };
-const severityColor = { info: 'blue', warning: 'orange', error: 'red' } as const;
+type Amounts = { totalIncome: string; otherIncome: string; rawSpend: string; totalSpend: string | null; profit: string | null; margin: string | null; byAffiliate: Record<string, string>; spends: Record<string, string> };
+type Row = Amounts & { key: string; subId: string; subIds: string[]; attributionPending: boolean; missingRates: string[]; otherManualCost: string; details: { category: string; source: string; amount: string; date: string | null }[] };
+type Data = { localSample: boolean; month: string; locked: boolean; columns: { key: string; name: string }[]; rates: Record<string, string | null>; rows: Row[]; totals: Amounts; sources: { key: string; name: string; status: string; reason: string | null; lastSuccessAt: string | null }[]; complete: boolean; refreshing: boolean; batchId: string | null; asOf: string };
+const names: Record<string, string> = { airwallex: 'Airwallex', photonpay: 'PhotonPay', adpos: 'Adpos' };
+const statuses: Record<string, string> = { completed: '已同步', missing: '未同步', pending: '等待刷新', running: '刷新中', retry_wait: '稍后自动重试', failed: '刷新失败', partial: '部分成功', cancelled: '已取消' };
+const money = (value: string | null | undefined) => value == null ? '待填写手续费' : formatDashboardMoney(value);
+const percentToRate = (value: string) => { const [whole, fraction = ''] = value.split('.'); return `${whole.padStart(3, '0').slice(0, -2)}.${whole.padStart(2, '0').slice(-2)}${fraction}`; };
 
 export function DashboardPage({ actor, onNavigate }: { actor: Actor; onNavigate: (path: string) => void }) {
-  const [month, setMonth] = useState(currentGmt8Month);
-  const [data, setData] = useState<Overview | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const requestId = useRef(0);
-
-  const load = useCallback(async (selectedMonth: string) => {
-    const id = ++requestId.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await apiClient.request<Overview>(`/dashboard/overview?settlementMonth=${encodeURIComponent(selectedMonth)}`);
-      if (id === requestId.current) setData(next);
-    } catch (loadError) {
-      if (id === requestId.current) setError(loadError instanceof ApiError ? loadError.message : '运营总览加载失败。');
-    } finally {
-      if (id === requestId.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { void load(month); }, [load, month]);
-  const selectMonth = (_value: unknown, dateString: string | string[]) => setMonth(Array.isArray(dateString) ? dateString[0] : dateString);
-
-  return (
-    <section className="page-section dashboard-page">
-      <div className="data-page-header">
-        <div><Typography.Title level={3}>运营总览</Typography.Title><Typography.Text type="secondary">统一按 GMT+8 结算月份展示</Typography.Text></div>
-        <Space><DatePicker picker="month" value={null} placeholder={month} format="YYYY-MM" allowClear={false} onChange={selectMonth} /><Button loading={loading} onClick={() => void load(month)}>刷新</Button></Space>
-      </div>
-      {error ? <Alert className="data-page-notice" type="error" showIcon message="刷新失败，已保留上次成功数据" description={error} /> : null}
-      {data?.sectionErrors && Object.keys(data.sectionErrors).length ? <Alert className="data-page-notice" type="warning" showIcon message="部分区域加载失败" description={Object.keys(data.sectionErrors).join('、')} /> : null}
-      {!data && loading ? <div className="dashboard-loading"><Spin /></div> : null}
-      {data ? <>
-        <Space className="dashboard-meta" wrap><Tag>{data.settlementMonth}</Tag><Typography.Text type="secondary">最后刷新：{formatDashboardTime(data.refreshedAt)}</Typography.Text></Space>
-        {data.monthStatus ? <DashboardSection title="月份状态"><Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }} items={[
-          { key: 'status', label: '结算状态', children: statusText[data.monthStatus.settlementStatus] ?? data.monthStatus.settlementStatus },
-          { key: 'lock', label: '锁账状态', children: <Tag color={data.monthStatus.isLocked ? 'red' : 'green'}>{data.monthStatus.isLocked ? '已锁账' : '未锁账'}</Tag> },
-          { key: 'generated', label: '生成时间', children: formatDashboardTime(data.monthStatus.generatedAt) },
-          { key: 'finalized', label: '确认时间', children: formatDashboardTime(data.monthStatus.finalizedAt) },
-          { key: 'lockedAt', label: '锁账时间', children: formatDashboardTime(data.monthStatus.lockedAt) },
-          { key: 'lockedBy', label: '锁账人', children: data.monthStatus.lockedBy?.displayName ?? '—' },
-        ]} /></DashboardSection> : null}
-        {data.sync ? <DashboardSection title="数据同步状态"><div className="dashboard-stats">{[
-          ['任务', data.sync.taskCount], ['待执行', data.sync.pendingCount], ['运行中', data.sync.runningCount], ['已完成', data.sync.completedCount], ['失败', data.sync.failedCount], ['已取消', data.sync.cancelledCount],
-        ].map(([title, value]) => <Statistic key={String(title)} title={title} value={value} />)}</div><Table size="small" pagination={false} rowKey="platform" dataSource={data.sync.byPlatform} columns={[
-          { title: '平台 / Provider', dataIndex: 'platform' }, { title: '任务数', dataIndex: 'taskCount' }, { title: '待执行', render: (_, row) => (row.statuses.pending ?? 0) + (row.statuses.not_implemented ?? 0) }, { title: '运行中', render: (_, row) => row.statuses.running ?? 0 }, { title: '完成', render: (_, row) => row.statuses.completed ?? 0 }, { title: '失败', render: (_, row) => row.statuses.failed ?? 0 },
-        ]} /></DashboardSection> : null}
-        {data.reconciliation ? <DashboardSection title="收入与花费核对"><div className="dashboard-stats">{Object.entries({ 联盟收入: data.reconciliation.affiliateRevenueUsd, API卡花费: data.reconciliation.apiCardSpendUsd, 手工卡花费: data.reconciliation.manualCardSpendUsd, 原始毛利: data.reconciliation.rawGrossProfitUsd, 已匹配收入: data.reconciliation.matchedRevenueUsd, 未匹配收入: data.reconciliation.unmatchedRevenueUsd, 已匹配花费: data.reconciliation.matchedSpendUsd, 未匹配花费: data.reconciliation.unmatchedSpendUsd }).map(([title, value]) => <Statistic key={title} title={title} value={formatDashboardMoney(value)} />)}</div></DashboardSection> : null}
-        {data.unmatched ? <DashboardSection title="未匹配事件"><div className="dashboard-stats"><Statistic title="未解决总数" value={data.unmatched.totalCount} /><Statistic title="联盟收入" value={data.unmatched.affiliateIncomeCount} /><Statistic title="卡花费" value={data.unmatched.cardSpendCount} /><Statistic title="最早未解决" value={formatDashboardTime(data.unmatched.oldestUnresolvedAt)} /></div>{Object.keys(data.unmatched.byReason).length ? <Space wrap>{Object.entries(data.unmatched.byReason).map(([reason, count]) => <Tag key={reason}>{reason}: {count}</Tag>)}</Space> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前月份没有未解决事件" />}</DashboardSection> : null}
-        {data.employeesAndSettlement ? <DashboardSection title="员工与工资结算"><div className="dashboard-stats"><Statistic title="在职员工" value={data.employeesAndSettlement.activeEmployeeCount} /><Statistic title="有收入员工" value={data.employeesAndSettlement.employeesWithRevenueCount} /><Statistic title="有花费员工" value={data.employeesAndSettlement.employeesWithSpendCount} /><Statistic title="结算明细" value={data.employeesAndSettlement.settlementDetailCount} /><Statistic title="正式工资合计" value={formatDashboardMoney(data.employeesAndSettlement.totalSalaryRmb, 'RMB')} /></div></DashboardSection> : null}
-        <DashboardSection title="管理员待办"><List locale={{ emptyText: '当前月份没有待办预警' }} dataSource={data.todos} renderItem={(item) => <List.Item actions={canNavigateDashboardTarget(actor, item.targetPath) ? [<Button key="go" type="link" onClick={() => onNavigate(item.targetPath)}>去处理</Button>] : []}><List.Item.Meta avatar={<Tag color={severityColor[item.severity]}>{item.severity}</Tag>} title={`${item.title}${item.count > 0 ? ` (${item.count})` : ''}`} description={item.description} /></List.Item>} /></DashboardSection>
-      </> : !loading ? <Empty description="暂无总览数据" /> : null}
-    </section>
-  );
-}
-
-function DashboardSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="dashboard-section"><Typography.Title level={5}>{title}</Typography.Title>{children}</div>;
+  const [month, setMonth] = useState(currentGmt8Month());
+  const [data, setData] = useState<Data | null>(null);
+  const [loading, setLoading] = useState(false), [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const [panel, setPanel] = useState<'fees' | 'detail' | 'adpos' | 'sub' | null>(null);
+  const [row, setRow] = useState<Row | null>(null), [amount, setAmount] = useState('0'), [unifiedSub, setUnifiedSub] = useState('');
+  const [feeInputs, setFeeInputs] = useState<Record<string, string | null>>({});
+  const sequence = useRef(0), currentMonth = useRef(month);
+  const canRefresh = actor.permissions.includes('income.import') && actor.permissions.includes('manual_card_spend.manage');
+  const load = useCallback(async () => {
+    const request = ++sequence.current; setLoading(true);
+    try { const next = await apiClient.request<Data>(`/dashboard/monthly?settlementMonth=${month}`); if (request === sequence.current && currentMonth.current === month) { setData(next); setError(''); } }
+    catch (e) { if (request === sequence.current) setError(e instanceof Error ? e.message : '读取失败，已保留上次成功数据'); }
+    finally { if (request === sequence.current) setLoading(false); }
+  }, [month]);
+  useEffect(() => { void load(); return () => { sequence.current++; }; }, [load]);
+  useEffect(() => { if (!data?.refreshing) return; const timer = setTimeout(() => { void load(); }, 2000); return () => clearTimeout(timer); }, [data, load]);
+  const selectMonth = (_: unknown, text: string | string[]) => { if (typeof text !== 'string' || !text) return; currentMonth.current = text; sequence.current++; setMonth(text); setData(null); setPanel(null); setRow(null); setError(''); };
+  const post = async (path: string, payload: object) => {
+    const submittedMonth = month; setSaving(true); setError('');
+    try { await apiClient.request(`/dashboard/monthly/${path}`, { method: 'POST', body: JSON.stringify({ settlementMonth: submittedMonth, ...payload }) }); if (currentMonth.current === submittedMonth) { setPanel(null); await load(); } }
+    catch (e) { if (currentMonth.current === submittedMonth) setError(e instanceof Error ? e.message : '保存失败，请重试'); }
+    finally { setSaving(false); }
+  };
+  const openFees = () => { setFeeInputs(Object.fromEntries(Object.entries(data?.rates ?? {}).map(([k, v]) => [k, v == null ? null : String(Number(v) * 100)]))); setPanel('fees'); };
+  const detail = (r: Row) => { setRow(r); setPanel('detail'); };
+  const numberColumn = (title: string, get: (r: Row) => string | null, width = 145, sourceKey?: string): ColumnsType<Row>[number] => ({ title, align: 'right', width, render: (_, r) => <button className="finance-money" onClick={() => detail(r)}>{sourceKey && get(r) === '0' && !data?.sources.find(s => s.key === sourceKey)?.lastSuccessAt ? '待同步' : money(get(r))}</button> });
+  const columns: ColumnsType<Row> = [
+    { title: 'SUB ID', key: 'sub', fixed: 'left', width: 158, render: (_, r) => <Button type="text" onClick={() => detail(r)}>{r.subId}</Button> },
+    { title: '收入 · USD', className: 'finance-income-head', children: [...(data?.columns ?? []).map(c => numberColumn(`${c.name}收入`, r => r.byAffiliate[c.key] ?? '0', 145, c.key)), numberColumn('其他手动收入', r => r.otherIncome), numberColumn('总收入', r => r.totalIncome)] },
+    { title: '花费 · USD', className: 'finance-cost-head', children: [numberColumn('Airwallex 原始花费', r => r.spends.airwallex, 165, 'airwallex'), numberColumn('PhotonPay 原始花费', r => r.spends.photonpay, 175, 'photonpay'),
+      { title: 'Adpos 原始花费', align: 'right', width: 160, render: (_, r) => <Space><button className="finance-money" onClick={() => detail(r)}>{money(r.spends.adpos)}</button>{actor.permissions.includes('manual_card_spend.manage') && <Button size="small" type="text" disabled={data?.locked || r.attributionPending} onClick={() => { setRow(r); setAmount(r.spends.adpos); setPanel('adpos'); }}>编辑</Button>}</Space> },
+      numberColumn('未含手续费总花费', r => r.rawSpend, 175), numberColumn('含手续费总花费', r => r.totalSpend, 175)] },
+    { title: '利润 · USD', className: 'finance-profit-head', children: [numberColumn('毛利', r => r.profit), { title: '毛利率', align: 'right', width: 120, render: (_, r) => r.margin == null ? '—' : `${r.margin}%` }] },
+  ];
+  const totalValues = data ? [...data.columns.map(c => data.totals.byAffiliate[c.key] ?? '0'), data.totals.otherIncome, data.totals.totalIncome, data.totals.spends.airwallex, data.totals.spends.photonpay, data.totals.spends.adpos, data.totals.rawSpend, data.totals.totalSpend, data.totals.profit] : [];
+  if (!actor.permissions.includes('salary.view_all')) return <Alert type="info" message="当前账号没有月度收支查看权限。" />;
+  return <section className="monthly-finance">
+    <div className="finance-toolbar"><Typography.Title level={3}>月度收支</Typography.Title><Space wrap><DatePicker picker="month" allowClear={false} placeholder={month} onChange={selectMonth} disabled={saving} />{canRefresh && <Button type="primary" loading={loading || saving || data?.refreshing} disabled={data?.locked} onClick={() => void post('refresh', {})}>刷新数据</Button>}{actor.permissions.includes('card_provider_fee_rate.manage') && <Button onClick={openFees}>本月手续费</Button>}</Space></div>
+    <div className="finance-status"><Space wrap>{data?.localSample && <Tag color="blue">本地模拟样例</Tag>}<Tag color={data?.complete ? 'green' : 'orange'}>{data?.refreshing ? '正在刷新数据' : data?.complete ? '数据已同步' : '数据尚不完整'}</Tag>{data?.locked && <Tag>已锁账</Tag>}<span>{month === currentGmt8Month() ? '本月截至' : '查询时间'} {formatDashboardTime(data?.asOf ?? null)} · GMT+8</span><Button type="link" size="small" onClick={() => onNavigate('/data-sync')}>同步详情</Button></Space></div>
+    {error && <Alert showIcon type="error" message={error} description="已保留上次成功数据。连接恢复后可重试；刷新任务状态可在重新打开页面后恢复。" />}
+    {data && <><div className="finance-source-line">{data.sources.map(s => <Space key={s.key} size={4}><span>{s.name}</span><Tag color={s.status === 'completed' ? 'green' : ['failed','partial'].includes(s.status) ? 'red' : 'default'}>{statuses[s.status] ?? s.status}</Tag>{s.reason && <span>{s.reason}</span>}{s.status !== 'completed' && s.lastSuccessAt && <span>上次成功 {formatDashboardTime(s.lastSuccessAt)}</span>}{canRefresh && ['failed','partial'].includes(s.status) && <Button type="link" size="small" disabled={data.locked || data.refreshing || saving} onClick={() => void post('refresh', { source: s.key })}>重试</Button>}</Space>)}</div>
+    {data.rows.some(r => r.attributionPending) && <Alert type="warning" message="部分归属尚未设置统一 SUB ID，点击对应行可设置。" />}{data.rows.some(r => r.otherManualCost !== '0') && <Alert type="info" message="总花费包含历史其他手动平台花费，点击金额查看来源。" />}
+    <Table<Row> className="finance-table" size="middle" bordered pagination={false} loading={loading} rowKey="key" columns={columns} dataSource={data.rows} scroll={{ x: 'max-content' }} locale={{ emptyText: '本月暂无账目，点击刷新数据获取已配置来源。' }} summary={() => <Table.Summary fixed><Table.Summary.Row><Table.Summary.Cell index={0}><strong>合计{!data.complete ? '（不完整）' : ''}</strong></Table.Summary.Cell>{totalValues.map((value, i) => <Table.Summary.Cell key={i} index={i+1} align="right"><strong>{money(value)}</strong></Table.Summary.Cell>)}<Table.Summary.Cell index={totalValues.length+1} align="right"><strong>{data.totals.margin == null ? '—' : `${data.totals.margin}%`}</strong></Table.Summary.Cell></Table.Summary.Row></Table.Summary>} />
+    <div className="finance-footnote">金额 USD · 仅含已确认收入与已结算消费 · 毛利率按含手续费花费计算</div></>}
+    <Drawer title={panel === 'fees' ? `${month} · 本月手续费` : panel === 'adpos' ? `${row?.subId} · Adpos 原始花费` : panel === 'sub' ? '统一 SUB ID' : `${row?.subId ?? ''} · 来源明细`} open={panel !== null} onClose={() => !saving && setPanel(null)} width={520} destroyOnClose>
+      {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
+      {panel === 'fees' && <Form layout="vertical"><Typography.Paragraph type="secondary">仅保存到 {month}。0% 合法，未填表示待填写。</Typography.Paragraph>{Object.entries(names).map(([key, name]) => <Form.Item key={key} label={`${name} 费率`} required><InputNumber<string> stringMode min="0" max="100" precision={4} value={feeInputs[key]} addonAfter="%" placeholder="待填写" disabled={data?.locked || saving} onChange={v => setFeeInputs(prev => ({ ...prev, [key]: v }))} style={{ width: '100%' }} /></Form.Item>)}<Space><Button disabled={saving || data?.locked} onClick={async () => { const m = new Date(`${month}-01T00:00:00Z`); m.setUTCMonth(m.getUTCMonth()-1); const selected = month; try { const prior = await apiClient.request<Data>(`/dashboard/monthly?settlementMonth=${m.toISOString().slice(0,7)}`); if (currentMonth.current === selected) setFeeInputs(Object.fromEntries(Object.entries(prior.rates).map(([k,v]) => [k,v == null ? null : String(Number(v)*100)]))); } catch { setError('读取上月手续费失败。'); } }}>复制上月</Button><Button onClick={() => setPanel(null)}>取消</Button><Button type="primary" loading={saving} disabled={data?.locked || Object.keys(names).some(k => feeInputs[k] == null || feeInputs[k] === '')} onClick={() => void post('fees', { rates: Object.fromEntries(Object.keys(names).map(k => [k, percentToRate(feeInputs[k]!)])) })}>保存本月费率</Button></Space></Form>}
+      {panel === 'adpos' && <Form layout="vertical"><Form.Item label={`${month} · 原始花费 USD`}><InputNumber<string> stringMode min="0" precision={6} value={amount} onChange={v => setAmount(v ?? '')} style={{ width: '100%' }} /></Form.Item><Space><Button onClick={() => setPanel(null)}>取消</Button><Button type="primary" loading={saving} disabled={!amount} onClick={() => void post('adpos', { subId: row?.subId, amount })}>保存花费</Button></Space></Form>}
+      {panel === 'sub' && <Form layout="vertical"><Form.Item label="统一 SUB ID"><Input value={unifiedSub} onChange={e => setUnifiedSub(e.target.value)} maxLength={255} /></Form.Item><Typography.Paragraph>原始 SUB ID：{row?.subIds.join('、') || '暂无'}。这些联盟收入和卡成本将统一展示。</Typography.Paragraph><Space><Button onClick={() => setPanel('detail')}>取消</Button><Button type="primary" loading={saving} disabled={!unifiedSub.trim()} onClick={() => void post('sub-id', { rowKey: row?.key, subId: unifiedSub })}>保存统一标识</Button></Space></Form>}
+      {panel === 'detail' && row && <><Typography.Paragraph>原始联盟 SUB ID：{row.subIds.join('、') || '待确认'}</Typography.Paragraph>{actor.permissions.includes('sub_id_mapping.manage') && <Button disabled={data?.locked || row.key === 'unassigned'} onClick={() => { setUnifiedSub(row.attributionPending ? '' : row.subId); setPanel('sub'); }}>设置统一 SUB ID</Button>}<Table size="small" pagination={{ pageSize: 10 }} rowKey={(_, i) => String(i)} dataSource={row.details} columns={[{ title: '来源', dataIndex: 'source' }, { title: '发生时间', dataIndex: 'date', render: value => formatDashboardTime(value) }, { title: 'USD', dataIndex: 'amount', align: 'right', render: money }]} /></>}
+    </Drawer>
+  </section>;
 }

@@ -1,6 +1,8 @@
 import { Prisma, SyncExecutionErrorCategory } from '@prisma/client';
+import { assertProviderBudget, providerBudgetSignal } from './provider-execution-budget';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const nextProviderRequestAt = new Map<string, number>();
 
 export class ProviderRequestError extends Error {
   constructor(
@@ -19,7 +21,15 @@ export class ProviderRequestError extends Error {
 
 export async function providerFetch(fetchImpl: typeof fetch, provider: string, input: URL, init: RequestInit): Promise<Response> {
   let response: Response;
-  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  assertProviderBudget();
+  const executionSignal = providerBudgetSignal();
+  if (executionSignal) {
+    const now = Date.now(), wait = Math.max(0, (nextProviderRequestAt.get(provider) ?? 0) - now);
+    nextProviderRequestAt.set(provider, now + wait + 250);
+    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    assertProviderBudget();
+  }
+  const signal = executionSignal ? AbortSignal.any([executionSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   try {
     response = await fetchImpl(input, { ...init, signal });
   } catch (error) {
