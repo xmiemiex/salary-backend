@@ -10,6 +10,8 @@ const hash = x => createHash('sha256').update(JSON.stringify(x)).digest('hex');
  const mode = process.argv[2] || 'verify';
  if (mode === 'setup') {
    assert.equal(await db.manualCardSpendEntry.count(), 0, 'Do not overwrite existing manual data');
+   assert.equal(await db.monthlyCardProviderFeeRate.count(), 0, 'Do not overwrite imported fee rates');
+   assert.equal(await db.monthlyAdposFeeRate.count(), 0, 'Do not overwrite imported Adpos rates');
    const employee = await db.employee.findFirstOrThrow({ where: { subIdMappings: { some: {} } }, orderBy: { employeeCode: 'asc' } });
    assert.ok((await post('sub-id', { settlementMonth: month, rowKey: employee.id, subId: 'LIVE-VALIDATION-001' })).ok);
    assert.ok((await post('fees', { settlementMonth: month, rates: { airwallex: '0.03', photonpay: '0.03', adpos: '0.035' } })).ok);

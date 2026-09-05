@@ -71,6 +71,8 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     await page.getByRole('button', { name: /登\s*录/ }).click();
     const picker = page.locator('.ant-picker input'); await expect(picker).toBeVisible(); await picker.fill('2026-09'); await picker.press('Enter');
     await expect(page.getByRole('button', { name: 'SUB-101', exact: true })).toBeVisible().catch(async error => { console.log(await page.locator('body').innerText()); await page.screenshot({ path: path.join(output, 'failure.png') }); throw error; });
+    // Screenshot animation suppression can retain a zero-size loading icon in the accessible name.
+    const clickRefresh = async () => { const button = page.getByRole('button', { name: /刷新数据/ }); await expect(button).not.toHaveClass(/(?:^|\s)ant-btn-loading(?:\s|$)/); await expect(button).toBeEnabled(); await button.click(); };
     const screenshots = [];
     for (const width of [1366, 1440, 1920]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -96,7 +98,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     await expect(page.locator('.ant-drawer .ant-pagination-item-2')).toHaveClass(/active/);
     await page.screenshot({ path: path.join(output, 'details-page-2.png'), fullPage: true, animations: 'disabled' });
     await page.getByRole('button', { name: 'Close', exact: true }).click(); await expect(page.locator('.ant-drawer')).toHaveCount(0);
-    await page.getByRole('button', { name: '刷新数据', exact: true }).click().catch(async error => { console.log(await page.locator('body').innerText()); await page.screenshot({ path: path.join(output, 'failure-refresh.png') }); throw error; });
+    await clickRefresh();
     await expect(page.getByText('刷新失败', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('尚未完整覆盖', { exact: false })).toBeVisible();
     // Historical mid-month proof must remain visible but cannot certify the whole month.
@@ -111,7 +113,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     await expect(page.locator('.finance-table tbody tr.ant-table-row').getByText('$200.00', { exact: true })).toHaveCount(3);
     const historicalFile = 'historical-month-incomplete.png';
     await page.screenshot({ path: path.join(output, historicalFile), fullPage: true, animations: 'disabled' }); screenshots.push(historicalFile);
-    await page.getByRole('button', { name: '刷新数据', exact: true }).click();
+    await clickRefresh();
     await expect(page.getByText('刷新失败', { exact: true })).toHaveCount(8);
     await expect(page.locator('.finance-table tbody tr.ant-table-row').getByText('$200.00', { exact: true })).toHaveCount(3);
     await expect(page.getByText('整月已覆盖', { exact: true })).toHaveCount(0);

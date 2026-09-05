@@ -1,0 +1,507 @@
+{
+  "applicationCandidate": "122412478d6b46e6046a79476e1d9f8921bc453c",
+  "applicationChangesUncommitted": false,
+  "recordedAt": "2026-09-05T17:14:38.700Z",
+  "month": "2026-08",
+  "productionWrites": false,
+  "deployed": false,
+  "automaticScheduling": false,
+  "sources": [
+    {
+      "source": "A01",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 3,
+      "error": null,
+      "finishedAt": "2026-09-05T17:05:56.951Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": null,
+      "counts": {
+        "pulledCount": 4,
+        "attemptCount": 3,
+        "unmatchedCount": 0,
+        "attributedCount": 1,
+        "zeroRevenueCount": 3,
+        "aggregateRowCount": 4,
+        "positiveRevenueCount": 1
+      },
+      "providerUsdDebitAmountTotal": null,
+      "ledgerCount": 1,
+      "ledgerHash": "5742643a7f30803eca7cf5dbf74690010b1a1e2be32ee04a45de252d023899b4",
+      "history": [
+        {
+          "status": "failed",
+          "attempts": 1,
+          "error": "BUSINESS_REJECTED",
+          "started": "2026-09-05T14:03:59.789Z",
+          "finished": "2026-09-05T14:04:01.412Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:09:50.504Z",
+          "finished": "2026-09-05T16:09:57.198Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:10:50.957Z",
+          "finished": "2026-09-05T16:10:55.833Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 3,
+          "error": null,
+          "started": "2026-09-05T16:50:38.109Z",
+          "finished": "2026-09-05T17:05:56.951Z"
+        }
+      ]
+    },
+    {
+      "source": "A02",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 1,
+      "error": null,
+      "finishedAt": "2026-09-05T16:50:45.668Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": null,
+      "counts": {
+        "pulledCount": 16,
+        "attemptCount": 1,
+        "unmatchedCount": 0,
+        "attributedCount": 0,
+        "zeroRevenueCount": 16,
+        "aggregateRowCount": 16,
+        "positiveRevenueCount": 0
+      },
+      "providerUsdDebitAmountTotal": null,
+      "ledgerCount": 0,
+      "ledgerHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "history": [
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T14:03:59.799Z",
+          "finished": "2026-09-05T14:04:04.838Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:10:50.963Z",
+          "finished": "2026-09-05T16:10:58.506Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:50:38.115Z",
+          "finished": "2026-09-05T16:50:45.668Z"
+        }
+      ]
+    },
+    {
+      "source": "A03",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 1,
+      "error": null,
+      "finishedAt": "2026-09-05T16:50:47.436Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": null,
+      "counts": {
+        "pulledCount": 6,
+        "attemptCount": 1,
+        "unmatchedCount": 0,
+        "attributedCount": 4,
+        "providerRowCount": 6,
+        "zeroRevenueCount": 2,
+        "aggregateRowCount": 6,
+        "positiveRevenueCount": 4
+      },
+      "providerUsdDebitAmountTotal": null,
+      "ledgerCount": 4,
+      "ledgerHash": "b49cdd170f267bfe41dccb6e41e9ce79e61722604bb259a839fb12e3090ddb85",
+      "history": [
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T14:03:59.803Z",
+          "finished": "2026-09-05T14:04:06.909Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:10:50.965Z",
+          "finished": "2026-09-05T16:11:01.455Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:50:38.117Z",
+          "finished": "2026-09-05T16:50:47.436Z"
+        }
+      ]
+    },
+    {
+      "source": "A04",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 1,
+      "error": null,
+      "finishedAt": "2026-09-05T16:50:50.488Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": null,
+      "counts": {
+        "pulledCount": 5,
+        "attemptCount": 1,
+        "unmatchedCount": 0,
+        "attributedCount": 4,
+        "providerRowCount": 5,
+        "zeroRevenueCount": 1,
+        "aggregateRowCount": 5,
+        "positiveRevenueCount": 4
+      },
+      "providerUsdDebitAmountTotal": null,
+      "ledgerCount": 4,
+      "ledgerHash": "e44f20c50dc74d38043c2238edced3ac7851edd2d2fe30557fb6a47bd406f09f",
+      "history": [
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T14:03:59.806Z",
+          "finished": "2026-09-05T14:04:09.282Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:10:50.966Z",
+          "finished": "2026-09-05T16:11:04.559Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:50:38.119Z",
+          "finished": "2026-09-05T16:50:50.488Z"
+        }
+      ]
+    },
+    {
+      "source": "airwallex",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 1,
+      "error": null,
+      "finishedAt": "2026-09-05T16:51:02.932Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": {
+        "toCreatedDate": "2026-09-10T16:00:00.000Z",
+        "fromCreatedDate": "2026-07-31T16:00:00.000Z"
+      },
+      "counts": {
+        "failedCount": 0,
+        "attemptCount": 1,
+        "successCount": 20
+      },
+      "providerUsdDebitAmountTotal": null,
+      "ledgerCount": 20,
+      "ledgerHash": "d3409756f6bd8c44ef38366c1cdad74b5dee5abaeb935968264df5e14d859106",
+      "history": [
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T14:03:59.808Z",
+          "finished": "2026-09-05T14:05:16.755Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:10:50.968Z",
+          "finished": "2026-09-05T16:11:17.321Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:50:38.120Z",
+          "finished": "2026-09-05T16:51:02.932Z"
+        }
+      ]
+    },
+    {
+      "source": "photonpay",
+      "real": true,
+      "latestStatus": "completed",
+      "attempts": 1,
+      "error": null,
+      "finishedAt": "2026-09-05T16:56:48.764Z",
+      "coverage": {
+        "from": "2026-07-31T16:00:00.000Z",
+        "month": "2026-08",
+        "scope": "all_accounts_cards",
+        "posted": true,
+        "through": "2026-08-31T16:00:00.000Z",
+        "version": 1
+      },
+      "requestWindow": {
+        "to": "2026-09-05T16:50:52.167Z",
+        "from": "2026-07-31T16:00:00.000Z"
+      },
+      "counts": {
+        "failedCount": 0,
+        "attemptCount": 1,
+        "createdCount": 0,
+        "skippedCount": 5340,
+        "successCount": 5340,
+        "updatedCount": 0,
+        "targetCardCount": 0,
+        "outOfWindowCount": 4879,
+        "missingCardIdCount": 0,
+        "nonUsdSettledCount": 2616,
+        "amountMismatchCount": 0,
+        "previewExistingCount": 0,
+        "ownershipFailureCount": 0,
+        "duplicateBoundaryCount": 0,
+        "settledTransactionCount": 5340,
+        "providerTransactionCount": 12057,
+        "missingTransactionAtCount": 0,
+        "nonSettledTransactionCount": 1835,
+        "settledConvertedToUsdCount": 2616,
+        "settledUsdTransactionCount": 2724,
+        "missingExternalEventIdCount": 0,
+        "previewExpectedCreatedCount": 0,
+        "excludedCardTransactionCount": 0,
+        "nonTargetCardTransactionCount": 0,
+        "targetSettledTransactionCount": 5340,
+        "nonSpendSettledTransactionCount": 3,
+        "invalidProviderUsdDebitAmountCount": 0,
+        "missingProviderUsdDebitAmountCount": 0
+      },
+      "providerUsdDebitAmountTotal": "36096.62",
+      "ledgerCount": 5340,
+      "ledgerHash": "8a8a7e1561dfe9605c6175e59a6d954944c59c9bfa2fbd697e43126936f86fc1",
+      "history": [
+        {
+          "status": "failed",
+          "attempts": 3,
+          "error": "TIMEOUT",
+          "started": "2026-09-05T14:03:59.813Z",
+          "finished": "2026-09-05T14:22:55.135Z"
+        },
+        {
+          "status": "failed",
+          "attempts": 3,
+          "error": "TIMEOUT",
+          "started": "2026-09-05T16:10:50.970Z",
+          "finished": "2026-09-05T16:38:26.139Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 2,
+          "error": null,
+          "started": "2026-09-05T16:39:00.045Z",
+          "finished": "2026-09-05T16:44:22.673Z"
+        },
+        {
+          "status": "completed",
+          "attempts": 1,
+          "error": null,
+          "started": "2026-09-05T16:50:38.123Z",
+          "finished": "2026-09-05T16:56:48.764Z"
+        }
+      ]
+    }
+  ],
+  "cakeBusinessRule": "Provider-native monthly commission plus confirmed manual GMT+8 adjustment; user confirmed 2026-09-06",
+  "independentPortalReconciled": false,
+  "cakeAdjustment": {
+    "at": "2026-09-05T17:00:20.818Z",
+    "source": "A03",
+    "syntheticAdjustments": true,
+    "positiveUsd": "12.34",
+    "negativeUsd": "-5.67",
+    "netAdjustmentUsd": "6.67",
+    "confirmedRows": 2,
+    "dashboardIncludesBasePlusAdjustment": true,
+    "hash": "bbb8eefb78f7b1264701ece754d33aaac3eb209b1308a4f63f1256cf6ca9f04e",
+    "unchangedAfterRefresh": true
+  },
+  "manualBehavior": {
+    "at": "2026-09-05T17:00:20.463Z",
+    "syntheticFixture": true,
+    "realProviderLedger": true,
+    "unifiedEmployeeRows": 1,
+    "cardSpendMatchesEmployeeAggregate": true,
+    "preservedAdposUsd": "100",
+    "feeHash": "7362b56cde17146857f9bfdfa1f16659488de0febe03b682ed2135cff00d3897",
+    "manualHash": "0220416bed8d66aeeda28670ef3b9767d8df09baca42a4054ea3bf61c56612f7",
+    "roi": "325.40",
+    "preservedAfterRefresh": true,
+    "lockHttpStatuses": [
+      409,
+      409,
+      409,
+      409
+    ]
+  },
+  "browser": {
+    "at": "2026-09-05T17:00:24.220Z",
+    "url": "http://localhost:5191",
+    "month": "2026-08",
+    "browser": "Edge",
+    "realApi": "http://localhost:3061",
+    "syntheticManualFixture": true,
+    "coreColumnsVisible": true,
+    "employeeRows": 6,
+    "detailRows": 20,
+    "pageErrors": 0
+  },
+  "operations": {
+    "checkedAt": "2026-09-05T14:36:43.758Z",
+    "backups": [
+      {
+        "status": "succeeded",
+        "startedAt": "2026-09-05T02:22:16.000Z",
+        "completedAt": "2026-09-05T02:22:17.000Z",
+        "checksumSha256": "ecd1b7f7c96a709b08c92b4fb9d8f4c69bb3f2dea568bf033ea914f9421ff2bc",
+        "encrypted": true,
+        "fileSizeBytes": "544177"
+      },
+      {
+        "status": "succeeded",
+        "startedAt": "2026-09-04T02:19:56.000Z",
+        "completedAt": "2026-09-04T02:19:57.000Z",
+        "checksumSha256": "46ce5d9eb64545d535d24b5831fdf6288bcf01bb0a10d32c8838a4c7cb50d8c5",
+        "encrypted": true,
+        "fileSizeBytes": "543686"
+      },
+      {
+        "status": "succeeded",
+        "startedAt": "2026-09-03T02:28:06.000Z",
+        "completedAt": "2026-09-03T02:28:07.000Z",
+        "checksumSha256": "f67117bdf335a4631f68193fdcf8cf462742d97e1509770365ef5940a474e6cd",
+        "encrypted": true,
+        "fileSizeBytes": "543229"
+      }
+    ],
+    "restoreDrills": [
+      {
+        "status": "succeeded",
+        "startedAt": "2026-07-27T13:10:32.000Z",
+        "completedAt": "2026-07-27T13:10:36.000Z"
+      },
+      {
+        "status": "succeeded",
+        "startedAt": "2026-07-20T13:00:20.000Z",
+        "completedAt": "2026-07-20T13:00:20.000Z"
+      }
+    ]
+  },
+  "pendingMigrations": [
+    "20260905010000_monthly_finance_refresh",
+    "20260905011000_inventory_checkpoint",
+    "20260905012000_monthly_write_lock",
+    "20260905013000_adpos_monthly_fee_consistency",
+    "20260905014000_preserve_unambiguous_adpos_rates",
+    "20260905015000_guard_inflight_financial_writes",
+    "20260905016000_resumable_inventory",
+    "20260906010000_transaction_page_resume"
+  ],
+  "repeatedLedgerComparison": [
+    {
+      "source": "A01",
+      "repeatSucceeded": true,
+      "unchanged": true
+    },
+    {
+      "source": "A02",
+      "repeatSucceeded": true,
+      "unchanged": true
+    },
+    {
+      "source": "A03",
+      "repeatSucceeded": true,
+      "unchanged": true
+    },
+    {
+      "source": "A04",
+      "repeatSucceeded": true,
+      "unchanged": true
+    },
+    {
+      "source": "airwallex",
+      "repeatSucceeded": true,
+      "unchanged": true
+    },
+    {
+      "source": "photonpay",
+      "repeatSucceeded": true,
+      "unchanged": true
+    }
+  ],
+  "realPageResume": {
+    "interruptedAt": "2026-09-05T16:38:21.574Z",
+    "syntheticProcessInterruption": true,
+    "expectedPage": 18,
+    "observedFirstPage": 18,
+    "expectedFrom": "2026-08-28T16:00:00",
+    "observedFrom": "2026-08-28T16:00:00",
+    "resumedAtSavedPage": true
+  },
+  "fixtureCleanup": {
+    "at": "2026-09-05T17:12:51.054Z",
+    "isolatedOnly": true,
+    "syntheticAdposRemoved": 1,
+    "syntheticCakeAdjustmentsRemoved": 2,
+    "syntheticFeeRatesRemoved": 2,
+    "originalBusinessSubIdRestored": true,
+    "realProviderLedgersPreserved": true
+  }
+}
