@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { PhotonPayPageScan, PhotonPayPageState } from './photonpay-page-scan';
 import { SyncAdapterContext } from '../sync-adapter';
+import { SyncAutoExecutionService } from '../sync-auto-execution.service';
 
 const dbDescribe = process.env.LIVE_PAGE_SCAN_DATABASE_TESTS === '1' ? describe : describe.skip;
 dbDescribe('PhotonPay durable page state on isolated PostgreSQL', () => {
@@ -41,5 +42,21 @@ dbDescribe('PhotonPay durable page state on isolated PostgreSQL', () => {
     await expect(replacement.clear()).rejects.toMatchObject({ category: 'TIMEOUT' });
     const nextAttempt = new PhotonPayPageScan(db as never, { ...b, durablePageScan: { leaseOwner: 'worker-b', attemptCount: 2 } }, { credential: 'test-a', month: '2026-08' });
     await nextAttempt.clear(); expect(await nextAttempt.load()).toBeNull();
+  });
+  it('rejects late success and failure from an older attempt in the same executor instance', async () => {
+    const audit = { success: jest.fn(), failure: jest.fn() };
+    const executor = new SyncAutoExecutionService(db as never, audit as never, {} as never, {} as never);
+    const internal = executor as unknown as { instanceId: string; finishSuccess: (...args: unknown[]) => Promise<void>; finishFailure: (...args: unknown[]) => Promise<void> };
+    const context = await task(internal.instanceId);
+    await db.syncTask.update({ where: { id: context.taskId }, data: { attemptCount: 2 } });
+    const claim = { id: context.taskId, sourceType: 'card_spend', platform: 'photonpay', provider: 'photonpay', settlementMonth: month, attemptCount: 1 };
+    const result = { successCount: 1, failedCount: 0, message: 'test', resultPayload: {} };
+    await internal.finishSuccess(context.taskId, claim, result);
+    await internal.finishFailure(context.taskId, claim, 'BUSINESS_REJECTED', 'late old attempt', result);
+    expect((await db.syncTask.findUniqueOrThrow({ where: { id: context.taskId } })).status).toBe('running');
+    expect(audit.success).not.toHaveBeenCalled(); expect(audit.failure).not.toHaveBeenCalled();
+    await internal.finishSuccess(context.taskId, { ...claim, attemptCount: 2 }, result);
+    expect((await db.syncTask.findUniqueOrThrow({ where: { id: context.taskId } })).status).toBe('completed');
+    expect(audit.success).toHaveBeenCalledTimes(1);
   });
 });

@@ -10,4 +10,3 @@ const db=new PrismaClient();
  for(const file of paths){if(!file||!fs.existsSync(file)||!fs.statSync(file).isFile())continue;const text=fs.readFileSync(file,'utf8');checked++;if(secrets.some(s=>text.includes(s)))failures.push(file);}
  console.log(JSON.stringify({changedFilesChecked:checked,credentialLiteralMatches:failures.length}));if(failures.length)process.exitCode=1;
 })().catch(()=>{console.error('SECRET_CHECK_FAILED_NO_VALUES_PRINTED');process.exitCode=1;}).finally(()=>db.$disconnect());
-

@@ -246,7 +246,7 @@ export class SyncAutoExecutionService {
 
   private async finishSuccess(taskId: string, claim: ClaimedTask, result: { successCount: number; failedCount: number; message: string | null; resultPayload: Record<string, unknown> }) {
     await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId }, data: {
+      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount }, data: {
         status: SyncTaskStatus.completed, leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null,
         lastErrorCategory: null, finishedAt: new Date(), successCount: result.successCount, failedCount: result.failedCount,
         message: result.message, errorMessage: null, resultPayload: { ...result.resultPayload, attemptCount: claim.attemptCount },
@@ -263,7 +263,7 @@ export class SyncAutoExecutionService {
     const nextAttemptAt = retry ? new Date(Date.now() + retryDelaySeconds(this.config.retryBaseSeconds, claim.attemptCount) * 1000) : null;
     const safeMessage = redact(message);
     await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId }, data: {
+      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount }, data: {
         status: retry ? SyncTaskStatus.retry_wait : SyncTaskStatus.failed,
         leaseOwner: null, leaseExpiresAt: null, nextAttemptAt, lastErrorCategory: category,
         finishedAt: retry ? null : new Date(), successCount: result?.successCount ?? 0, failedCount: result?.failedCount ?? 1,
