@@ -1,3 +1,4 @@
+import { monthlyCoverage } from '../monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import {
   Prisma,
@@ -117,6 +118,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
+    context = { ...context, coverageStartedAt: context.coverageStartedAt ?? new Date() };
     this.assertContext(context);
     const credential = parsePhotonPayCredential(context.credential.payload);
     const window = getPhotonPayExecutionWindow(context, credential);
@@ -304,6 +306,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       message,
       errorMessage: status === 'failed' ? message : null,
       resultPayload: {
+        monthlyCoverage: monthlyCoverage(context, status, failedCount),
         adapterKey: this.adapterKey,
         provider: Provider.photonpay,
         pulledThirdPartyData: cardInventory !== null || successCount > 0,

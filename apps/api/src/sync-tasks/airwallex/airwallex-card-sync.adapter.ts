@@ -1,3 +1,4 @@
+import { monthlyCoverage } from '../monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import { Prisma, Provider, SyncTaskPlatform, SyncTaskSourceType, SyncTaskType } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
@@ -46,6 +47,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
+    context = { ...context, coverageStartedAt: context.coverageStartedAt ?? new Date() };
     this.assertContext(context);
     const credential = parseCredentialPayload(context.credential.payload);
     const window = getAirwallexRequestAndSettlementWindows(context.settlementMonth, credential.settlementDelayDays ?? DEFAULT_SETTLEMENT_DELAY_DAYS);
@@ -120,6 +122,7 @@ export class AirwallexCardSyncAdapter implements SyncAdapter {
       message,
       errorMessage: status === 'failed' ? message : null,
       resultPayload: {
+        monthlyCoverage: monthlyCoverage(context, status, failedCount),
         adapterKey: this.adapterKey,
         provider: Provider.airwallex,
         pulledThirdPartyData: cardInventory !== null || successCount > 0,

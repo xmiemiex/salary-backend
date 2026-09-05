@@ -13,6 +13,7 @@ export type SyncAdapterContext = {
   affiliateAccountCode?: string;
   requestedBy?: string | null;
   requestPayload?: unknown;
+  coverageStartedAt?: Date;
   credential: {
     credentialId: string;
     hasCredential: true;

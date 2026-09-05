@@ -43,6 +43,9 @@ export class SyncAutoExecutionService {
   private readonly instanceId = randomUUID();
   private lastPollAt: Date | null = null;
   private lastClaimAt: Date | null = null;
+  private readonly dashboardExecutions = new Set<Promise<unknown>>();
+
+  async drainDashboard() { await Promise.allSettled([...this.dashboardExecutions]); }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -61,6 +64,20 @@ export class SyncAutoExecutionService {
   }
 
   async pollDashboard(now = new Date()) {
+    // A dead process cannot finish its final lease. Close it durably before new claims.
+    await this.prisma.$transaction(async tx => {
+      const expired = await tx.$queryRaw<Array<{ id: string; settlementMonth: Date }>>`
+        UPDATE sync_tasks SET status = 'failed', finished_at = ${now}, updated_at = ${now},
+          lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+          failed_count = GREATEST(1, failed_count), last_error_category = 'TIMEOUT',
+          error_message = '最后一次执行的租约已过期，可从大盘重新发起。'
+        WHERE refresh_batch_id IS NOT NULL AND status = 'running'
+          AND (lease_expires_at IS NULL OR lease_expires_at <= ${now}) AND attempt_count >= ${this.config.maxAttempts}
+        RETURNING id, settlement_month AS "settlementMonth"`;
+      for (const task of expired) await this.audit.failure({ action: 'sync_task.dashboard.expired_final_attempt',
+        objectType: 'sync_tasks', objectId: task.id, settlementMonth: task.settlementMonth,
+        changedFields: ['status', 'leaseOwner'], failureReason: 'TIMEOUT' }, tx);
+    });
     await this.prisma.$executeRaw`
       UPDATE sync_tasks t SET status = 'failed', finished_at = ${now}, updated_at = ${now},
         error_message = '来源凭据已停用或月份已锁账，请检查后重试。', last_error_category = 'BUSINESS_REJECTED'
@@ -70,7 +87,10 @@ export class SyncAutoExecutionService {
         (t.source_type = 'card_spend' AND NOT EXISTS (SELECT 1 FROM card_provider_credentials c WHERE c.provider = t.provider AND c.status = 'active'))
       )`;
     const tasks = await this.claim(now, true);
-    await Promise.all(tasks.map(task => this.executeClaim(task).catch(() => undefined)));
+    for (const task of tasks) {
+      const execution = this.executeClaim(task).catch(() => undefined).finally(() => this.dashboardExecutions.delete(execution));
+      this.dashboardExecutions.add(execution);
+    }
     return { claimedCount: tasks.length };
   }
 
@@ -121,11 +141,19 @@ export class SyncAutoExecutionService {
               SELECT 1 FROM sync_tasks busy WHERE busy.id <> t.id AND busy.status = 'running' AND busy.lease_expires_at > ${now}
                 AND (busy.provider = t.provider OR busy.affiliate_account_id = t.affiliate_account_id)
             ))
+            AND (NOT ${dashboard} OR NOT EXISTS (
+              SELECT 1 FROM sync_tasks queued WHERE queued.refresh_batch_id IS NOT NULL
+                AND queued.attempt_count < ${this.config.maxAttempts}
+                AND (queued.provider = t.provider OR queued.affiliate_account_id = t.affiliate_account_id)
+                AND (queued.created_at, queued.id) < (t.created_at, t.id)
+                AND (queued.status = 'pending' OR (queued.status = 'retry_wait' AND (queued.next_attempt_at IS NULL OR queued.next_attempt_at <= ${now}))
+                  OR (queued.status = 'running' AND (queued.lease_expires_at IS NULL OR queued.lease_expires_at <= ${now})))
+            ))
             AND t.attempt_count < ${this.config.maxAttempts}
             AND (
               (t.status = 'pending') OR
               (t.status = 'retry_wait' AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ${now})) OR
-              (t.status = 'running' AND t.lease_expires_at <= ${now})
+              (t.status = 'running' AND (t.lease_expires_at IS NULL OR t.lease_expires_at <= ${now}))
             )
             AND NOT EXISTS (
               SELECT 1 FROM monthly_settlements ms

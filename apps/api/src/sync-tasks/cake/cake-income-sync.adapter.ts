@@ -1,3 +1,4 @@
+import { monthlyCoverage } from '../monthly-coverage';
 import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
@@ -62,6 +63,7 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
+    context = { ...context, coverageStartedAt: context.coverageStartedAt ?? new Date() };
     this.assertContext(context);
     const credential = parseCredentialPayload(context.credential.payload);
     const affiliateId = context.affiliateAccountCode as string;
@@ -356,6 +358,7 @@ export class CakeIncomeSyncAdapter implements SyncAdapter {
       errorMessage: status === 'failed' ? message : null,
       errorCategory,
       resultPayload: {
+        monthlyCoverage: monthlyCoverage(context, status, failedCount),
         adapterKey: this.adapterKey,
         source: CAKE_SOURCE,
         sourceReport: 'Reports/SubAffiliateSummary',

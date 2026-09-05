@@ -506,6 +506,14 @@ model MonthlyAdposFeeRate {
   @@map("monthly_adpos_fee_rates")
 }
 
+model ProviderInventoryScan {
+  provider Provider @id
+  credentialFingerprint String @map("credential_fingerprint") @db.VarChar(64)
+  through DateTime
+  state Json
+  @@map("provider_inventory_scans")
+}
+
 model ProviderInventoryCheckpoint {
   provider Provider @id
   credentialFingerprint String @map("credential_fingerprint") @db.VarChar(64)

@@ -1,3 +1,6 @@
+import { ProviderCardInventoryService } from '../card-bindings/provider-card-inventory.service';
+import { ProviderRequestError } from '../sync-tasks/provider-request-error';
+import { monthlyCoverage } from '../sync-tasks/monthly-coverage';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -75,10 +78,10 @@ integration('monthly finance real PostgreSQL (provider adapters explicitly simul
     expect(a.batchId).toBe(b.batchId);
     expect(await db.syncTask.count({ where: { refreshBatchId: a.batchId! } })).toBe(5);
     expect((await service.read('2026-08')).refreshing).toBe(true);
-    const adapter = { execute: jest.fn(async (context: any) => context.provider === 'airwallex' ? { status: 'failed', successCount: 0, failedCount: 1, message: 'simulated timeout', errorMessage: 'simulated timeout', errorCategory: 'TIMEOUT', resultPayload: {} } : { status: 'completed', successCount: 0, failedCount: 0, message: 'simulated zero', errorMessage: null, resultPayload: {} }) };
+    const adapter = { execute: jest.fn(async (context: any) => context.provider === 'airwallex' ? { status: 'failed', successCount: 0, failedCount: 1, message: 'simulated timeout', errorMessage: 'simulated timeout', errorCategory: 'TIMEOUT', resultPayload: {} } : { status: 'completed', successCount: 0, failedCount: 0, message: 'simulated zero', errorMessage: null, resultPayload: { monthlyCoverage: monthlyCoverage(context, 'completed', 0) } }) };
     const credentials = { getAffiliateAccountCredentialPayload: async () => ({ credentialId: 'simulated', payload: {} }), getCardProviderCredentialPayload: async () => ({ credentialId: 'simulated', payload: {} }) };
     const executor = new SyncAutoExecutionService(db as never, new AuditService(db as never), { resolve: () => adapter } as never, credentials as never);
-    for (let i = 0; i < 8; i++) await executor.pollDashboard(new Date(Date.now() + i * 3600000));
+    for (let i = 0; i < 8; i++) { await executor.pollDashboard(new Date(Date.now() + i * 3600000)); await executor.drainDashboard(); }
     const data = await service.read('2026-08');
     expect(data.sources.find(s => s.key === 'airwallex')?.status).toBe('failed');
     expect(data.sources.find(s => s.key === 'photonpay')?.status).toBe('completed');
@@ -87,6 +90,127 @@ integration('monthly finance real PostgreSQL (provider adapters explicitly simul
     const retry = await service.refresh('2026-08', actor, 'airwallex');
     expect(await db.syncTask.count({ where: { refreshBatchId: retry.batchId! } })).toBe(1);
   });
+  it('requires posted full-month proof; later preview, calibration, short windows and 60-card subsets cannot replace it', async () => {
+    const batch = await service.refresh('2026-07', actor);
+    const tasks = await db.syncTask.findMany({ where: { refreshBatchId: batch.batchId! } });
+    for (const task of tasks) await db.syncTask.update({ where: { id: task.id }, data: { status: 'completed', failedCount: 0, finishedAt: new Date('2026-08-01T00:00:00Z'), requestPayload: { historicalBackfill: { from: '2026-07-01', to: '2026-07-08', previewOnly: true } } } });
+    expect((await service.read('2026-07')).complete).toBe(false);
+    for (const task of tasks) await db.syncTask.update({ where: { id: task.id }, data: { requestPayload: { settlementMonth: '2026-07' }, resultPayload: { monthlyCoverage: monthlyCoverage({ settlementMonth: new Date('2026-07-01'), coverageStartedAt: new Date('2026-08-01') } as any, 'completed', 0) } } });
+    const before = await service.read('2026-07');
+    expect(before.complete).toBe(true);
+    expect(before.coveredThrough?.toISOString()).toBe('2026-07-31T16:00:00.000Z');
+    for (const payload of [{ previewOnly: true }, { calibration: true }, { from: '2026-07-01', to: '2026-07-08' }, { historicalBackfill: { previewOnly: false }, targetCardIds: Array(60).fill('simulated') }]) {
+      for (const task of tasks) await db.syncTask.create({ data: { settlementMonth: task.settlementMonth, sourceType: task.sourceType, taskType: task.taskType, platform: task.platform, provider: task.provider, affiliateAccountId: task.affiliateAccountId, status: 'completed', failedCount: 0, requestPayload: payload, finishedAt: new Date() } });
+    }
+    const after = await service.read('2026-07');
+    expect(after.complete).toBe(true);
+    expect(after.sources.map(s => s.lastSuccessAt)).toEqual(before.sources.map(s => s.lastSuccessAt));
+    expect(after.coveredThrough).toEqual(before.coveredThrough);
+    expect(after.queriedAt.getTime()).toBeGreaterThan(after.coveredThrough!.getTime());
+  });
+
+  it('refills the free slot while slow A still runs and isolates identical sources across batches', async () => {
+    await db.syncTask.updateMany({ where: { status: { in: ['pending', 'retry_wait'] } }, data: { status: 'cancelled' } });
+    const batch = await service.refresh('2026-06', actor);
+    const tasks = await db.syncTask.findMany({ where: { refreshBatchId: batch.batchId! }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+    let releaseA!: () => void;
+    const slow = new Promise<void>(resolve => { releaseA = resolve; });
+    const started: string[] = [];
+    const adapter = { execute: async (context: any) => { started.push(context.taskId); if (context.taskId === tasks[0].id) await slow; return { status: 'completed', successCount: 0, failedCount: 0, message: 'simulated', resultPayload: { monthlyCoverage: monthlyCoverage(context, 'completed', 0) } }; } };
+    const credentials = { getAffiliateAccountCredentialPayload: async () => ({ payload: {} }), getCardProviderCredentialPayload: async () => ({ payload: {} }) };
+    const executor = new SyncAutoExecutionService(db as never, new AuditService(db as never), { resolve: () => adapter } as never, credentials as never);
+    const waitFor = async (predicate: () => Promise<boolean>) => { for (let i = 0; i < 100; i++) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error('Timed out waiting for execution'); };
+    try {
+      expect((await executor.pollDashboard()).claimedCount).toBe(2);
+      await waitFor(async () => (await db.syncTask.findUnique({ where: { id: tasks[1].id } }))?.status === 'completed');
+      expect((await db.syncTask.findUnique({ where: { id: tasks[0].id } }))?.status).toBe('running');
+      expect((await executor.pollDashboard()).claimedCount).toBe(1);
+      await waitFor(async () => started.includes(tasks[2].id));
+      expect(await db.syncTask.count({ where: { status: 'running' } })).toBeLessThanOrEqual(2);
+      const copy = tasks[0];
+      const duplicate = await db.syncTask.create({ data: { settlementMonth: copy.settlementMonth, refreshBatchId: copy.refreshBatchId, planningKey: `duplicate:${randomUUID()}`, sourceType: copy.sourceType, taskType: copy.taskType, platform: copy.platform, affiliateAccountId: copy.affiliateAccountId, provider: copy.provider, status: 'pending', triggerType: 'manual' } });
+      await executor.pollDashboard();
+      expect((await db.syncTask.findUnique({ where: { id: duplicate.id } }))?.status).toBe('pending');
+    } finally { releaseA(); await executor.drainDashboard(); }
+    for (let i = 0; i < 4; i++) { await executor.pollDashboard(); await executor.drainDashboard(); }
+  });
+
+  it('closes a dead final lease and permits a new dashboard retry; recovers a non-final expired lease', async () => {
+    const batch = await service.refresh('2026-05', actor, 'airwallex');
+    await db.monthlyRefreshBatch.update({ where: { id: batch.batchId! }, data: { createdAt: new Date(Date.now() - 60000) } });
+    const task = (await db.syncTask.findFirst({ where: { refreshBatchId: batch.batchId! } }))!;
+    await db.syncTask.update({ where: { id: task.id }, data: { status: 'running', attemptCount: 3, leaseOwner: 'dead-process', leaseExpiresAt: new Date(Date.now() - 1000) } });
+    const execute = jest.fn(async () => ({ status: 'completed', failedCount: 0, successCount: 0, message: 'simulated', resultPayload: {} }));
+    const executor = new SyncAutoExecutionService(db as never, new AuditService(db as never), { resolve: () => ({ execute }) } as never, { getCardProviderCredentialPayload: async () => ({ payload: {} }) } as never);
+    await executor.pollDashboard();
+    expect((await db.syncTask.findUnique({ where: { id: task.id } }))?.status).toBe('failed');
+    expect((await service.status('2026-05')).refreshing).toBe(false);
+    const retry = await service.refresh('2026-05', actor, 'airwallex');
+    expect(retry.batchId).not.toBe(batch.batchId);
+    const next = (await db.syncTask.findFirst({ where: { refreshBatchId: retry.batchId! } }))!;
+    await db.syncTask.update({ where: { id: next.id }, data: { status: 'running', attemptCount: 1, leaseOwner: 'dead-process', leaseExpiresAt: new Date(Date.now() - 1000) } });
+    await executor.pollDashboard(); await executor.drainDashboard();
+    expect((await db.syncTask.findUnique({ where: { id: next.id } }))?.attemptCount).toBe(2);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes AW persisted card and holder pages across new service instances without certifying partial scans', async () => {
+    let failCards = true, failHolders = true;
+    const calls: { from?: Date; page: number }[] = [];
+    const aw = {
+      listCards: async (request: any) => {
+        calls.push(request);
+        if (!request.from) return { cards: [], hasMore: false };
+        if (request.from.toISOString() === '2018-01-01T00:00:00.000Z') {
+          if (request.page === 1 && failCards) throw new ProviderRequestError('TIMEOUT', 'simulated interruption');
+          return { cards: [{ card_id: `card-${request.page}`, cardholder_id: 'holder-1', card_number: '1234567890123456' }], hasMore: request.page === 0 };
+        }
+        return { cards: [], hasMore: false };
+      },
+      listCardholders: async ({ page }: any) => {
+        if (page === 1 && failHolders) throw new ProviderRequestError('TIMEOUT', 'simulated holder interruption');
+        return { cardholders: [{ cardholder_id: 'holder-1', email: 'fixture@example.test' }], hasMore: page === 0 };
+      },
+    };
+    const make = () => new ProviderCardInventoryService(db as never, {} as never, aw as never, {} as never, new AuditService(db as never));
+    const credential = { clientId: 'simulated', apiKey: 'simulated' };
+    await expect(make().syncProviderWithPayload('airwallex', credential)).rejects.toThrow('interruption');
+    expect(await db.providerInventoryCheckpoint.count()).toBe(0);
+    const saved = (await db.providerInventoryScan.findUnique({ where: { provider: 'airwallex' } }))!;
+    expect((saved.state as any).page).toBe(1);
+    expect(JSON.stringify(saved.state)).not.toContain('1234567890123456');
+    failCards = false; calls.length = 0;
+    expect((await make().syncProviderWithPayload('airwallex', credential)).status).toBe('partial');
+    expect(calls.filter(c => c.from)[0].page).toBe(1);
+    expect(await db.providerInventoryCheckpoint.count()).toBe(0);
+    failHolders = false; calls.length = 0;
+    expect((await make().syncProviderWithPayload('airwallex', credential)).status).toBe('completed');
+    expect(calls.filter(c => c.from)).toHaveLength(0);
+    expect(await db.providerCard.count({ where: { provider: 'airwallex' } })).toBe(2);
+    expect(await db.providerInventoryScan.count()).toBe(0);
+    expect((await db.providerInventoryCheckpoint.findUnique({ where: { provider: 'airwallex' } }))?.completedThrough).toEqual(saved.through);
+  });
+
+  it('keeps summary and on-demand payloads bounded with 100 employees and 50,000 ledger events', async () => {
+    const perfMonth = new Date('2026-04-01T00:00:00Z');
+    await db.employee.createMany({ data: Array.from({ length: 100 }, (_, i) => ({ id: randomUUID(), employeeCode: `perf-${i}`, name: 'Scale fixture', businessSubId: `PERF-${i}` })) });
+    const employees = await db.employee.findMany({ where: { employeeCode: { startsWith: 'perf-' } } });
+    const accounts = await db.affiliateAccount.findMany();
+    await db.incomeRecord.createMany({ data: employees.flatMap(e => accounts.map(a => ({ employeeId: e.id, affiliateAccountId: a.id, settlementMonth: perfMonth, source: 'performance-fixture', incomeUsd: '1000', status: 'confirmed' as const }))) });
+    await db.$executeRaw`
+      INSERT INTO card_spend_events (id, settlement_month, employee_id, provider, card_id, external_event_id, transaction_at, spend_usd, status, updated_at)
+      SELECT gen_random_uuid(), ${perfMonth}, e.id, CASE WHEN n % 2 = 0 THEN 'airwallex'::"Provider" ELSE 'photonpay'::"Provider" END,
+        'scale-fixture', e.id::text || '-' || n, ${perfMonth}, 1, 'confirmed', now()
+      FROM employees e CROSS JOIN generate_series(1,500) n WHERE e.employee_code LIKE 'perf-%'`;
+    const elapsed: number[] = []; let bytes = 0;
+    for (let i = 0; i < 5; i++) { const start = performance.now(); const result = await service.read('2026-04'); elapsed.push(performance.now() - start); bytes = Buffer.byteLength(JSON.stringify(result)); expect(result.rows).toHaveLength(100); expect(result.totals.rawSpend).toBe('50000'); }
+    const details = await service.details('2026-04', employees[0].id, '2', 'airwallex');
+    expect(details.items).toHaveLength(20); expect(details.total).toBe(250);
+    const statusBytes = Buffer.byteLength(JSON.stringify(await service.status('2026-04')));
+    console.log('MONTHLY_SCALE_EVIDENCE', JSON.stringify({ employees: 100, incomeRecords: 300, spendEvents: 50000, queryMs: elapsed.map(n => Math.round(n)), summaryBytes: bytes, statusBytes, detailBytes: Buffer.byteLength(JSON.stringify(details)) }));
+    expect(Math.max(...elapsed)).toBeLessThan(5000); expect(bytes).toBeLessThan(250000); expect(statusBytes).toBeLessThan(10000);
+  });
+
   it('locked month rejects fees, Adpos and refresh including legacy direct writes', async () => {
     await db.monthlySettlement.create({ data: { settlementMonth: month, status: 'locked' } });
     await expect(service.saveFees('2026-08', { airwallex: '0', photonpay: '0', adpos: '0' }, actor)).rejects.toThrow('锁账');

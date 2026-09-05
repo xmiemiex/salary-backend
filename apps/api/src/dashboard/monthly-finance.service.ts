@@ -1,3 +1,4 @@
+import { isMonthlyLedgerRequest, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import { Prisma, Provider, SyncTaskPlatform, SyncTaskType } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
@@ -28,51 +29,41 @@ export class MonthlyFinanceService {
 
   async read(input: string) {
     const month = parseSettlementMonthParam(input);
-    const [accounts, mappings, income, spend, manual, fees, adposFee, settlement, tasks, latestBatch, employeeRows] = await Promise.all([
+    const [accounts, mappings, income, spend, manual, fees, adposFee, settlement, refreshState, employeeRows, sampleCount] = await Promise.all([
       this.prisma.affiliateAccount.findMany({ orderBy: { createdAt: 'asc' }, include: { credential: { select: { status: true } } } }),
       resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, { settlementMonth: month }),
-      this.prisma.incomeRecord.findMany({ where: { settlementMonth: month, status: 'confirmed' } }),
-      this.prisma.cardSpendEvent.findMany({ where: { settlementMonth: month, status: 'confirmed' } }),
-      this.prisma.manualCardSpendEntry.findMany({ where: { settlementMonth: month, status: 'confirmed' } }),
+      this.prisma.incomeRecord.groupBy({ by: ['employeeId', 'affiliateAccountId', 'subValue'], where: { settlementMonth: month, status: 'confirmed' }, _sum: { incomeUsd: true } }).then(rows => rows.map(r => ({ ...r, incomeUsd: r._sum.incomeUsd ?? D(0) }))),
+      this.prisma.cardSpendEvent.groupBy({ by: ['employeeId', 'provider'], where: { settlementMonth: month, status: 'confirmed' }, _sum: { spendUsd: true } }).then(rows => rows.map(r => ({ ...r, spendUsd: r._sum.spendUsd ?? D(0) }))),
+      this.prisma.manualCardSpendEntry.groupBy({ by: ['employeeId', 'providerName'], where: { settlementMonth: month, status: 'confirmed' }, _sum: { settledSpendUsd: true, actualSpendUsd: true } }).then(rows => rows.map(r => ({ ...r, settledSpendUsd: r._sum.settledSpendUsd ?? D(0), actualSpendUsd: r._sum.actualSpendUsd ?? D(0) }))),
       this.prisma.monthlyCardProviderFeeRate.findMany({ where: { settlementMonth: month, status: { in: ['active', 'confirmed'] } } }),
       this.prisma.monthlyAdposFeeRate.findUnique({ where: { settlementMonth: month } }),
       this.prisma.monthlySettlement.findUnique({ where: { settlementMonth: month }, select: { status: true } }),
-      this.prisma.syncTask.findMany({ where: { settlementMonth: month }, orderBy: { createdAt: 'desc' } }),
-      this.prisma.monthlyRefreshBatch.findFirst({ where: { settlementMonth: month }, orderBy: { createdAt: 'desc' } }),
+      this.status(input),
       this.prisma.employee.findMany({ select: { id: true, businessSubId: true } }),
+      this.prisma.incomeRecord.count({ where: { settlementMonth: month, rawData: { path: ['fixture'], equals: 'SIMULATED_LOCAL_ONLY' } } }),
     ]);
     const columns = accounts.filter(a => a.status === 'active' || income.some(i => i.affiliateAccountId === a.id));
     const rates: Record<string, string | null> = { airwallex: null, photonpay: null, adpos: adposFee?.feeRate.toString() ?? null };
     fees.forEach(f => { rates[f.provider] = f.feeRate.toString(); });
-    const sources = [...columns.filter(a => a.status === 'active').map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), { key: 'airwallex', name: 'Airwallex' }, { key: 'photonpay', name: 'PhotonPay' }].map(source => {
-      const history = tasks.filter(t => (t.affiliateAccountId ?? t.provider) === source.key && !(t.requestPayload && typeof t.requestPayload === 'object' && !Array.isArray(t.requestPayload) && t.requestPayload.inventoryOnly === true));
-      const latest = history[0];
-      const success = history.find(t => t.status === 'completed' && t.failedCount === 0);
-      const reason = latest?.lastErrorCategory === 'CREDENTIAL_MISSING' ? '尚未配置有效凭据' : latest?.lastErrorCategory === 'TIMEOUT' ? '来源响应超时' : latest?.lastErrorCategory === 'RATE_LIMITED' ? '来源请求限流' : latest?.status === 'failed' ? '来源未完成，请重试或查看同步详情' : null;
-      return { ...source, reason, status: !latest ? 'missing' : latest.failedCount > 0 && latest.successCount > 0 ? 'partial' : latest.status, lastSuccessAt: success?.finishedAt ?? null, updatedAt: latest?.finishedAt ?? null };
-    });
+    const sources = refreshState.sources;
     const employees = new Set([...mappings.filter(m => m.status === 'active').map(m => m.employeeId), ...income.map(i => i.employeeId), ...spend.map(s => s.employeeId), ...manual.map(m => m.employeeId)]);
     const rows = [...employees].map(employeeId => {
       const subIds = [...new Set([...mappings.filter(m => m.employeeId === employeeId && m.status === 'active').map(m => m.subValue), ...income.filter(i => i.employeeId === employeeId && i.subValue).map(i => i.subValue!)])].sort();
-      const details: Array<{ category: string; source: string; amount: string; date: string | null }> = [];
       const byAffiliate: Record<string, string> = {};
       let totalIncome = D(0), otherIncome = D(0);
       for (const i of income.filter(i => i.employeeId === employeeId)) {
         totalIncome = totalIncome.plus(i.incomeUsd);
         if (i.affiliateAccountId) byAffiliate[i.affiliateAccountId] = D(byAffiliate[i.affiliateAccountId] ?? 0).plus(i.incomeUsd).toString();
         else otherIncome = otherIncome.plus(i.incomeUsd);
-        details.push({ category: 'income', source: accounts.find(a => a.id === i.affiliateAccountId)?.accountName ?? (i.affiliateAccountId ? '联盟收入' : '其他手动收入 / 已确认调整'), amount: i.incomeUsd.toString(), date: null });
       }
       const spends: Record<string, string> = { airwallex: '0', photonpay: '0', adpos: '0' };
       for (const s of spend.filter(s => s.employeeId === employeeId)) {
         spends[s.provider] = D(spends[s.provider]).plus(s.spendUsd).toString();
-        details.push({ category: s.provider, source: s.provider === 'airwallex' ? 'Airwallex · 已结算' : 'PhotonPay · 实际 USD 本金', amount: s.spendUsd.toString(), date: s.transactionAt.toISOString() });
       }
       let otherManualCost = D(0);
       for (const m of manual.filter(m => m.employeeId === employeeId)) {
         if (m.providerName.trim().toLowerCase() === 'adpos') spends.adpos = D(spends.adpos).plus(m.settledSpendUsd).toString();
         else otherManualCost = otherManualCost.plus(m.actualSpendUsd);
-        details.push({ category: 'adpos', source: m.providerName, amount: m.settledSpendUsd.toString(), date: null });
       }
       const amounts = financeAmounts(totalIncome, spends, rates);
       // Legacy manual providers remain visible and included instead of silently disappearing.
@@ -85,7 +76,7 @@ export class MonthlyFinanceService {
         }
       }
       const unified = employeeId ? employeeRows.find(e => e.id === employeeId)?.businessSubId ?? (subIds.length === 1 ? subIds[0] : null) : null;
-      return { key: employeeId ?? 'unassigned', subId: unified ?? '待统一 SUB ID', subIds, attributionPending: !unified, byAffiliate, otherIncome: otherIncome.toString(), totalIncome: totalIncome.toString(), spends, otherManualCost: otherManualCost.toString(), ...amounts, details };
+      return { key: employeeId ?? 'unassigned', subId: unified ?? '待统一 SUB ID', subIds, attributionPending: !unified, byAffiliate, otherIncome: otherIncome.toString(), totalIncome: totalIncome.toString(), spends, otherManualCost: otherManualCost.toString(), ...amounts };
     });
     const duplicateSubs = new Set(rows.filter(row => !row.attributionPending && rows.filter(other => other.subId === row.subId).length > 1).map(row => row.subId));
     for (const row of rows) if (duplicateSubs.has(row.subId)) { row.subId = '待统一 SUB ID'; row.attributionPending = true; }
@@ -100,7 +91,51 @@ export class MonthlyFinanceService {
       totals.profit = D(totals.totalIncome).minus(totals.totalSpend).toString();
       totals.margin = D(totals.totalSpend).isZero() ? null : D(totals.profit).div(totals.totalSpend).times(100).toFixed(2);
     }
-    return { localSample: income.some(i => i.rawData && typeof i.rawData === 'object' && !Array.isArray(i.rawData) && i.rawData.fixture === 'SIMULATED_LOCAL_ONLY'), month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, sources, complete: sources.every(s => s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), batchId: latestBatch?.id ?? null, refreshing: tasks.some(t => t.refreshBatchId && active.includes(t.status)), asOf: new Date() };
+    return { localSample: sampleCount > 0, month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, complete: sources.every(s => s.coveredThrough !== null && s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), ...refreshState };
+  }
+
+  async status(input: string) {
+    const month = parseSettlementMonthParam(input);
+    const [accounts, latestBatch, refreshing] = await Promise.all([
+      this.prisma.affiliateAccount.findMany({ where: { status: 'active' }, select: { id: true, accountName: true, accountCode: true } }),
+      this.prisma.monthlyRefreshBatch.findFirst({ where: { settlementMonth: month }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.syncTask.count({ where: { settlementMonth: month, refreshBatchId: { not: null }, status: { in: ['pending', 'running', 'retry_wait'] } } }),
+    ]);
+    const sources = await Promise.all([...accounts.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), { key: 'airwallex', name: 'Airwallex' }, { key: 'photonpay', name: 'PhotonPay' }].map(async source => {
+      const where: Prisma.SyncTaskWhereInput = { settlementMonth: month, ...(source.key === 'airwallex' || source.key === 'photonpay' ? { provider: source.key } : { affiliateAccountId: source.key }) };
+      // Request allowlist is also applied in SQL so an unrelated preview cannot hide an older financial run.
+      const ordinary: Prisma.SyncTaskWhereInput = { OR: [{ requestPayload: { equals: Prisma.DbNull } }, { requestPayload: { equals: {} } }, { requestPayload: { equals: { settlementMonth: input } } }] };
+      const [latest, success] = await Promise.all([
+        this.prisma.syncTask.findFirst({ where: { ...where, ...ordinary }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
+        this.prisma.syncTask.findFirst({ where: { ...where, ...ordinary, status: 'completed', failedCount: 0, resultPayload: { path: ['monthlyCoverage', 'posted'], equals: true } }, orderBy: [{ finishedAt: 'desc' }, { id: 'desc' }] }),
+      ]);
+      const coveredThrough = success && isMonthlyLedgerRequest(success.requestPayload) ? readMonthlyCoverage(success.resultPayload, input) : null;
+      const status = !latest ? 'missing' : latest.status === 'completed' && !readMonthlyCoverage(latest.resultPayload, input) ? 'partial' : latest.failedCount > 0 && latest.successCount > 0 ? 'partial' : latest.status;
+      const reason = latest?.lastErrorCategory === 'CREDENTIAL_MISSING' ? '尚未配置有效凭据' : latest?.lastErrorCategory === 'TIMEOUT' ? '来源响应超时' : latest?.lastErrorCategory === 'RATE_LIMITED' ? '来源请求限流' : status === 'partial' ? '缺少完整正式入账证据' : status === 'failed' ? '来源未完成，请重试或查看同步详情' : null;
+      return { ...source, status, reason, coveredThrough, lastSuccessAt: coveredThrough ? success!.finishedAt : null, updatedAt: latest?.finishedAt ?? null };
+    }));
+    return { sources, batchId: latestBatch?.id ?? null, refreshing: refreshing > 0, queriedAt: new Date(), coveredThrough: sources.length && sources.every(s => s.coveredThrough) ? new Date(Math.min(...sources.map(s => s.coveredThrough!.getTime()))) : null };
+  }
+
+  async details(input: string, rowKey: string, pageInput = '1', category = 'income') {
+    const settlementMonth = parseSettlementMonthParam(input);
+    const page = Number(pageInput);
+    if (!Number.isInteger(page) || page < 1 || page > 100000 || (rowKey !== 'unassigned' && !/^[0-9a-f-]{36}$/i.test(rowKey)) || !['income', 'airwallex', 'photonpay', 'manual'].includes(category)) throw new AppError(ERROR_CODES.VALIDATION_ERROR, '明细查询参数无效。');
+    const base = { settlementMonth, employeeId: rowKey === 'unassigned' ? null : rowKey, status: 'confirmed' as const };
+    const pagination = { take: 20, skip: (page - 1) * 20, orderBy: { id: 'asc' as const } };
+    if (category === 'income') {
+      const [total, entries] = await Promise.all([this.prisma.incomeRecord.count({ where: base }), this.prisma.incomeRecord.findMany({ where: base, ...pagination, select: { id: true, incomeUsd: true, source: true, affiliateAccount: { select: { accountName: true, accountCode: true } } } })]);
+      return { total, page, items: entries.map(e => ({ key: e.id, source: e.affiliateAccount?.accountName ?? e.affiliateAccount?.accountCode ?? e.source, amount: e.incomeUsd.toString(), date: null })) };
+    }
+    if (category === 'manual') {
+      if (!base.employeeId) return { total: 0, page, items: [] };
+      const manualBase = { ...base, employeeId: base.employeeId };
+      const [total, entries] = await Promise.all([this.prisma.manualCardSpendEntry.count({ where: manualBase }), this.prisma.manualCardSpendEntry.findMany({ where: manualBase, ...pagination, select: { id: true, providerName: true, settledSpendUsd: true } })]);
+      return { total, page, items: entries.map(e => ({ key: e.id, source: e.providerName, amount: e.settledSpendUsd.toString(), date: null })) };
+    }
+    const where = { ...base, provider: category as Provider };
+    const [total, entries] = await Promise.all([this.prisma.cardSpendEvent.count({ where }), this.prisma.cardSpendEvent.findMany({ where, ...pagination, select: { id: true, provider: true, spendUsd: true, transactionAt: true } })]);
+    return { total, page, items: entries.map(e => ({ key: e.id, source: e.provider, amount: e.spendUsd.toString(), date: e.transactionAt.toISOString() })) };
   }
 
   async saveFees(input: string, values: Record<string, string>, actor: Actor) {

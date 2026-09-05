@@ -13,6 +13,14 @@ export class DashboardController {
   @RequirePermissions('salary.view_all')
   monthly(@Query('settlementMonth') month: string) { return this.finance.read(month); }
 
+  @Get('monthly/status')
+  @RequirePermissions('salary.view_all')
+  monthlyStatus(@Query('settlementMonth') month: string) { return this.finance.status(month); }
+
+  @Get('monthly/details')
+  @RequirePermissions('salary.view_all')
+  monthlyDetails(@Query('settlementMonth') month: string, @Query('rowKey') rowKey: string, @Query('page') page: string, @Query('category') category: string) { return this.finance.details(month, rowKey, page, category); }
+
   @Post('monthly/fees')
   @RequirePermissions('card_provider_fee_rate.manage')
   fees(@Body() body: { settlementMonth: string; rates: Record<string, string> }, @CurrentActor() actor: Actor) { return this.finance.saveFees(body.settlementMonth, body.rates, actor); }

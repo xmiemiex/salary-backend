@@ -1,3 +1,4 @@
+import { monthlyCoverage } from '../monthly-coverage';
 import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
@@ -57,6 +58,7 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
   ) {}
 
   async execute(context: SyncAdapterContext): Promise<SyncAdapterResult> {
+    context = { ...context, coverageStartedAt: context.coverageStartedAt ?? new Date() };
     this.assertContext(context);
     const credential = parseCredentialPayload(context.credential.payload);
     const window = getGmt8SettlementMonthWindow(context.settlementMonth);
@@ -283,6 +285,7 @@ export class EverflowIncomeSyncAdapter implements SyncAdapter {
       errorMessage: status === 'failed' ? message : null,
       errorCategory,
       resultPayload: {
+        monthlyCoverage: monthlyCoverage(context, status, failedCount),
         adapterKey: this.adapterKey,
         source: EVERFLOW_SOURCE,
         sourceReport: 'affiliate.reporting.entity.table',

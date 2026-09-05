@@ -344,7 +344,11 @@ export class ProviderCardInventoryService {
     }
     if (provider === Provider.airwallex && !result.partialError && result.invalidCardCount === 0) {
       const credentialFingerprint = createHash('sha256').update(JSON.stringify(parseAirwallexCredential(payload))).digest('hex');
-      await this.prisma.providerInventoryCheckpoint.upsert({ where: { provider }, create: { provider, credentialFingerprint, completedThrough: discoveryStartedAt }, update: { credentialFingerprint, completedThrough: discoveryStartedAt } });
+      const completedThrough = 'completedThrough' in result ? result.completedThrough as Date : discoveryStartedAt;
+      await this.prisma.$transaction(async tx => {
+        await tx.providerInventoryCheckpoint.upsert({ where: { provider }, create: { provider, credentialFingerprint, completedThrough }, update: { credentialFingerprint, completedThrough } });
+        await tx.providerInventoryScan.deleteMany({ where: { provider, credentialFingerprint } });
+      });
     }
     return {
       provider,
@@ -439,35 +443,57 @@ export class ProviderCardInventoryService {
     }
     if (selected === undefined) throw lastError;
 
-    const cardsById = new Map<string, AirwallexTransactionRecord>();
-    let invalidCardCount = 0;
-    const finalTo = new Date();
-    for (let from = new Date(fromDate); from <= finalTo;) {
+    const stored = await this.prisma.providerInventoryScan.findUnique({ where: { provider: Provider.airwallex } });
+    type ScanState = { from: string; page: number; phase: 'cards' | 'holders' | 'matching'; holderPage: number; cards: AirwallexTransactionRecord[]; holders: AirwallexTransactionRecord[]; invalidCardCount: number };
+    const resume = stored?.credentialFingerprint === credentialFingerprint ? stored : null;
+    const state: ScanState = resume ? resume.state as unknown as ScanState : { from: fromDate.toISOString(), page: 0, phase: 'cards', holderPage: 0, cards: [], holders: [], invalidCardCount: 0 };
+    const finalTo = resume?.through ?? new Date();
+    const cardsById = new Map<string, AirwallexTransactionRecord>(state.cards.map(card => [String(card.card_id), card]));
+    const holders = new Map<string, AirwallexTransactionRecord>(state.holders.map(holder => [String(holder.cardholder_id), holder]));
+    let invalidCardCount = state.invalidCardCount;
+    const save = async () => {
+      const data = { credentialFingerprint, through: finalTo, state: JSON.parse(JSON.stringify({ ...state, cards: [...cardsById.values()], holders: [...holders.values()], invalidCardCount })) as Prisma.InputJsonValue };
+      await this.prisma.providerInventoryScan.upsert({ where: { provider: Provider.airwallex }, create: { provider: Provider.airwallex, ...data }, update: data });
+    };
+    await save();
+    for (let from = new Date(state.from); state.phase === 'cards' && from <= finalTo;) {
       const to = new Date(Math.min(finalTo.getTime(), from.getTime() + AIRWALLEX_WINDOW_DAYS * 86_400_000 - 1));
-      for (let page = 0; page < MAX_PAGES; page += 1) {
+      for (let page = state.page; page < MAX_PAGES; page += 1) {
         const response = await this.airwallex.listCards({ credential, page, pageSize: PAGE_SIZE, from, to });
         for (const card of response.cards) {
           const id = firstString(card.card_id, card.id);
-          if (id) cardsById.set(id, card);
+          if (id) cardsById.set(id, {
+            card_id: id, cardholder_id: firstString(card.cardholder_id, objectField(card.cardholder, 'cardholder_id'), objectField(card.cardholder, 'id')),
+            cardholder: { email: objectField(card.cardholder, 'email') }, additional_cardholder_ids: card.additional_cardholder_ids,
+            masked_card_number: maskOnly(firstString(card.card_number, card.masked_card_number, card.last4)),
+            nickname: firstString(card.nick_name, card.nickname), status: firstString(card.card_status, card.status),
+            created_at: card.created_at, updated_at: card.updated_at,
+          });
           else invalidCardCount += 1;
         }
         if (response.hasMore && response.cards.length === 0) throw new Error('Airwallex card pagination returned an incomplete empty page.');
+        if (page === MAX_PAGES - 1 && response.hasMore) throw new Error('Airwallex card pagination exceeded the safety limit.');
+        state.page = response.hasMore ? page + 1 : 0;
+        state.from = response.hasMore ? from.toISOString() : new Date(to.getTime() + 1).toISOString();
+        if (!response.hasMore && to.getTime() === finalTo.getTime()) state.phase = 'holders';
+        await save();
         if (!response.hasMore) break;
-        if (page === MAX_PAGES - 1) throw new Error('Airwallex card pagination exceeded the safety limit.');
       }
       from = new Date(to.getTime() + 1);
     }
 
-    const holders = new Map<string, AirwallexTransactionRecord>();
     let partialError: ReturnType<typeof safeProviderError> | undefined;
     try {
-      for (let page = 0; page < MAX_PAGES; page += 1) {
+      for (let page = state.holderPage; state.phase === 'holders' && page < MAX_PAGES; page += 1) {
         const response = await this.airwallex.listCardholders({ credential, page, pageSize: PAGE_SIZE });
         for (const holder of response.cardholders) {
           const id = firstString(holder.cardholder_id, holder.id);
-          if (id) holders.set(id, holder);
+          if (id) holders.set(id, { cardholder_id: id, email: holder.email });
         }
         if (response.hasMore && (response.cardholders.length === 0 || page === MAX_PAGES - 1)) throw new Error('Airwallex cardholder pagination incomplete.');
+        state.holderPage = page + 1;
+        if (!response.hasMore) state.phase = 'matching';
+        await save();
         if (!response.hasMore) break;
       }
     } catch (error) {
@@ -475,6 +501,7 @@ export class ProviderCardInventoryService {
       partialError.message = redactCredentialValues(partialError.message, [credential.clientId, credential.apiKey]);
     }
     return {
+      completedThrough: finalTo,
       cards: [...cardsById.values()].flatMap((card) => {
         const normalized = normalizeAirwallexCard(card, holders, Boolean(partialError));
         return normalized ? [normalized] : [];

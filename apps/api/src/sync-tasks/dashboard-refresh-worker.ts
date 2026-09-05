@@ -15,5 +15,5 @@ export class DashboardRefreshWorker implements OnApplicationBootstrap, OnModuleD
     };
     run(); this.timer = setInterval(run, 2000); this.timer.unref();
   }
-  async onModuleDestroy() { if (this.timer) clearInterval(this.timer); await this.work; }
+  async onModuleDestroy() { if (this.timer) clearInterval(this.timer); await this.work; await this.executor.drainDashboard(); }
 }

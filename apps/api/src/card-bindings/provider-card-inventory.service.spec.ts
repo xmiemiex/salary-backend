@@ -25,6 +25,8 @@ describe('ProviderCardInventoryService', () => {
       providerCardAccountingExclusion: { findMany: jest.fn().mockResolvedValue([]) },
       subIdMapping: { findMany: jest.fn().mockResolvedValue([]) },
     };
+    prisma.providerInventoryScan = { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) };
+    prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
     credentials = { getCardProviderCredentialPayload: jest.fn() };
     airwallex = { listCards: jest.fn(), listCardholders: jest.fn() };
     photonpay = { listCards: jest.fn(), getCardDetail: jest.fn() };

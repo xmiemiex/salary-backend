@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd';
 import type { Actor } from '../types/session';
 import { ADMIN_MENU, isAdminMenuItemVisible, type AdminMenuItem } from '../navigation/menu';
@@ -35,6 +36,16 @@ export function getVisibleMenu(actor: Actor): AdminMenuItem[] {
 export function AdminLayout({ actor, currentPath, onNavigate, onLogout, onCurrentSessionInvalidated }: AdminLayoutProps) {
   const visibleMenu = getVisibleMenu(actor);
   const currentItem = ADMIN_MENU.find((item) => item.path === currentPath) ?? visibleMenu[0] ?? ADMIN_MENU[0];
+  const groupFor = (key: string) => ['dashboard', 'salary-settlements'].includes(key) ? 'main' : ['data-sync', 'sync-reconciliation', 'sync-unmatched-events', 'audit-logs', 'system-health', 'alerts', 'backup-recovery', 'release-gate'].includes(key) ? 'operations' : ['security', 'admin-users', 'roles'].includes(key) ? 'access' : 'configuration';
+  const [openKeys, setOpenKeys] = useState<string[]>([]);
+  useEffect(() => { const group = groupFor(currentItem.key); if (group !== 'main') setOpenKeys(keys => keys.includes(group) ? keys : [...keys, group]); }, [currentItem.key]);
+  const menuItems = [
+    ...visibleMenu.filter(item => groupFor(item.key) === 'main').map(item => ({ key: item.key, label: item.title })),
+    ...[{ key: 'configuration', label: '业务配置与调整' }, { key: 'operations', label: '同步与运维' }, { key: 'access', label: '账号与权限' }].flatMap(group => {
+      const children = visibleMenu.filter(item => groupFor(item.key) === group.key).map(item => ({ key: item.key, label: item.title }));
+      return children.length ? [{ ...group, children }] : [];
+    }),
+  ];
   const canAccessCurrent = visibleMenu.some((item) => item.path === currentItem.path);
 
   return (
@@ -49,7 +60,9 @@ export function AdminLayout({ actor, currentPath, onNavigate, onLogout, onCurren
         <Menu
           mode="inline"
           selectedKeys={[currentItem.key]}
-          items={visibleMenu.map((item) => ({ key: item.key, label: item.title }))}
+          items={menuItems}
+          openKeys={openKeys}
+          onOpenChange={setOpenKeys}
           onClick={({ key }) => {
             const next = visibleMenu.find((item) => item.key === key);
             if (next) onNavigate(next.path);
