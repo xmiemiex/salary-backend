@@ -1,4 +1,6 @@
-import { monthlyCoverage } from '../monthly-coverage';
+import { isMonthlyLedgerRequest, monthlyCoverage } from '../monthly-coverage';
+import { createHash } from 'node:crypto';
+import { PhotonPayPageScan } from './photonpay-page-scan';
 import { Injectable } from '@nestjs/common';
 import {
   Prisma,
@@ -122,6 +124,13 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
     this.assertContext(context);
     const credential = parsePhotonPayCredential(context.credential.payload);
     const window = getPhotonPayExecutionWindow(context, credential);
+    const pageScan = context.durablePageScan && isMonthlyLedgerRequest(context.requestPayload)
+      ? new PhotonPayPageScan(this.prisma, context, {
+        version: 1, credential, from: window.requestFrom.toISOString(), to: window.requestTo.toISOString(),
+        month: context.settlementMonth.toISOString(), pageSize: PAGE_SIZE,
+      }) : null;
+    // A resumable run must not keep admitting transactions created after its original snapshot.
+    if (pageScan) window.requestTo = new Date(Math.min(window.requestTo.getTime(), context.coverageStartedAt!.getTime()));
 
     let successCount = 0;
     let failedCount = 0;
@@ -157,7 +166,7 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       targetSettledTransactionCountByCurrency: {},
       settledAmountByCurrency: {},
     };
-    const transactionSyncStartedAt = new Date();
+    let transactionSyncStartedAt = new Date();
     let providerUsdDebitAmountTotal = new Prisma.Decimal(0);
     let cardInventory: Awaited<ReturnType<ProviderCardInventoryService['syncProviderWithPayload']>> | null = null;
 
@@ -171,10 +180,22 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
         ? await this.loadHistoricalBackfillCardSets()
         : null;
       stats.targetCardCount = targetCards?.targetCardIds.size ?? 0;
-      const seenTransactions = new Set<string>();
-      const settledAmounts = new Map<string, Prisma.Decimal>();
-      for (const queryWindow of splitPhotonPayQueryWindow(window.requestFrom, window.requestTo)) {
-        let page = 1;
+      const saved = cardInventory?.status === 'completed' ? await pageScan?.load() : null;
+      if (saved) {
+        Object.assign(stats, saved.stats);
+        successCount = saved.successCount; failedCount = saved.failedCount;
+        providerUsdDebitAmountTotal = new Prisma.Decimal(stats.providerUsdDebitAmountTotal);
+        context.coverageStartedAt = new Date(saved.coverageStartedAt);
+        window.requestTo = new Date(Math.min(window.requestTo.getTime(), context.coverageStartedAt.getTime()));
+        transactionSyncStartedAt = new Date(saved.coverageStartedAt);
+      }
+      const seenTransactions = new Set<string>(saved?.seen ?? []);
+      const settledAmounts = new Map<string, Prisma.Decimal>(Object.entries(stats.settledAmountByCurrency).map(([key, value]) => [key, new Prisma.Decimal(value)]));
+      const queryWindows = splitPhotonPayQueryWindow(window.requestFrom, window.requestTo);
+      if (saved && saved.windowIndex > queryWindows.length) throw new Error('PhotonPay saved query window is invalid.');
+      for (let windowIndex = saved?.windowIndex ?? 0; windowIndex < queryWindows.length; windowIndex++) {
+        const queryWindow = queryWindows[windowIndex];
+        let page = saved?.windowIndex === windowIndex ? saved.nextPage : 1;
         while (true) {
           const response = await this.client.listCardTransactions({
             credential,
@@ -187,13 +208,13 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
 
           for (const raw of response.transactions) {
             const record = normalizePhotonPayTransaction(raw);
-            const transactionKey = record.externalEventId ?? [
+            const transactionKey = createHash('sha256').update(record.externalEventId ?? [
               record.cardId,
               record.transactionAt?.toISOString(),
               record.amount.toString(),
               record.currency,
               record.transactionType,
-            ].join('|');
+            ].join('|')).digest('hex');
             if (seenTransactions.has(transactionKey)) {
               stats.duplicateBoundaryCount += 1;
               continue;
@@ -262,12 +283,21 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
           }
 
           if (response.hasMore && (response.transactions.length === 0 || page >= 10000)) throw new Error('PhotonPay transaction pagination incomplete.');
+          // Checkpoint only a fully processed page. A partial page is replayed safely by event ID.
+          if (pageScan && cardInventory?.status === 'completed') {
+            stats.settledAmountByCurrency = Object.fromEntries([...settledAmounts].map(([currency, amount]) => [currency, amount.toString()]));
+            stats.providerUsdDebitAmountTotal = providerUsdDebitAmountTotal.toString();
+            await pageScan.save({ version: 1, windowIndex: response.hasMore ? windowIndex : windowIndex + 1,
+              nextPage: response.hasMore ? page + 1 : 1, coverageStartedAt: context.coverageStartedAt!.toISOString(),
+              successCount, failedCount, stats: { ...stats }, seen: [...seenTransactions] });
+          }
           if (!response.hasMore) break;
           page += 1;
         }
       }
       stats.settledAmountByCurrency = Object.fromEntries([...settledAmounts].map(([currency, amount]) => [currency, amount.toString()]));
       stats.providerUsdDebitAmountTotal = providerUsdDebitAmountTotal.toString();
+      await pageScan?.clear();
     } catch (error) {
       failedCount += 1;
       stats.providerUsdDebitAmountTotal = providerUsdDebitAmountTotal.toString();

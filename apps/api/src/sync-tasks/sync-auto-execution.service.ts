@@ -217,6 +217,7 @@ export class SyncAutoExecutionService {
         provider: task.provider ?? undefined, settlementMonth: task.settlementMonth,
         affiliateAccountId: task.affiliateAccountId ?? undefined, requestedBy: task.requestedBy,
         requestPayload: task.requestPayload,
+        durablePageScan: task.refreshBatchId ? { leaseOwner: this.instanceId, attemptCount: claim.attemptCount } : undefined,
         affiliateAccountCode: task.affiliateAccount?.accountCode ?? credential.affiliateAccountCode,
         credential: { credentialId: credential.credentialId, hasCredential: true, maskedPayload: credential.maskedPayload, payload: credential.payload },
       }));

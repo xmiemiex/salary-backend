@@ -521,6 +521,15 @@ model ProviderInventoryCheckpoint {
   @@map("provider_inventory_checkpoints")
 }
 
+model ProviderTransactionScan {
+  provider Provider
+  settlementMonth DateTime @map("settlement_month") @db.Date
+  scopeFingerprint String @map("scope_fingerprint") @db.VarChar(64)
+  state Json
+  @@id([provider, settlementMonth])
+  @@map("provider_transaction_scans")
+}
+
 model MonthlyRefreshBatch {
   id String @id @default(uuid()) @db.Uuid
   settlementMonth DateTime @map("settlement_month") @db.Date

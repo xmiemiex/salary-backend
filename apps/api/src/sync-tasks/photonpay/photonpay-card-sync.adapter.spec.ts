@@ -10,6 +10,8 @@ import {
   SyncTaskType,
 } from '@prisma/client';
 import { SyncAdapterResolver } from '../sync-adapter-resolver';
+import { PhotonPayPageScan, PhotonPayPageState } from './photonpay-page-scan';
+import { ProviderRequestError } from '../provider-request-error';
 import {
   PhotonPayCardSyncAdapter,
   getPhotonPayGmt8SettlementMonthWindow,
@@ -977,6 +979,35 @@ describe('PhotonPayCardSyncAdapter', () => {
   function mockTransactions(transactions: Record<string, unknown>[]) {
     client.listCardTransactions.mockResolvedValue({ transactions, raw: { records: transactions }, hasMore: false });
   }
+
+  it('resumes a completed page after a timeout, preserving totals and deduplication across a new manual task', async () => {
+    let saved: PhotonPayPageState | null = null;
+    const load = jest.spyOn(PhotonPayPageScan.prototype, 'load').mockImplementation(async () => saved ? structuredClone(saved) : null);
+    const save = jest.spyOn(PhotonPayPageScan.prototype, 'save').mockImplementation(async state => { saved = structuredClone(state); });
+    const clear = jest.spyOn(PhotonPayPageScan.prototype, 'clear').mockImplementation(async () => { saved = null; });
+    const originalStart = new Date('2026-06-20T00:00:00Z');
+    const firstContext = { ...context(), coverageStartedAt: originalStart, durablePageScan: { leaseOwner: 'worker-a', attemptCount: 1 } };
+    try {
+      client.listCardTransactions.mockResolvedValueOnce({ transactions: [settledTransaction()], hasMore: true })
+        .mockRejectedValueOnce(new ProviderRequestError('TIMEOUT', 'Simulated deadline'));
+      const interrupted = await adapter.execute(firstContext);
+      expect(interrupted.status).toBe('failed');
+      expect(interrupted.resultPayload.monthlyCoverage).toBeNull();
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save.mock.calls[0][0]).toMatchObject({ windowIndex: 0, nextPage: 2, successCount: 1, failedCount: 0 });
+      client.listCardTransactions.mockReset().mockResolvedValue({ transactions: [], hasMore: false });
+      client.listCardTransactions.mockResolvedValueOnce({ transactions: [settledTransaction(), { ...settledTransaction(), transactionId: 'txn-2' }], hasMore: false });
+      const resumed = await adapter.execute({ ...firstContext, taskId: '20000000-0000-0000-0000-000000000002', coverageStartedAt: new Date('2026-07-02'), durablePageScan: { leaseOwner: 'worker-b', attemptCount: 1 } });
+      expect(client.listCardTransactions.mock.calls[0][0].page).toBe(2);
+      expect(client.listCardTransactions.mock.calls.at(-1)?.[0].to).toEqual(originalStart);
+      expect(resumed).toMatchObject({ status: 'completed', successCount: 2, failedCount: 0 });
+      expect(resumed.resultPayload).toMatchObject({ providerUsdDebitAmountTotal: '24.68', duplicateBoundaryCount: 1, monthlyCoverage: { through: originalStart.toISOString() } });
+      expect(prisma.cardSpendEvent.create).toHaveBeenCalledTimes(2);
+      expect(inventory.markUntouchedTransactionSync).toHaveBeenLastCalledWith(Provider.photonpay, originalStart, 'completed:no_transactions');
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(saved).toBeNull();
+    } finally { load.mockRestore(); save.mockRestore(); clear.mockRestore(); }
+  });
 });
 
 describe('SyncAdapterResolver PhotonPay routing', () => {

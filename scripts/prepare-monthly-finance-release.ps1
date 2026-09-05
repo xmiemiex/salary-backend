@@ -38,7 +38,7 @@ $taskManifest = [ordered]@{
   worker = 'DashboardRefreshWorker inside the existing API process; no extra daemon'
   plannerEnabled = $false
   automaticScheduledExecutionEnabled = $false
-  migrations = @('20260905010000_monthly_finance_refresh','20260905011000_inventory_checkpoint','20260905012000_monthly_write_lock','20260905013000_adpos_monthly_fee_consistency','20260905014000_preserve_unambiguous_adpos_rates','20260905015000_guard_inflight_financial_writes','20260905016000_resumable_inventory')
+  migrations = @('20260905010000_monthly_finance_refresh','20260905011000_inventory_checkpoint','20260905012000_monthly_write_lock','20260905013000_adpos_monthly_fee_consistency','20260905014000_preserve_unambiguous_adpos_rates','20260905015000_guard_inflight_financial_writes','20260905016000_resumable_inventory','20260906010000_transaction_page_resume')
 }
 $taskManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $taskOutput 'manifest.json') -Encoding utf8
 "$taskHash  $([IO.Path]::GetFileName($taskArchive))" | Set-Content -LiteralPath (Join-Path $taskOutput 'SHA256SUMS') -Encoding ascii

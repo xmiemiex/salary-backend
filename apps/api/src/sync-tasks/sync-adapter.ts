@@ -14,6 +14,8 @@ export type SyncAdapterContext = {
   requestedBy?: string | null;
   requestPayload?: unknown;
   coverageStartedAt?: Date;
+  /** Internal executor lease; never accepted from HTTP request payload. */
+  durablePageScan?: { leaseOwner: string; attemptCount: number };
   credential: {
     credentialId: string;
     hasCredential: true;
