@@ -1,3 +1,5 @@
+> 已正式上线：请以 [monthly-finance-production-deployment.md](monthly-finance-production-deployment.md) 为最新结果。下文为历史审核记录。
+
 # 月度财务发布审核（2026-09-06）
 
 结论：**可申请上线**。这是发布准备结论，不是生产已部署或财务独立对账通过。本轮修复 PP 成功提交的中断窗口，完成定向测试、8 项升级演练、旧版客户端兼容检查及 Node 22 生产镜像构建。唯一候选入口是 `tmp/monthly-finance-release-review/manifest.json`；其中记录提交、源码包 SHA256、镜像和证据校验值。其他 monthly-finance 发布目录均为历史证据，禁止从旧 manifest 选包。

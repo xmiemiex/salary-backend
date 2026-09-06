@@ -1,0 +1,13 @@
+const {PrismaClient}=require('@prisma/client'),{createHash}=require('node:crypto'),fs=require('node:fs');const db=new PrismaClient();
+const mode=process.argv[2], expected=JSON.parse(fs.readFileSync('/release-checks/migrations.json'));
+const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
+(async()=>{const r=await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+const migrations=await tx.$queryRaw`SELECT migration_name,checksum,finished_at,rolled_back_at FROM _prisma_migrations ORDER BY migration_name`;
+if(migrations.some(m=>!m.finished_at||m.rolled_back_at||expected[m.migration_name]!==m.checksum))throw Error('MIGRATION_DRIFT');
+if(migrations.length!==(mode==='before'?19:27))throw Error('MIGRATION_COUNT');
+if(process.env.SYNC_PLANNER_ENABLED!=='false'||process.env.SYNC_AUTO_EXECUTION_ENABLED!=='false')throw Error('AUTOMATIC_FLAGS_CHANGED');
+const active=await tx.syncTask.count({where:{status:{in:['pending','running','retry_wait']}}}); if(active)throw Error('ACTIVE_SYNC');
+const locks=await tx.monthlySettlement.count({where:{settlementMonth:new Date('2026-08-01'),status:'locked'}});if(locks)throw Error('ACCEPTANCE_MONTH_LOCKED');
+const income=await tx.incomeRecord.findMany({where:{source:{in:['manual','manual_adjustment','cake_adjustment']}},orderBy:{id:'asc'}});
+const manual=await tx.manualCardSpendEntry.findMany({orderBy:{id:'asc'}}),fees=await tx.monthlyCardProviderFeeRate.findMany({orderBy:{id:'asc'}});
+return {at:new Date().toISOString(),mode,migrations:migrations.map(m=>m.migration_name),activeSync:active,manualIncomeHash:hash(income),manualCostHash:hash(manual),providerFeesHash:hash(fees),manualIncomeCount:income.length,manualCostCount:manual.length,flagsFalse:true};});console.log(JSON.stringify(r));})().catch(e=>{console.error(/^[A-Z_]+$/.test(e.message)?e.message:'SAFE_GUARD_FAILED');process.exitCode=1}).finally(()=>db.$disconnect());

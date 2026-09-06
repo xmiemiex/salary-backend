@@ -1,0 +1,167 @@
+{
+  "deployedCommit": "ea2b7f6a162f92dc228c1d22448f738381a0e787",
+  "tag": "monthly-ea2b7f6a162f",
+  "approvedArchiveSha256": "a867d3a2607eb7dd83ebb727e16cade423f9081b63a777811578d0e64c0622cd",
+  "sourceFiles": 469,
+  "migrationsBefore": 19,
+  "migrationsAfter": 27,
+  "apiImage": "sha256:8de5423b041f59f55ffbed072bb1712d2f5e13c218993f17528fd8bd18b98a81",
+  "webImage": "sha256:b52b44407ba9d16d5cab6e4ef82dbedf6a53fec9271a1bad450b395733f98daf",
+  "backup": {
+    "file": "postgres-full-20260906T113713Z.sql.gz.enc",
+    "sha256": "72f480b1b6ce41116f5ebe095d19e5fd7c1ab6055bb0c8acf4213300e873efe5",
+    "sizeBytes": 545371,
+    "authenticatedDecryptGzipPassed": true
+  },
+  "phases": [
+    "2026-09-06T11:13:08Z STARTED",
+    "2026-09-06T11:13:10Z FAILED phase=preparation",
+    "2026-09-06T11:17:57Z STARTED",
+    "2026-09-06T11:18:13Z BUILDING_APPROVED_SOURCE",
+    "2026-09-06T11:19:31Z STOPPING_WRITERS",
+    "2026-09-06T11:19:32Z FAILED phase=stopped line=59",
+    "2026-09-06T11:19:33Z OLD_IMAGES_RESTARTED_BEFORE_MIGRATION",
+    "2026-09-06T11:36:55Z STARTED",
+    "2026-09-06T11:37:08Z BUILDING_APPROVED_SOURCE",
+    "2026-09-06T11:37:13Z CREATING_FRESH_BACKUP_WHILE_API_AVAILABLE",
+    "2026-09-06T11:37:14Z STOPPING_WRITERS",
+    "2026-09-06T11:37:15Z MIGRATING",
+    "2026-09-06T11:37:24Z DEPLOYED_HEALTH_AND_FORMAL_LOGIN_PASSED",
+    "2026-09-06T11:40:58Z DEPLOYMENT_AND_ACCEPTANCE_COMPLETE"
+  ],
+  "acceptance": {
+    "startedAt": "2026-09-06T11:37:24.991Z",
+    "formalHttps": true,
+    "login": true,
+    "unauthenticatedStatus": 401,
+    "monthSelection": true,
+    "sourceCount": 6,
+    "month": "2026-08",
+    "syntheticWrites": false,
+    "refreshAccepted": true,
+    "sources": [
+      {
+        "source": "A01",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      },
+      {
+        "source": "A02",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      },
+      {
+        "source": "A03",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      },
+      {
+        "source": "A04",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      },
+      {
+        "source": "airwallex",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      },
+      {
+        "source": "photonpay",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-08-31T16:00:00Z"
+      }
+    ],
+    "refreshing": false,
+    "detailPage1Rows": 20,
+    "detailPage2Rows": 20,
+    "pendingUnifiedRows": 2,
+    "rates": {
+      "airwallex": null,
+      "photonpay": null,
+      "adpos": null
+    },
+    "finishedAt": "2026-09-06T11:40:56.996Z",
+    "allSourcesCompleted": true,
+    "result": "PASSED"
+  },
+  "browser": {
+    "at": "2026-09-06T11:47:26.779Z",
+    "formalOrigin": "https://admin-salary.lovemiemie.com",
+    "authenticatedRealSession": true,
+    "browser": "Edge",
+    "coreColumns": true,
+    "monthSwitch": true,
+    "refreshButtonVisible": true,
+    "employeeRows": 6,
+    "detailRows": 20,
+    "pageErrors": 0,
+    "browserBusinessWrites": false
+  },
+  "ledger": {
+    "at": "2026-09-06T11:40:57.562Z",
+    "beforeCount": 147,
+    "afterCount": 5360,
+    "existingRowsUnchanged": true,
+    "duplicateExternalEvents": 0
+  },
+  "manual": {
+    "at": "2026-09-06T11:40:58.084Z",
+    "mode": "after",
+    "migrations": [
+      "20260617000000_initial_schema",
+      "20260618000000_add_sync_tasks",
+      "20260619000000_add_api_credentials",
+      "20260619010000_add_card_spend_event_imported_by",
+      "20260619020000_add_sync_unmatched_events",
+      "20260621000000_align_migration_chain_with_schema",
+      "20260621010000_add_admin_sessions",
+      "20260621020000_add_admin_user_permissions",
+      "20260622010000_add_role_read_permission",
+      "20260623010000_add_sync_planning",
+      "20260623011000_align_sync_planning_run_id",
+      "20260624010000_add_sync_auto_execution",
+      "20260708010000_add_system_health_read_permission",
+      "20260708020000_add_alerts_notifications",
+      "20260708021000_align_alert_notification_id_defaults",
+      "20260709010000_add_backup_recovery_center",
+      "20260709011000_align_backup_recovery_uuid_defaults",
+      "20260810010000_add_provider_card_inventory",
+      "20260821010000_add_photonpay_alias_and_card_exclusion",
+      "20260905010000_monthly_finance_refresh",
+      "20260905011000_inventory_checkpoint",
+      "20260905012000_monthly_write_lock",
+      "20260905013000_adpos_monthly_fee_consistency",
+      "20260905014000_preserve_unambiguous_adpos_rates",
+      "20260905015000_guard_inflight_financial_writes",
+      "20260905016000_resumable_inventory",
+      "20260906010000_transaction_page_resume"
+    ],
+    "activeSync": 0,
+    "manualIncomeHash": "da877e094d216392788115b8f552e555b2c0cb6bf787ea4073e2f7fb42968057",
+    "manualCostHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "providerFeesHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "manualIncomeCount": 3,
+    "manualCostCount": 0,
+    "flagsFalse": true
+  },
+  "postMigrationRollback": false,
+  "preMigrationOldServiceRestart": true,
+  "operationalScriptSha256": "fe0da58d9209eaf25422acd5678911e90c61818380f27bed2c427a56b3328c1c",
+  "verificationSessionCleanup": {
+    "at": "2026-09-06T11:51:16.542Z",
+    "verificationSessionLoggedOut": true,
+    "httpStatus": 201
+  }
+}

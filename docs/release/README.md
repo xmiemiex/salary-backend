@@ -1,3 +1,5 @@
+> 已正式上线：请以 [monthly-finance-production-deployment.md](monthly-finance-production-deployment.md) 为最新结果。下文为历史审核记录。
+
 > 最新月度财务发布审核入口：[monthly-finance-release-review.md](monthly-finance-release-review.md)。此前候选包仅为历史证据。
 
 # Release Documentation

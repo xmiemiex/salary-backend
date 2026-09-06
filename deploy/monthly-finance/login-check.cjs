@@ -1,0 +1,2 @@
+const fs=require('node:fs');
+(async()=>{const body=fs.readFileSync(process.argv[2],'utf8');const r=await fetch('https://api-salary.lovemiemie.com/auth/login',{method:'POST',headers:{'content-type':'application/json'},body});const a=await r.json();if(!r.ok||!a.token)throw Error('LOGIN_FAILED');fs.writeFileSync(process.argv[3],a.token,{mode:0o600});console.log('FORMAL_HTTPS_LOGIN_PASSED');})().catch(()=>{console.error('FORMAL_HTTPS_LOGIN_FAILED');process.exitCode=1});
