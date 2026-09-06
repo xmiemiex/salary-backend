@@ -1,0 +1,233 @@
+{
+  "deployedCommit": "ea3b9f31e398a0aa4ea29413f3e42fedd731973a",
+  "tag": "cake-review-ea3b9f31e398",
+  "sourceSha256": "f1cd08271416929a0abdc08ef2875534beaae4cdccbd89b968d4d249319df466",
+  "checksSha256": "250b8773516576fe2a1ebab60810ea4fe8912495ca6c40e4bc83e854b8501211",
+  "timeline": [
+    "2026-09-06T14:36:44Z STARTED",
+    "2026-09-06T14:37:05Z BUILDING_APPROVED_SOURCE",
+    "2026-09-06T14:38:22Z CREATING_FRESH_BACKUP_WHILE_OLD_API_RUNNING",
+    "2026-09-06T14:38:26Z STOPPING_WRITERS_FOR_ADDITIVE_MIGRATION",
+    "2026-09-06T14:38:29Z APPLYING_SINGLE_APPROVED_EVIDENCE_TABLE_MIGRATION",
+    "2026-09-06T14:38:43Z DEPLOYED_FORMAL_LOGIN_AND_HEALTH_PASSED",
+    "2026-09-06T14:38:45Z CAKE_DEPLOYMENT_COMPLETE_READ_ONLY_ACCEPTANCE"
+  ],
+  "productionImages": [
+    "[salary-settlement-api:cake-review-ea3b9f31e398] sha256:d789b35b384f0dcbd2b7acf1d7a4ee7d6977c8717fadcb62728263da432d4775",
+    "[salary-settlement-web:cake-review-ea3b9f31e398] sha256:edbcacbb478ea54d68616a60b7ebece96f437ebc6007d95d2f0c98d5a375a9cd"
+  ],
+  "backupHealth": [
+    "TASK88_BACKUP_HEALTH_CHECKED_AT_UTC=2026-09-06T14:38:24Z",
+    "TASK88_BACKUP_TIMER_UNIT=salary-postgres-backup.timer",
+    "TASK88_BACKUP_SERVICE_UNIT=salary-postgres-backup.service",
+    "TASK88_BACKUP_TIMER_ENABLED=enabled",
+    "TASK88_BACKUP_TIMER_ACTIVE=active",
+    "TASK88_BACKUP_TIMER_LAST_TRIGGER=Sun 2026-09-06 02:26:43 UTC",
+    "TASK88_BACKUP_TIMER_NEXT_TRIGGER=Mon 2026-09-07 02:20:21 UTC",
+    "TASK88_BACKUP_SERVICE_RESULT=success",
+    "TASK88_BACKUP_SERVICE_EXIT_CODE=0",
+    "TASK88_BACKUP_SERVICE_FINISHED=Sun 2026-09-06 14:38:24 UTC",
+    "TASK88_BACKUP_DIRECTORY=/opt/salary-settlement-admin/backups",
+    "TASK88_BACKUP_DIRECTORY_OWNER=root",
+    "TASK88_BACKUP_DIRECTORY_GROUP=postgres",
+    "TASK88_BACKUP_DIRECTORY_MODE=750",
+    "TASK88_BACKUP_RETENTION_DAYS=30",
+    "TASK88_LATEST_BACKUP_BASENAME=postgres-full-20260906T143823Z.sql.gz.enc",
+    "TASK88_LATEST_BACKUP_MTIME_UTC=2026-09-06T14:38:23Z",
+    "TASK88_LATEST_BACKUP_AGE_SECONDS=1",
+    "TASK88_LATEST_BACKUP_SIZE_BYTES=1320614",
+    "TASK88_LATEST_BACKUP_SIZE_HUMAN=1.3M",
+    "TASK88_LATEST_BACKUP_OWNER=root",
+    "TASK88_LATEST_BACKUP_GROUP=postgres",
+    "TASK88_LATEST_BACKUP_MODE=640",
+    "TASK88_BACKUP_CHECKSUM_SOURCE=sidecar:postgres-full-20260906T143823Z.sql.gz.enc.sha256",
+    "TASK88_BACKUP_CHECKSUM_RESULT=match",
+    "TASK88_BACKUP_CHECKSUM_MODE=640",
+    "TASK88_BACKUP_ENCRYPTION_FORMAT=aes-256-gcm-v1",
+    "TASK88_BACKUP_INTEGRITY_RESULT=pass_authenticated_decrypt_gzip",
+    "TASK88_BACKUP_FILE_COUNT=41",
+    "TASK88_BACKUP_DIRECTORY_BYTES=19049686",
+    "TASK88_BACKUP_WORLD_READABLE_FILES=0",
+    "TASK88_BACKUP_WORLD_WRITABLE_FILES=0",
+    "TASK88_BACKUP_GROUP_WRITABLE_FILES=0",
+    "TASK88_BACKUP_FILESYSTEM_USED_PERCENT=10",
+    "TASK88_BACKUP_HEALTH_STATUS=pass",
+    "TASK88_BACKUP_HEALTH_WARNING_CODES=none",
+    "TASK88_BACKUP_HEALTH_FAILURE_CODES=none"
+  ],
+  "backupSha256": "804ca539427ac6061f7e49009180e8ced6d3d343c4ca71ea3acb0dbb4cf11951  /opt/salary-settlement-admin/backups/postgres-full-20260906T143823Z.sql.gz.enc",
+  "migration": {
+    "before": 27,
+    "after": 28,
+    "added": [
+      "20260907010000_cake_monthly_income_review"
+    ],
+    "evidenceTableEmpty": true
+  },
+  "preservationMatched": [
+    "allCardSpend",
+    "allSyncTasks",
+    "allIncome",
+    "manualIncome",
+    "manualCost",
+    "providerFees",
+    "adposFees",
+    "mappings",
+    "employeeSubIds",
+    "locks",
+    "providerEmailAliases",
+    "providerCardExclusions"
+  ],
+  "julyPhotonpayUnchanged": {
+    "status": "completed",
+    "attemptCount": 1,
+    "successCount": 5807,
+    "failedCount": 0,
+    "errorCategory": null,
+    "nextAttemptAt": null,
+    "monthlyCoverage": {
+      "from": "2026-06-30T16:00:00.000Z",
+      "month": "2026-07",
+      "scope": "all_accounts_cards",
+      "posted": true,
+      "through": "2026-07-31T16:00:00.000Z",
+      "version": 1
+    },
+    "resumedFromPage": 7,
+    "resumedFromWindow": 0,
+    "providerCode": null
+  },
+  "acceptance": {
+    "at": "2026-09-06T14:38:43.240Z",
+    "months": [
+      {
+        "month": "2026-07",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "adjusted",
+            "confirmedAdjustmentCount": 3,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "completed",
+        "photonpayCoverageComplete": true
+      },
+      {
+        "month": "2026-08",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "completed",
+        "photonpayCoverageComplete": true
+      },
+      {
+        "month": "2026-09",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "missing",
+        "photonpayCoverageComplete": false
+      }
+    ],
+    "financeHashesUnchanged": true,
+    "authenticatedRead": true,
+    "anonymousStatus": 401,
+    "businessWrites": false,
+    "refreshedProviders": false
+  },
+  "browser": {
+    "at": "2026-09-06T14:43:02.398Z",
+    "formalOrigin": "https://admin-salary.lovemiemie.com",
+    "browser": "Edge",
+    "months": [
+      {
+        "month": "2026-07",
+        "expected": [
+          {
+            "account": "Blitzads",
+            "status": "adjusted"
+          },
+          {
+            "account": "BA2",
+            "status": "unreviewed"
+          }
+        ],
+        "adjustmentNavigation": true
+      },
+      {
+        "month": "2026-08",
+        "expected": [
+          {
+            "account": "Blitzads",
+            "status": "unreviewed"
+          },
+          {
+            "account": "BA2",
+            "status": "unreviewed"
+          }
+        ],
+        "adjustmentNavigation": true
+      },
+      {
+        "month": "2026-09",
+        "expected": [
+          {
+            "account": "Blitzads",
+            "status": "unreviewed"
+          },
+          {
+            "account": "BA2",
+            "status": "unreviewed"
+          }
+        ],
+        "adjustmentNavigation": true
+      }
+    ],
+    "businessWrites": false,
+    "syncTriggered": false,
+    "reviewConfirmedOrCancelled": false,
+    "pageErrors": 0
+  },
+  "sessionCleanup": {
+    "at": "2026-09-06T14:45:09.299Z",
+    "onlyOwnTestSession": true,
+    "logoutStatus": 201,
+    "verificationStatus": 401
+  },
+  "rollbackPerformed": false
+}

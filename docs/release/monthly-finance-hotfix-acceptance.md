@@ -1,6 +1,6 @@
 # 月度大盘热修与 CAKE 核对验收清单
 
-当前状态：热修 `4328cad` 已于 2026-09-06 上线并完成七月 PhotonPay 单源验收，见 `monthly-finance-hotfix-production.md`。新增 CAKE 候选 `ea3b9f3` 已完成本地验证和 PM 代码初审，仍未上线，待用户明确上线确认。
+当前状态：热修 `4328cad` 已于 2026-09-06 上线并完成七月 PhotonPay 单源验收，见 `monthly-finance-hotfix-production.md`。随后 CAKE `ea3b9f3` 经用户明确授权另行上线，见 `cake-monthly-review-production.md`，保留热修及全部旧财务数据。
 
 ## 已授权热修
 
