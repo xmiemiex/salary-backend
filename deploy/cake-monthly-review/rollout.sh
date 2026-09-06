@@ -75,7 +75,7 @@ printf '%s  %s\n' "$schema_sha" "$release/prisma/schema.prisma" | sha256sum -c -
 [[ $(docker inspect salary-settlement-admin-web-1 -f '{{.Image}}') == "$old_web" ]]
 [[ $(docker image inspect "salary-settlement-api:$old" -f '{{.Id}}') == "$old_api" ]]
 [[ $(docker image inspect "salary-settlement-web:$old" -f '{{.Id}}') == "$old_web" ]]
-docker exec salary-settlement-admin-api-1 node -e 'if(process.env.SYNC_PLANNER_ENABLED!=="false"||process.env.SYNC_AUTO_EXECUTION_ENABLED!=="false")process.exit(1)' 
+docker exec salary-settlement-admin-api-1 node -e 'if(process.env.SYNC_PLANNER_ENABLED!=="false"||process.env.SYNC_AUTO_EXECUTION_ENABLED!=="false")process.exit(1)'
 guard() { docker run --rm --user 0:0 -e NODE_PATH=/app/node_modules --network salary-settlement-admin_app --add-host host.docker.internal:172.30.80.1 --env-file "$envfile" -v "$stage:/release-checks:ro" -v "$release:/release-source:ro" "salary-settlement-api:$1" node /release-checks/guard.cjs "$2"; }
 compare() { node - "$1" "$2" <<'JS'
 const fs=require('fs'),a=JSON.parse(fs.readFileSync(process.argv[2])),b=JSON.parse(fs.readFileSync(process.argv[3]));for(const k of Object.keys(a.preservation))if(a.preservation[k]!==b.preservation[k])throw Error('PRESERVED_BUSINESS_DATA_CHANGED_'+k);
