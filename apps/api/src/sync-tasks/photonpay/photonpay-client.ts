@@ -322,7 +322,8 @@ function assertBusinessSuccess(
     const providerMessage = redactSensitiveText(firstString(raw.message, raw.msg), sensitiveValues);
     const requestId = redactSensitiveText(firstString(raw.requestId, raw.request_id, raw.traceId), sensitiveValues);
     throw new ProviderRequestError(
-      category,
+      // PhotonPay can report throttling inside HTTP 200. Leave bounded retries to the executor.
+      rawCode === '1008' ? SyncExecutionErrorCategory.RATE_LIMITED : category,
       `PhotonPay rejected the request. ${code}${providerMessage ? `: ${providerMessage}` : ''}`,
       200, code ?? undefined, providerMessage ?? undefined, requestId ?? undefined,
     );

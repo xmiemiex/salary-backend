@@ -1,3 +1,4 @@
+import { monthlySourceStatus } from './monthly-source-status';
 import { hasSufficientMonthlyCoverage, isMonthlyLedgerRequest, monthlyCoverageRequirement, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import { Prisma, Provider, SyncTaskPlatform, SyncTaskType } from '@prisma/client';
@@ -112,9 +113,14 @@ export class MonthlyFinanceService {
       ]);
       const coveredThrough = success && isMonthlyLedgerRequest(success.requestPayload) ? readMonthlyCoverage(success.resultPayload, input) : null;
       const coverageComplete = hasSufficientMonthlyCoverage(input, coveredThrough, now);
-      const status = !latest ? 'missing' : latest.status === 'completed' && (!coverageComplete || !readMonthlyCoverage(latest.resultPayload, input)) ? 'partial' : latest.failedCount > 0 && latest.successCount > 0 ? 'partial' : latest.status;
-      const reason = latest?.lastErrorCategory === 'CREDENTIAL_MISSING' ? '尚未配置有效凭据' : latest?.lastErrorCategory === 'TIMEOUT' ? '来源响应超时' : latest?.lastErrorCategory === 'RATE_LIMITED' ? '来源请求限流' : status === 'partial' ? coveredThrough && requirement.scope === 'full_month' && !coverageComplete ? '历史月份尚未覆盖至月末，请补刷' : '缺少完整正式入账证据' : status === 'failed' ? '来源未完成，请重试或查看同步详情' : null;
-      return { ...source, status, reason, coveredThrough, coverageComplete, lastSuccessAt: coveredThrough ? success!.finishedAt : null, updatedAt: latest?.finishedAt ?? null };
+      const unmatched = latest?.failedCount ? await this.prisma.syncUnmatchedEvent.groupBy({
+        by: ['reasonCode'], where: { syncTaskId: latest.id, settlementMonth: month }, _count: true,
+      }) : [];
+      const unmatchedCounts = Object.fromEntries(unmatched.map(row => [row.reasonCode, row._count]));
+      const summary = monthlySourceStatus(latest, coverageComplete && !!readMonthlyCoverage(latest?.resultPayload, input),
+        coveredThrough && requirement.scope === 'full_month' && !coverageComplete ? '历史月份尚未覆盖至月末，请补刷' : '缺少完整正式入账证据', unmatchedCounts);
+      return { ...source, ...summary, unmatchedCount: unmatched.reduce((n, row) => n + row._count, 0), coveredThrough, coverageComplete, lastSuccessAt: coveredThrough ? success!.finishedAt : null, updatedAt: latest?.finishedAt ?? null };
+
     }));
     return { sources, batchId: latestBatch?.id ?? null, refreshing: refreshing > 0, queriedAt: now, coverageScope: requirement.scope, requiredMonthEnd: requirement.end, coveredThrough: sources.length && sources.every(s => s.coveredThrough) ? new Date(Math.min(...sources.map(s => s.coveredThrough!.getTime()))) : null };
   }

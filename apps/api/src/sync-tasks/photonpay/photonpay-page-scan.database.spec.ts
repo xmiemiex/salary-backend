@@ -5,6 +5,8 @@ import path from 'node:path';
 import { PhotonPayPageScan, PhotonPayPageState } from './photonpay-page-scan';
 import { SyncAdapterContext } from '../sync-adapter';
 import { SyncAutoExecutionService } from '../sync-auto-execution.service';
+import { PhotonPayClient } from './photonpay-client';
+import { ProviderRequestError } from '../provider-request-error';
 
 const dbDescribe = process.env.LIVE_PAGE_SCAN_DATABASE_TESTS === '1' ? describe : describe.skip;
 dbDescribe('PhotonPay durable page state on isolated PostgreSQL', () => {
@@ -74,5 +76,60 @@ dbDescribe('PhotonPay durable page state on isolated PostgreSQL', () => {
     expect(await scan.load()).toBeNull();
     expect((await db.syncTask.findUniqueOrThrow({ where: { id: context.taskId } })).status).toBe('completed');
     expect(audit.success).toHaveBeenCalledTimes(1);
+  });
+  it('persists bounded retry scheduling for HTTP 200 business throttling while preserving page 7 for a replacement batch', async () => {
+    const audit = { success: jest.fn(), failure: jest.fn() };
+    const executor = new SyncAutoExecutionService(db as never, audit as never, {} as never, {} as never);
+    const internal = executor as unknown as {
+      instanceId: string; config: { maxAttempts: number; retryBaseSeconds: number };
+      finishFailure: (...args: unknown[]) => Promise<void>;
+    };
+    const context = await task(internal.instanceId);
+    const scope = { credential: 'rate-limit-test', month: '2026-08', pageSize: 200 };
+    const scan = new PhotonPayPageScan(db as never, context, scope);
+    const checkpoint = { ...state, windowIndex: 0, nextPage: 7, successCount: 1109 };
+    await scan.save(checkpoint);
+    async function providerError(code: string) {
+      const fetchMock = jest.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ code: '0000', data: { accessToken: 'synthetic-token' } }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ code, message: code === '1008' ? 'Too many requests, please try again later.' : 'Product unavailable' }), { status: 200 }));
+      const client = new PhotonPayClient(fetchMock as never);
+      try {
+        await client.listCardTransactions({ credential: { appId: 'synthetic-id', appSecret: 'synthetic-secret' }, from: month, to: new Date('2026-08-08'), page: 7, pageSize: 200 });
+      } catch (error) {
+        expect(error).toBeInstanceOf(ProviderRequestError);
+        return error as ProviderRequestError;
+      }
+      throw new Error('Expected provider business error');
+    }
+    const throttled = await providerError('1008');
+    expect(throttled).toMatchObject({ category: 'RATE_LIMITED', providerCode: '1008' });
+    const claim = { id: context.taskId, sourceType: 'card_spend', platform: 'photonpay', provider: 'photonpay', settlementMonth: month, attemptCount: 1 };
+    const result = { successCount: 1109, failedCount: 1, resultPayload: { monthlyCoverage: null } };
+    for (let attempt = 1; attempt <= internal.config.maxAttempts; attempt++) {
+      await db.syncTask.update({ where: { id: context.taskId }, data: { status: 'running', attemptCount: attempt, leaseOwner: internal.instanceId, leaseExpiresAt: new Date(Date.now() + 60000) } });
+      const before = Date.now();
+      await internal.finishFailure(context.taskId, { ...claim, attemptCount: attempt }, throttled.category, throttled.message, result);
+      const after = Date.now();
+      const row = await db.syncTask.findUniqueOrThrow({ where: { id: context.taskId } });
+      expect(row).toMatchObject({ successCount: 1109, failedCount: 1, lastErrorCategory: 'RATE_LIMITED', leaseOwner: null });
+      if (attempt < internal.config.maxAttempts) {
+        expect(row.status).toBe('retry_wait');
+        expect(row.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + internal.config.retryBaseSeconds * 1000);
+        expect(row.nextAttemptAt!.getTime()).toBeLessThanOrEqual(after + 86400 * 1000);
+        expect(row.finishedAt).toBeNull();
+      } else {
+        expect(row.status).toBe('failed'); expect(row.nextAttemptAt).toBeNull(); expect(row.finishedAt).not.toBeNull();
+      }
+      expect(await scan.load()).toEqual(checkpoint);
+    }
+    const replacement = await task(internal.instanceId);
+    const replacementScan = new PhotonPayPageScan(db as never, replacement, scope);
+    expect(await replacementScan.load()).toEqual(checkpoint);
+    const rejected = await providerError('VCC_403');
+    expect(rejected.category).toBe('BUSINESS_REJECTED');
+    await internal.finishFailure(replacement.taskId, { ...claim, id: replacement.taskId }, rejected.category, rejected.message, result);
+    expect(await db.syncTask.findUniqueOrThrow({ where: { id: replacement.taskId } })).toMatchObject({ status: 'failed', nextAttemptAt: null, lastErrorCategory: 'BUSINESS_REJECTED' });
+    expect(await replacementScan.load()).toEqual(checkpoint);
   });
 });

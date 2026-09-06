@@ -76,6 +76,8 @@ type PhotonPayAdapterPrisma = {
 type ImportOutcome = 'created' | 'skipped' | 'excluded' | 'failed' | 'preview_created';
 
 type PhotonPayExecutionStats = {
+  resumedFromPage: number | null;
+  resumedFromWindow: number | null;
   createdCount: number;
   updatedCount: number;
   skippedCount: number;
@@ -135,6 +137,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
     let successCount = 0;
     let failedCount = 0;
     const stats: PhotonPayExecutionStats = {
+      resumedFromPage: null,
+      resumedFromWindow: null,
       createdCount: 0,
       updatedCount: 0,
       skippedCount: 0,
@@ -183,6 +187,9 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       const saved = cardInventory?.status === 'completed' ? await pageScan?.load() : null;
       if (saved) {
         Object.assign(stats, saved.stats);
+        // Retain the first resume boundary across later retries; no transaction identifiers are exposed.
+        stats.resumedFromPage ??= saved.nextPage;
+        stats.resumedFromWindow ??= saved.windowIndex;
         successCount = saved.successCount; failedCount = saved.failedCount;
         providerUsdDebitAmountTotal = new Prisma.Decimal(stats.providerUsdDebitAmountTotal);
         context.coverageStartedAt = new Date(saved.coverageStartedAt);

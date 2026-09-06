@@ -34,6 +34,31 @@ const employeeId = '30000000-0000-0000-0000-000000000001';
 const settlementMonth = new Date(Date.UTC(2026, 5, 1));
 
 describe('PhotonPayClient', () => {
+  it.each([
+    ['1008', SyncExecutionErrorCategory.RATE_LIMITED],
+    ['2001', SyncExecutionErrorCategory.BUSINESS_REJECTED],
+  ])('classifies HTTP 200 business code %s without an immediate retry or leaking credentials', async (code, category) => {
+    const credential = { appId: 'private-app', appSecret: 'private-secret' };
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(okJson({ code: '0000', data: { accessToken: 'private-token' } }))
+      .mockResolvedValueOnce(httpJson(200, { code, message: 'Too many requests private-app private-secret private-token', requestId: 'safe-request' }));
+    const client = new PhotonPayClient(fetchMock as never);
+    const failure = await client.listCardTransactions({ credential, from: new Date('2026-07-01'), to: new Date('2026-07-07'), page: 7, pageSize: 200 }).catch(error => error);
+    expect(failure).toMatchObject({ category, httpStatus: 200, providerCode: code, requestId: 'safe-request' });
+    expect(failure.providerMessage).toContain('Too many requests');
+    for (const secret of ['private-app', 'private-secret', 'private-token']) expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats token-endpoint business throttling as rate limited while keeping ordinary auth rejection invalid', async () => {
+    for (const [code, category] of [['1008', SyncExecutionErrorCategory.RATE_LIMITED], ['1001', SyncExecutionErrorCategory.CREDENTIAL_INVALID]]) {
+      const fetchMock = jest.fn().mockResolvedValueOnce(httpJson(200, { code, message: 'Provider rejected the request' }));
+      const client = new PhotonPayClient(fetchMock as never);
+      await expect(client.listCards({ credential: { appId: 'app', appSecret: 'secret' }, page: 1, pageSize: 200 })).rejects.toMatchObject({ category, providerCode: code });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('preserves provider USD debit JSON number lexemes as strings without touching unrelated numbers or text', () => {
     const parsed = parsePhotonPayJsonPreservingUsdDebit(
       '{"code":"0000","data":[{"txnPrincipalChangeSettledAmount":-12.340000,"other":1.25,"note":"\\\"txnPrincipalChangeSettledAmount\\\":99"},{"txn_principal_change_settled_amount":-9.74}]}'
@@ -979,6 +1004,47 @@ describe('PhotonPayCardSyncAdapter', () => {
   function mockTransactions(transactions: Record<string, unknown>[]) {
     client.listCardTransactions.mockResolvedValue({ transactions, raw: { records: transactions }, hasMore: false });
   }
+
+  it('retains page 7 on throttling and replays a partially committed page without duplicate ledger events', async () => {
+    let saved: PhotonPayPageState | null = null;
+    const ledger = new Map<string, Record<string, unknown>>();
+    const load = jest.spyOn(PhotonPayPageScan.prototype, 'load').mockImplementation(async () => saved ? structuredClone(saved) : null);
+    const save = jest.spyOn(PhotonPayPageScan.prototype, 'save').mockImplementation(async state => { saved = structuredClone(state); });
+    const clear = jest.spyOn(PhotonPayPageScan.prototype, 'clear');
+    let interruptPage = false;
+    prisma.cardSpendEvent.findUnique.mockImplementation(async ({ where }) => ledger.get(where.provider_externalEventId.externalEventId) ?? null);
+    prisma.cardSpendEvent.create.mockImplementation(async ({ data }) => {
+      if (interruptPage && data.externalEventId === 'txn-8') throw new ProviderRequestError('TIMEOUT', 'Isolated interruption after the first event in page 7');
+      if (ledger.has(data.externalEventId)) throw new Error('Duplicate ledger creation');
+      ledger.set(data.externalEventId, data); return { id: data.externalEventId };
+    });
+    const firstContext = { ...context(), coverageStartedAt: new Date('2026-07-15'), durablePageScan: { leaseOwner: 'worker-a', attemptCount: 1 } };
+    try {
+      for (let page = 1; page <= 6; page++) client.listCardTransactions.mockResolvedValueOnce({ transactions: [{ ...settledTransaction(), transactionId: `txn-${page}` }], hasMore: true });
+      client.listCardTransactions.mockRejectedValueOnce(new ProviderRequestError('RATE_LIMITED', 'PhotonPay business 1008: Too many requests, please try again later.'));
+      const throttled = await adapter.execute(firstContext);
+      expect(throttled).toMatchObject({ status: 'failed', errorCategory: 'RATE_LIMITED', successCount: 6 });
+      expect(throttled.resultPayload.monthlyCoverage).toBeNull();
+      expect(saved).toMatchObject({ windowIndex: 0, nextPage: 7, successCount: 6 });
+      const page7 = [{ ...settledTransaction(), transactionId: 'txn-7' }, { ...settledTransaction(), transactionId: 'txn-8' }];
+      client.listCardTransactions.mockReset().mockResolvedValue({ transactions: [], hasMore: false }).mockResolvedValueOnce({ transactions: page7, hasMore: false });
+      interruptPage = true;
+      const interrupted = await adapter.execute({ ...firstContext, durablePageScan: { leaseOwner: 'worker-a', attemptCount: 2 } });
+      expect(client.listCardTransactions.mock.calls[0][0].page).toBe(7);
+      expect(interrupted).toMatchObject({ status: 'failed', successCount: 7, errorCategory: 'TIMEOUT' });
+      expect(ledger.size).toBe(7);
+      expect(saved).toMatchObject({ windowIndex: 0, nextPage: 7, successCount: 6 });
+      client.listCardTransactions.mockReset().mockResolvedValue({ transactions: [], hasMore: false }).mockResolvedValueOnce({ transactions: page7, hasMore: false });
+      interruptPage = false;
+      const resumed = await adapter.execute({ ...firstContext, taskId: '20000000-0000-0000-0000-000000000007', durablePageScan: { leaseOwner: 'worker-b', attemptCount: 1 } });
+      expect(client.listCardTransactions.mock.calls[0][0]).toMatchObject({ page: 7, from: new Date('2026-05-31T16:00:00Z'), to: new Date('2026-06-07T16:00:00Z') });
+      expect(resumed).toMatchObject({ status: 'completed', successCount: 8, failedCount: 0 });
+      expect(resumed.resultPayload).toMatchObject({ providerUsdDebitAmountTotal: '98.72', skippedCount: 1, resumedFromPage: 7, resumedFromWindow: 0, monthlyCoverage: { through: '2026-06-30T16:00:00.000Z' } });
+      expect(ledger.size).toBe(8);
+      expect(clear).not.toHaveBeenCalled();
+      expect(resumed.completedPageScanFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    } finally { load.mockRestore(); save.mockRestore(); clear.mockRestore(); }
+  });
 
   it('resumes a completed page after a timeout, preserving totals and deduplication across a new manual task', async () => {
     let saved: PhotonPayPageState | null = null;

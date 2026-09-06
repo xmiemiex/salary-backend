@@ -258,6 +258,25 @@ integration('monthly finance real PostgreSQL (provider adapters explicitly simul
     expect(complete.totals).toEqual(current.totals);
   });
 
+  it('summarizes current-task unmatched reasons and keeps retry state with real PostgreSQL', async () => {
+    const selected = new Date('2026-03-01');
+    const account = (await db.affiliateAccount.findFirst())!;
+    const batch = await service.refresh('2026-03', actor, account.id);
+    const task = (await db.syncTask.findFirst({ where: { refreshBatchId: batch.batchId } }))!;
+    await db.syncTask.update({ where: { id: task.id }, data: { status: 'completed', successCount: 0, failedCount: 1 } });
+    await db.syncUnmatchedEvent.create({ data: { settlementMonth: selected, sourceType: 'affiliate_income', taskType: 'affiliate_income', affiliateAccountId: account.id, syncTaskId: task.id, reasonCode: 'SUB_ID_NOT_MAPPED' } });
+    // An unrelated old unresolved event must not inflate this task's reason count.
+    await db.syncUnmatchedEvent.create({ data: { settlementMonth: selected, sourceType: 'affiliate_income', taskType: 'affiliate_income', affiliateAccountId: account.id, reasonCode: 'SUB_ID_MISSING' } });
+    let source = (await service.status('2026-03')).sources.find(s => s.key === account.id)!;
+    expect(source).toMatchObject({ status: 'failed', statusLabel: '未入账', unmatchedCount: 1, coverageComplete: false });
+    expect(source.reason).toBe('1 条 SUB 未映射；成功 0 条 / 失败 1 条');
+    await db.syncTask.update({ where: { id: task.id }, data: { status: 'retry_wait', successCount: 4, lastErrorCategory: 'RATE_LIMITED' } });
+    source = (await service.status('2026-03')).sources.find(s => s.key === account.id)!;
+    expect(source.status).toBe('retry_wait');
+    expect(source.reason).toContain('供应商限流，等待自动重试');
+    await db.syncTask.update({ where: { id: task.id }, data: { status: 'failed' } });
+  });
+
   it('locked month rejects fees, Adpos and refresh including legacy direct writes', async () => {
     await db.monthlySettlement.create({ data: { settlementMonth: month, status: 'locked' } });
     await expect(service.saveFees('2026-08', { airwallex: '0', photonpay: '0', adpos: '0' }, actor)).rejects.toThrow('锁账');
