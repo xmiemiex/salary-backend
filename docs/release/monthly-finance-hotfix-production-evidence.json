@@ -1,0 +1,228 @@
+{
+  "deployedCommit": "4328cada3fe053159d08be7394625ef462117903",
+  "tag": "monthly-hotfix-4328cada3fe0",
+  "sourceArchiveSha256": "87ea2798ed279dbe39db4b086f2052aceb54faf482563c2d65025bc912637077",
+  "checksManifestSha256": "a747aca42c8de5404338a9a7fce91e49b69a66af52625fb307c43089838fe611",
+  "statusTimeline": [
+    "2026-09-06T13:41:49Z STARTED",
+    "2026-09-06T13:42:04Z BUILDING_APPROVED_SOURCE",
+    "2026-09-06T13:42:43Z CREATING_FRESH_BACKUP_WHILE_OLD_API_RUNNING",
+    "2026-09-06T13:42:46Z STOPPING_WRITERS_ZERO_MIGRATIONS",
+    "2026-09-06T13:42:56Z DEPLOYED_FORMAL_LOGIN_AND_HEALTH_PASSED",
+    "2026-09-06T13:44:15Z DEPLOYMENT_COMPLETE_REVIEW_ACCEPTANCE_JSON_FOR_PROVIDER_RESULT"
+  ],
+  "productionImages": [
+    "[salary-settlement-api:monthly-hotfix-4328cada3fe0] sha256:a0b62028409b94c22cfdabfad3bc33ff2639030a7aebfd25aada2b8d96dfde0e",
+    "[salary-settlement-web:monthly-hotfix-4328cada3fe0] sha256:7361ddee07ca26020b8bbeb878dc494d97d5ca0b7c6fd3509891efe3658c6ca1"
+  ],
+  "localBuildNode": "v22.23.2",
+  "localHotfixTests": {
+    "tests": 95,
+    "suites": 4,
+    "browserViewports": [
+      1366,
+      1440,
+      1920
+    ]
+  },
+  "backup": {
+    "file": "postgres-full-20260906T134243Z.sql.gz.enc",
+    "sha256": "4cb95482548c7fce23570a5bd6038b590c914dc7b687ee2efae36fdc2e594c52",
+    "bytes": 1048643,
+    "checksumVerified": true,
+    "authenticatedDecryptAndGzipVerified": true,
+    "oldApiRunningDuringBackup": true
+  },
+  "migrationsUnchanged": true,
+  "migrationCount": 27,
+  "preservedBusinessData": [
+    "allIncome",
+    "manualIncome",
+    "manualCost",
+    "providerFees",
+    "adposFees",
+    "mappings",
+    "employeeSubIds",
+    "locks",
+    "providerEmailAliases",
+    "providerCardExclusions"
+  ],
+  "beforePhotonpay": {
+    "status": "failed",
+    "attemptCount": 1,
+    "successCount": 1109,
+    "failedCount": 1,
+    "errorCategory": "BUSINESS_REJECTED",
+    "nextAttemptAt": null,
+    "monthlyCoverage": null,
+    "resumedFromPage": null,
+    "resumedFromWindow": null,
+    "providerCode": null
+  },
+  "beforeCheckpoint": [
+    {
+      "windowIndex": "0",
+      "nextPage": "7",
+      "successCount": "1109"
+    }
+  ],
+  "afterPhotonpay": {
+    "status": "completed",
+    "attemptCount": 1,
+    "successCount": 5807,
+    "failedCount": 0,
+    "errorCategory": null,
+    "nextAttemptAt": null,
+    "monthlyCoverage": {
+      "from": "2026-06-30T16:00:00.000Z",
+      "month": "2026-07",
+      "scope": "all_accounts_cards",
+      "posted": true,
+      "through": "2026-07-31T16:00:00.000Z",
+      "version": 1
+    },
+    "resumedFromPage": 7,
+    "resumedFromWindow": 0,
+    "providerCode": null
+  },
+  "afterCheckpoint": [],
+  "ledger": {
+    "at": "2026-09-06T13:44:14.690Z",
+    "beforeCount": 1568,
+    "afterCount": 5841,
+    "existingRowsUnchanged": true,
+    "duplicateExternalEvents": 0
+  },
+  "acceptance": {
+    "startedAt": "2026-09-06T13:42:57.478Z",
+    "formalHttps": true,
+    "authenticatedRead": true,
+    "unauthenticatedStatus": 401,
+    "monthSelection": true,
+    "month": "2026-07",
+    "refreshStarted": true,
+    "sources": [
+      {
+        "source": "A1",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-07-31T16:00:00.000Z",
+        "nextAttemptAt": null
+      },
+      {
+        "source": "A2",
+        "status": "failed",
+        "reason": "1 条 SUB 未映射；成功 0 条 / 失败 1 条",
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "source": "A3",
+        "status": "partial",
+        "reason": "1 条缺少 SUB；成功 4 条 / 失败 1 条",
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "source": "A4",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-07-31T16:00:00.000Z",
+        "nextAttemptAt": null
+      },
+      {
+        "source": "airwallex",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-07-31T16:00:00.000Z",
+        "nextAttemptAt": null
+      },
+      {
+        "source": "photonpay",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-07-31T16:00:00.000Z",
+        "nextAttemptAt": null
+      }
+    ],
+    "timeline": [
+      {
+        "at": "2026-09-06T13:43:12.770Z",
+        "source": "photonpay",
+        "status": "running",
+        "reason": null,
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "at": "2026-09-06T13:43:27.856Z",
+        "source": "photonpay",
+        "status": "running",
+        "reason": null,
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "at": "2026-09-06T13:43:43.000Z",
+        "source": "photonpay",
+        "status": "running",
+        "reason": null,
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "at": "2026-09-06T13:43:58.140Z",
+        "source": "photonpay",
+        "status": "running",
+        "reason": null,
+        "coverageComplete": false,
+        "coveredThrough": null,
+        "nextAttemptAt": null
+      },
+      {
+        "at": "2026-09-06T13:44:13.280Z",
+        "source": "photonpay",
+        "status": "completed",
+        "reason": null,
+        "coverageComplete": true,
+        "coveredThrough": "2026-07-31T16:00:00.000Z",
+        "nextAttemptAt": null
+      }
+    ],
+    "action": "STARTED_PHOTONPAY_ONLY",
+    "refreshing": false,
+    "detailPage1Rows": 20,
+    "detailPage2Rows": 20,
+    "finishedAt": "2026-09-06T13:44:13.612Z",
+    "result": "PHOTONPAY_FULL_MONTH_COMPLETE"
+  },
+  "browser": {
+    "at": "2026-09-06T13:54:24.364Z",
+    "formalOrigin": "https://admin-salary.lovemiemie.com",
+    "authenticatedRealSession": true,
+    "browser": "Edge",
+    "coreColumns": true,
+    "monthSwitch": true,
+    "refreshButtonVisible": true,
+    "employeeRows": 7,
+    "detailRows": 20,
+    "pageErrors": 0,
+    "browserBusinessWrites": false
+  },
+  "sessionCleanup": {
+    "at": "2026-09-06T13:57:52.784Z",
+    "onlyOwnTestSession": true,
+    "logoutStatus": 201,
+    "verificationStatus": 401
+  },
+  "cakeCandidateDeployed": false
+}

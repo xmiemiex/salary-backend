@@ -1,0 +1,42 @@
+{
+  "commit": "ea3b9f31e398a0aa4ea29413f3e42fedd731973a",
+  "tag": "cake-review-ea3b9f31e398",
+  "preparedAt": "2026-09-06T13:48:47.091Z",
+  "scope": "Local candidate preparation only; production not modified",
+  "sourceArchive": "source-ea3b9f31e398.tar.gz",
+  "sourceArchiveSha256": "f1cd08271416929a0abdc08ef2875534beaae4cdccbd89b968d4d249319df466",
+  "sourceFilesVerifiedAgainstArchive": 487,
+  "sourceTreeSha256": "6334dacd27a03237b5f84c6da5ac0cf73c63b06ecfec65f5c4b8c66a673c821e",
+  "nodeVersion": "v22.23.2",
+  "nodeBuildBase": "node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+  "apiImage": {
+    "tag": "salary-settlement-api:cake-review-ea3b9f31e398",
+    "id": "sha256:ab89de46179fd63eb920fab131b92d51128314c46c5192fa80aa9fba0211ade7",
+    "buildPassed": true
+  },
+  "webImage": {
+    "tag": "salary-settlement-web:cake-review-ea3b9f31e398",
+    "id": "sha256:8b194d2887656e9d262a493b89ffb73eeaf57509c56e6655a610b0e6e1c5330b",
+    "buildPassed": true,
+    "apiOrigin": "https://api-salary.lovemiemie.com",
+    "compiledOriginFoundIn": "assets/index-DcbsElhi.js"
+  },
+  "migration": {
+    "name": "20260907010000_cake_monthly_income_review",
+    "sqlSha256": "f130f05ce5641d04c41589472302baa4ffecd4f8ed9d5c659fc58ebb3d646aed",
+    "beforeCount": 27,
+    "afterCount": 28,
+    "evidence": "migration-evidence.json",
+    "allHistoricalTablesUnchanged": true,
+    "newEvidenceTableInitiallyEmpty": true,
+    "lockedInsertUpdateDeleteRejected": true,
+    "duplicateReviewRejected": true,
+    "schemaCleaned": true
+  },
+  "buildLogs": {
+    "api": "api-build-completion.log",
+    "web": "web-build-completion.log",
+    "note": "Completion output captured from successful build sessions; web warning output is truncated. Exact final image IDs and Node version independently inspected."
+  },
+  "deploymentPerformed": false
+}

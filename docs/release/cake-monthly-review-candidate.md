@@ -1,6 +1,6 @@
 # CAKE 月度人工核对候选
 
-状态：本地实现和验收通过，待 PM 审核，未部署。基于限流热修 `4328cada3fe053159d08be7394625ef462117903`，不得装入该热修固定包。
+状态：候选 `ea3b9f31e398a0aa4ea29413f3e42fedd731973a` 本地实现、验收和 PM 代码初审通过，未部署，待用户明确上线确认。基于已上线限流热修 `4328cada3fe053159d08be7394625ef462117903`，未装入该热修固定包。
 
 ## 行为
 
@@ -34,3 +34,9 @@
 - 本地证据：`tmp/cake-monthly-review/browser-evidence.json`、`all-cake-tests.log`、`dashboard-tests.log`、页面截图；测试 schema 执行后清理。
 
 正式生产验证尚未进行；不能把本地通过或候选提交当作已上线。
+
+## 固定生产候选准备
+
+独立源码包 SHA256 `f1cd08271416929a0abdc08ef2875534beaae4cdccbd89b968d4d249319df466`，487 个文件与提交归档逐字节一致。Node v22.23.2 API/Web 构建均通过，Web 产物正式 API 地址校验通过。标签 `cake-review-ea3b9f31e398`，精确镜像和源码绑定见 `cake-monthly-review-build-evidence.json`。
+
+新增 SQL 的归档 LF 字节 SHA256 为 `f130f05ce5641d04c41589472302baa4ffecd4f8ed9d5c659fc58ebb3d646aed`。已在本地随机 schema 从既有 27 项升级到 28 项，所有旧表逐行摘要保持不变，证据表初始空，账号月份唯一约束与锁月 INSERT/UPDATE/DELETE 拒绝通过。没有对生产执行该迁移。
