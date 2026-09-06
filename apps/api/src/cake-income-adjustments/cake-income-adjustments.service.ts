@@ -7,6 +7,7 @@ import { parseDecimalString, parseMonthStart, requireNonBlank } from '../base-da
 import { AppError } from '../common/app-error';
 import { MonthLockService } from '../month-lock/month-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { readCakeMonthlyReview } from './cake-monthly-review';
 import {
   EffectiveSubIdMappingReader,
   isActiveEffectiveSubIdMapping,
@@ -34,6 +35,12 @@ export type SaveCakeIncomeAdjustmentInput = {
   subValue: string;
   actualRevenueUsd: string;
   reason: string;
+};
+
+export type CakeMonthlyReviewInput = {
+  affiliateAccountId: string;
+  settlementMonth: string;
+  baseFingerprint?: string;
 };
 
 @Injectable()
@@ -141,6 +148,7 @@ export class CakeIncomeAdjustmentsService {
       timezoneVerified: false,
       adjustmentBasis: 'manual_china_standard_time',
       locked,
+      review: await readCakeMonthlyReview(this.prisma, affiliateAccountId, settlementMonth),
       items,
       summary: {
         baseRevenueUsd: baseTotal.toString(),
@@ -150,6 +158,50 @@ export class CakeIncomeAdjustmentsService {
         draftAdjustmentCount: adjustments.filter((row) => row.status === CommonStatus.draft).length,
       },
     };
+  }
+
+  async confirmMonthlyReview(input: CakeMonthlyReviewInput, actor: Actor) {
+    return this.writeMonthlyReview(input, actor, true);
+  }
+
+  async cancelMonthlyReview(input: CakeMonthlyReviewInput, actor: Actor) {
+    return this.writeMonthlyReview(input, actor, false);
+  }
+
+  private async writeMonthlyReview(input: CakeMonthlyReviewInput, actor: Actor, confirm: boolean) {
+    this.assertSuperAdmin(actor);
+    const affiliateAccountId = requireNonBlank(input.affiliateAccountId, 'affiliateAccountId');
+    const settlementMonth = parseMonthStart(input.settlementMonth, 'settlementMonth');
+    await this.getCakeAccount(affiliateAccountId);
+    const action = `cake_monthly_review.${confirm ? 'confirm' : 'cancel'}`;
+    await this.monthLock.assertWritable({ settlementMonth, action, objectType: 'cake_monthly_income_reviews', requestPayload: { affiliateAccountId, settlementMonth } }, actor);
+    return this.prisma.$transaction(async tx => {
+      // Same key as native income writes and month locking: fingerprint reads,
+      // confirmation and its audit are one coherent snapshot even during refresh.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`monthly-finance:${settlementMonth.toISOString()}`}, 0))`;
+      const locked = await tx.monthlySettlement.findUnique({ where: { settlementMonth }, select: { status: true } });
+      if (locked?.status === 'locked') throw new AppError(ERROR_CODES.MONTH_LOCKED, '当前结算月份已锁账，不能修改核对记录。');
+      const where = { affiliateAccountId_settlementMonth: { affiliateAccountId, settlementMonth } };
+      const before = await tx.cakeMonthlyIncomeReview.findUnique({ where });
+      const review = await readCakeMonthlyReview(tx, affiliateAccountId, settlementMonth);
+      if (confirm) {
+        if (!input.baseFingerprint || input.baseFingerprint !== review.baseFingerprint) throw new AppError(ERROR_CODES.CONFLICT, 'CAKE API原生佣金已变化，请刷新后重新核对。');
+        if (review.confirmedAdjustmentCount || review.staleAdjustmentCount) throw new AppError(ERROR_CODES.CONFLICT, '存在已确认或待复核调整，请先处理调整，不能确认无需调整。');
+        await tx.cakeMonthlyIncomeReview.upsert({ where, create: { affiliateAccountId, settlementMonth, baseFingerprint: review.baseFingerprint, confirmedBy: actor.userId }, update: { baseFingerprint: review.baseFingerprint, confirmedBy: actor.userId, confirmedAt: new Date() } });
+      } else {
+        await tx.cakeMonthlyIncomeReview.deleteMany({ where: { affiliateAccountId, settlementMonth } });
+      }
+      const after = await tx.cakeMonthlyIncomeReview.findUnique({ where });
+      await this.audit.success({ actorUserId: actor.userId, actorRole: actor.roleCode, action, objectType: 'cake_monthly_income_reviews', objectId: affiliateAccountId, settlementMonth, beforeData: before, afterData: after, changedFields: ['baseFingerprint', 'confirmedBy', 'confirmedAt'], requestPayload: { affiliateAccountId, settlementMonth }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, tx);
+      return { review: await readCakeMonthlyReview(tx, affiliateAccountId, settlementMonth) };
+    }).catch(async error => {
+      // A lock may commit after the initial check; persist its denial outside the
+      // rolled-back transaction, just as MonthLockService does for an existing lock.
+      if (error instanceof AppError && error.code === ERROR_CODES.MONTH_LOCKED) {
+        await this.audit.failure({ actorUserId: actor.userId, actorRole: actor.roleCode, action, objectType: 'cake_monthly_income_reviews', objectId: affiliateAccountId, settlementMonth, requestPayload: { affiliateAccountId, settlementMonth }, failureReason: ERROR_CODES.MONTH_LOCKED, errorMessage: '结算月份在核对提交前已锁账。', ipAddress: actor.ipAddress, userAgent: actor.userAgent });
+      }
+      throw error;
+    });
   }
 
   async saveDraft(input: SaveCakeIncomeAdjustmentInput, actor: Actor) {

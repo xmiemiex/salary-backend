@@ -10,6 +10,7 @@ const actor = { userId: 'admin-1', roleCode: 'super_admin', permissions: ['incom
 describe('CakeIncomeAdjustmentsService', () => {
   function harness() {
     const prisma: any = {
+      cakeMonthlyIncomeReview: { findUnique: jest.fn().mockResolvedValue(null) },
       affiliateAccount: {
         findUnique: jest.fn().mockResolvedValue({ id: accountId, platform: 'cake', accountCode: '329', accountName: 'Blitzads' }),
       },

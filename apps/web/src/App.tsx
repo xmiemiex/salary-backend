@@ -100,7 +100,7 @@ export function App() {
 
   const navigate = useCallback((path: string) => {
     window.history.pushState(null, '', path);
-    setCurrentPath(path);
+    setCurrentPath(normalizePath(window.location.pathname));
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {

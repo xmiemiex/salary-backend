@@ -1,4 +1,5 @@
 import { monthlySourceStatus } from './monthly-source-status';
+import { readCakeMonthlyReview } from '../cake-income-adjustments/cake-monthly-review';
 import { hasSufficientMonthlyCoverage, isMonthlyLedgerRequest, monthlyCoverageRequirement, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
 import { Injectable } from '@nestjs/common';
 import { Prisma, Provider, SyncTaskPlatform, SyncTaskType } from '@prisma/client';
@@ -44,6 +45,7 @@ export class MonthlyFinanceService {
       this.prisma.incomeRecord.count({ where: { settlementMonth: month, rawData: { path: ['fixture'], equals: 'SIMULATED_LOCAL_ONLY' } } }),
     ]);
     const columns = accounts.filter(a => a.status === 'active' || income.some(i => i.affiliateAccountId === a.id));
+    const cakeReviews = await Promise.all(columns.filter(a => a.platform.toLowerCase() === 'cake').map(async a => ({ key: a.id, name: a.accountName ?? a.accountCode, ...await readCakeMonthlyReview(this.prisma, a.id, month) })));
     const rates: Record<string, string | null> = { airwallex: null, photonpay: null, adpos: adposFee?.feeRate.toString() ?? null };
     fees.forEach(f => { rates[f.provider] = f.feeRate.toString(); });
     const sources = refreshState.sources;
@@ -92,7 +94,7 @@ export class MonthlyFinanceService {
       totals.profit = D(totals.totalIncome).minus(totals.totalSpend).toString();
       totals.margin = D(totals.totalSpend).isZero() ? null : D(totals.profit).div(totals.totalSpend).times(100).toFixed(2);
     }
-    return { localSample: sampleCount > 0, month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, complete: sources.every(s => s.coverageComplete && s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), ...refreshState };
+    return { cakeReviews, localSample: sampleCount > 0, month: input, locked: settlement?.status === 'locked', columns: columns.map(a => ({ key: a.id, name: a.accountName ?? a.accountCode })), rates, rows, totals, complete: sources.every(s => s.coverageComplete && s.status === 'completed') && rows.every(r => !r.attributionPending && r.missingRates.length === 0), ...refreshState };
   }
 
   async status(input: string, now = new Date()) {

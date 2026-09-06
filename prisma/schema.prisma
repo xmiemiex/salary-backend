@@ -253,9 +253,22 @@ model AffiliateAccount {
   syncTasks       SyncTask[]
   syncUnmatchedEvents SyncUnmatchedEvent[]
   credential      AffiliateAccountCredential?
+  cakeMonthlyReviews CakeMonthlyIncomeReview[]
 
   @@unique([platform, accountCode])
   @@map("affiliate_accounts")
+}
+
+model CakeMonthlyIncomeReview {
+  affiliateAccountId String @map("affiliate_account_id") @db.Uuid
+  settlementMonth DateTime @map("settlement_month") @db.Date
+  baseFingerprint String @map("base_fingerprint") @db.VarChar(64)
+  confirmedBy String @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime @default(now()) @map("confirmed_at")
+  affiliateAccount AffiliateAccount @relation(fields: [affiliateAccountId], references: [id], onDelete: Restrict)
+
+  @@id([affiliateAccountId, settlementMonth])
+  @@map("cake_monthly_income_reviews")
 }
 
 model AffiliateAccountCredential {

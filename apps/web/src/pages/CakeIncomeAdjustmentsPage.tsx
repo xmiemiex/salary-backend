@@ -89,8 +89,11 @@ export function CakeIncomeAdjustmentsPage() {
   const [form] = Form.useForm<AdjustmentForm>();
   const watchedTargetRevenue = Form.useWatch('actualRevenueUsd', form);
   const [accounts, setAccounts] = useState<AffiliateAccount[]>([]);
-  const [affiliateAccountId, setAffiliateAccountId] = useState<string>();
-  const [settlementMonth, setSettlementMonth] = useState(previousCompleteMonth);
+  const [affiliateAccountId, setAffiliateAccountId] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('affiliateAccountId') || undefined);
+  const [settlementMonth, setSettlementMonth] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('settlementMonth');
+    return requested && /^\d{4}-(0[1-9]|1[0-2])$/.test(requested) ? requested : previousCompleteMonth();
+  });
   const [payload, setPayload] = useState<AdjustmentList | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

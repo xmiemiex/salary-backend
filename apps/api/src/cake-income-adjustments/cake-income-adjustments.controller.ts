@@ -4,6 +4,7 @@ import { CurrentActor } from '../auth/current-actor.decorator';
 import { RequirePermissions } from '../auth/require-permissions.decorator';
 import {
   CakeIncomeAdjustmentQuery,
+  CakeMonthlyReviewInput,
   CakeIncomeAdjustmentsService,
   SaveCakeIncomeAdjustmentInput,
 } from './cake-income-adjustments.service';
@@ -30,6 +31,16 @@ export class CakeIncomeAdjustmentsController {
   @Post()
   saveDraft(@Body() body: SaveCakeIncomeAdjustmentInput, @CurrentActor() actor: Actor) {
     return this.adjustments.saveDraft(body, actor);
+  }
+
+  @Patch('monthly-review/confirm')
+  confirmMonthlyReview(@Body() body: CakeMonthlyReviewInput, @CurrentActor() actor: Actor) {
+    return this.adjustments.confirmMonthlyReview(body, actor);
+  }
+
+  @Patch('monthly-review/cancel')
+  cancelMonthlyReview(@Body() body: CakeMonthlyReviewInput, @CurrentActor() actor: Actor) {
+    return this.adjustments.cancelMonthlyReview(body, actor);
   }
 
   @Patch(':id/confirm')
