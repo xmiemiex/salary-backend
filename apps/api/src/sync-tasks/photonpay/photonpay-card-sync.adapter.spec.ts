@@ -1004,8 +1004,13 @@ describe('PhotonPayCardSyncAdapter', () => {
       expect(resumed.resultPayload).toMatchObject({ providerUsdDebitAmountTotal: '24.68', duplicateBoundaryCount: 1, monthlyCoverage: { through: originalStart.toISOString() } });
       expect(prisma.cardSpendEvent.create).toHaveBeenCalledTimes(2);
       expect(inventory.markUntouchedTransactionSync).toHaveBeenLastCalledWith(Provider.photonpay, originalStart, 'completed:no_transactions');
-      expect(clear).toHaveBeenCalledTimes(1);
-      expect(saved).toBeNull();
+      expect(clear).not.toHaveBeenCalled();
+      expect(resumed.completedPageScanFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      // A crash before the executor commits success must resume the finished scan without new requests.
+      client.listCardTransactions.mockClear();
+      const completedAgain = await adapter.execute({ ...firstContext, taskId: '20000000-0000-0000-0000-000000000003' });
+      expect(completedAgain).toMatchObject({ status: 'completed', successCount: 2 });
+      expect(client.listCardTransactions).not.toHaveBeenCalled();
     } finally { load.mockRestore(); save.mockRestore(); clear.mockRestore(); }
   });
 });

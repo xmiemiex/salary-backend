@@ -1,0 +1,24 @@
+{
+  "checkedAt": "2026-09-06T04:06:40.336Z",
+  "passed": true,
+  "isolatedSchema": "upgrade_9968b5829df440448061c46a31d671a8",
+  "priorMigrations": 19,
+  "pending": [
+    "20260905010000_monthly_finance_refresh",
+    "20260905011000_inventory_checkpoint",
+    "20260905012000_monthly_write_lock",
+    "20260905013000_adpos_monthly_fee_consistency",
+    "20260905014000_preserve_unambiguous_adpos_rates",
+    "20260905015000_guard_inflight_financial_writes",
+    "20260905016000_resumable_inventory",
+    "20260906010000_transaction_page_resume"
+  ],
+  "existingManualRowsUnchanged": 4,
+  "lockedHistoricalUnambiguousRatePreserved": true,
+  "conflictingAndInconsistentRatesNotGuessed": true,
+  "triggerReenabled": true,
+  "legacySqlReadAndOpenMonthWrite": true,
+  "oldApplicationBinaryExecuted": true,
+  "rollbackLimitation": "Additive schema remains readable; new triggers still enforce locks/rates after application rollback. No data down-migration tested or recommended.",
+  "oldApplicationValidationScope": "Rebuilt production source f859d79c2b8f: old generated Prisma client read/open-month write and compiled settlement service load; not the byte-identical production image or full old HTTP regression."
+}

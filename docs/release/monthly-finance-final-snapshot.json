@@ -1,0 +1,48 @@
+{
+  "checkedAt": "2026-09-06T02:32:20.484Z",
+  "method": "Read-only database through dashboard service; not a new HTTP test",
+  "month": "2026-08",
+  "sources": [
+    {
+      "source": "A01",
+      "status": "completed"
+    },
+    {
+      "source": "A02",
+      "status": "completed"
+    },
+    {
+      "source": "A03",
+      "status": "completed"
+    },
+    {
+      "source": "A04",
+      "status": "completed"
+    },
+    {
+      "source": "airwallex",
+      "status": "completed"
+    },
+    {
+      "source": "photonpay",
+      "status": "completed"
+    }
+  ],
+  "pendingUnifiedRows": [
+    {
+      "alias": "P01",
+      "distinctSourceSubs": 0
+    },
+    {
+      "alias": "P02",
+      "distinctSourceSubs": 0
+    }
+  ],
+  "missingRates": {
+    "airwallex": null,
+    "photonpay": null,
+    "adpos": null
+  },
+  "refreshing": false,
+  "originalHttpEvidenceIsHistorical": true
+}

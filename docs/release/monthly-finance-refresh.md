@@ -1,3 +1,5 @@
+> 最新月度财务发布审核入口：[monthly-finance-release-review.md](monthly-finance-release-review.md)。此前候选包仅为历史证据。
+
 # 月度收支与统一刷新：本地交付及生产升级准备
 
 本次仅交付本地版本与发布准备。未连接或修改生产数据库，未部署生产。历史起点为 `f859d79c2b8ff0aa380c5af86cc833fae7d3671e`；这不代表现在的生产版本。候选精确提交及源码 SHA256 见 `tmp/monthly-finance-release/manifest.json`。

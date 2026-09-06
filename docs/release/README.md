@@ -1,3 +1,5 @@
+> 最新月度财务发布审核入口：[monthly-finance-release-review.md](monthly-finance-release-review.md)。此前候选包仅为历史证据。
+
 # Release Documentation
 
 This directory contains the human approval and production operations documents for gated releases.

@@ -244,14 +244,19 @@ export class SyncAutoExecutionService {
     return credential ? null : SyncExecutionErrorCategory.CREDENTIAL_MISSING;
   }
 
-  private async finishSuccess(taskId: string, claim: ClaimedTask, result: { successCount: number; failedCount: number; message: string | null; resultPayload: Record<string, unknown> }) {
+  private async finishSuccess(taskId: string, claim: ClaimedTask, result: { completedPageScanFingerprint?: string; successCount: number; failedCount: number; message: string | null; resultPayload: Record<string, unknown> }) {
     await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount }, data: {
+      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount, leaseExpiresAt: { gt: new Date() } }, data: {
         status: SyncTaskStatus.completed, leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null,
         lastErrorCategory: null, finishedAt: new Date(), successCount: result.successCount, failedCount: result.failedCount,
         message: result.message, errorMessage: null, resultPayload: { ...result.resultPayload, attemptCount: claim.attemptCount },
       } });
       if (!updated.count) return;
+      if (claim.provider === Provider.photonpay && result.completedPageScanFingerprint) {
+        await tx.$executeRaw`DELETE FROM provider_transaction_scans
+          WHERE provider = 'photonpay' AND settlement_month = ${claim.settlementMonth}
+            AND scope_fingerprint = ${result.completedPageScanFingerprint}`;
+      }
       await this.audit.success({ action: 'sync_task.auto.succeeded', objectType: 'sync_tasks', objectId: taskId,
         settlementMonth: claim.settlementMonth, afterData: this.auditSummary(claim), changedFields: ['status', 'finishedAt'],
         requestPayload: { triggerType: claim.triggerType ?? SyncTaskTriggerType.scheduled } }, tx);
@@ -263,7 +268,7 @@ export class SyncAutoExecutionService {
     const nextAttemptAt = retry ? new Date(Date.now() + retryDelaySeconds(this.config.retryBaseSeconds, claim.attemptCount) * 1000) : null;
     const safeMessage = redact(message);
     await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount }, data: {
+      const updated = await tx.syncTask.updateMany({ where: { id: taskId, status: SyncTaskStatus.running, leaseOwner: this.instanceId, attemptCount: claim.attemptCount, leaseExpiresAt: { gt: new Date() } }, data: {
         status: retry ? SyncTaskStatus.retry_wait : SyncTaskStatus.failed,
         leaseOwner: null, leaseExpiresAt: null, nextAttemptAt, lastErrorCategory: category,
         finishedAt: retry ? null : new Date(), successCount: result?.successCount ?? 0, failedCount: result?.failedCount ?? 1,

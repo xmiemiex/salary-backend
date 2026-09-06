@@ -25,6 +25,8 @@ export type SyncAdapterContext = {
 };
 
 export type SyncAdapterResult = {
+  /** Internal completion token; cleared atomically with the owning task's success. */
+  completedPageScanFingerprint?: string;
   status: 'completed' | 'failed';
   successCount: number;
   failedCount: number;

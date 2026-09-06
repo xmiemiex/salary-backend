@@ -297,7 +297,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       }
       stats.settledAmountByCurrency = Object.fromEntries([...settledAmounts].map(([currency, amount]) => [currency, amount.toString()]));
       stats.providerUsdDebitAmountTotal = providerUsdDebitAmountTotal.toString();
-      await pageScan?.clear();
+      // Keep successful progress until the executor commits task completion.
+      if (failedCount > 0) await pageScan?.clear();
     } catch (error) {
       failedCount += 1;
       stats.providerUsdDebitAmountTotal = providerUsdDebitAmountTotal.toString();
@@ -315,7 +316,8 @@ export class PhotonPayCardSyncAdapter implements SyncAdapter {
       await this.inventory.markUntouchedTransactionSync(Provider.photonpay, transactionSyncStartedAt, 'completed:no_transactions');
     }
     const message = `PhotonPay card spend sync finished: successCount=${successCount}, failedCount=${failedCount}.`;
-    return this.result(status, successCount, failedCount, window, message, context, cardInventory, stats);
+    return { ...this.result(status, successCount, failedCount, window, message, context, cardInventory, stats),
+      ...(status === 'completed' && pageScan ? { completedPageScanFingerprint: pageScan.fingerprint } : {}) };
   }
 
   private result(
