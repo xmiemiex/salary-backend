@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { CommonStatus, Prisma } from '@prisma/client';
 import { ERROR_CODES } from '@salary/shared';
 import { AuditService } from '../audit/audit.service';
@@ -41,6 +42,13 @@ export type CakeMonthlyReviewInput = {
   affiliateAccountId: string;
   settlementMonth: string;
   baseFingerprint?: string;
+};
+
+export type CakeBatchInput = {
+  affiliateAccountId: string;
+  settlementMonth: string;
+  requestId: string;
+  items: { id: string; updatedAt: string }[];
 };
 
 @Injectable()
@@ -166,6 +174,55 @@ export class CakeIncomeAdjustmentsService {
 
   async cancelMonthlyReview(input: CakeMonthlyReviewInput, actor: Actor) {
     return this.writeMonthlyReview(input, actor, false);
+  }
+
+  async batch(input: CakeBatchInput, operation: 'confirm' | 'disable', actor: Actor) {
+    this.assertSuperAdmin(actor);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuid.test(input.affiliateAccountId ?? '') || !uuid.test(input.requestId ?? '') || !Array.isArray(input.items)
+      || input.items.length < 1 || input.items.length > 200
+      || input.items.some(item => !item || !uuid.test(item.id ?? '') || typeof item.updatedAt !== 'string' || Number.isNaN(Date.parse(item.updatedAt)))
+      || new Set(input.items.map(item => item.id)).size !== input.items.length) {
+      throw new AppError(ERROR_CODES.VALIDATION_ERROR, '请选择1至200条不重复记录，并提供有效的版本和批次标识。');
+    }
+    const settlementMonth = parseMonthStart(input.settlementMonth, 'settlementMonth');
+    const action = `cake_income_adjustment.batch_${operation}`;
+    const selectionDigest = createHash('sha256').update(JSON.stringify({ affiliateAccountId: input.affiliateAccountId, month: settlementMonth.toISOString(), operation, items: [...input.items].sort((a, b) => a.id.localeCompare(b.id)) })).digest('hex');
+    await this.monthLock.assertWritable({ settlementMonth, action, objectType: 'income_records', requestPayload: { requestId: input.requestId } }, actor);
+    return this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`monthly-finance:${settlementMonth.toISOString()}`}, 0))`;
+      if ((await tx.monthlySettlement.findUnique({ where: { settlementMonth } }))?.status === 'locked') throw new AppError(ERROR_CODES.MONTH_LOCKED, '本月已锁账，不能批量处理调整。');
+      await this.getCakeAccount(input.affiliateAccountId, tx);
+      const previous = await tx.auditLog.findFirst({ where: { actorUserId: actor.userId, action, objectId: input.affiliateAccountId, settlementMonth, result: 'success', requestPayload: { path: ['requestId'], equals: input.requestId } } });
+      if (previous) {
+        if ((previous.requestPayload as Record<string, unknown>)?.selectionDigest !== selectionDigest) throw new AppError(ERROR_CODES.CONFLICT, '批次标识已用于其他选择，请重新选择后提交。');
+        return { processed: input.items.length, operation, reused: true };
+      }
+      const rows = await tx.incomeRecord.findMany({ where: { id: { in: input.items.map(item => item.id) }, affiliateAccountId: input.affiliateAccountId, settlementMonth, source: CAKE_ADJUSTMENT_SOURCE } });
+      if (rows.length !== input.items.length) throw new AppError(ERROR_CODES.CONFLICT, '所选记录不存在或不属于当前联盟账号及月份，整批未处理。');
+      // Validate every item before writing any item, then persist all changes and audits atomically.
+      const changes: { before: typeof rows[number]; data: Prisma.IncomeRecordUpdateInput }[] = [];
+      for (const row of rows) {
+        const selected = input.items.find(item => item.id === row.id)!;
+        if (Date.parse(selected.updatedAt) !== row.updatedAt.getTime()) throw new AppError(ERROR_CODES.CONFLICT, `SUB ${row.subValue ?? '-'} 的记录已变化，请刷新后重新选择；整批未处理。`);
+        if (operation === 'disable') {
+          if (row.status !== 'draft' && row.status !== 'confirmed') throw new AppError(ERROR_CODES.CONFLICT, `SUB ${row.subValue ?? '-'} 不是可停用的草稿或已确认记录；整批未处理。`);
+          changes.push({ before: row, data: { status: 'disabled' } });
+          continue;
+        }
+        const metadata = readCakeAdjustmentMetadata(row.rawData);
+        if (row.status !== 'draft' || !metadata || metadata.stale || !row.subValue) throw new AppError(ERROR_CODES.CONFLICT, `SUB ${row.subValue ?? '-'} 不是有效草稿或需要重新编辑基准；整批未处理。`);
+        const resolved = await this.resolveInput({ affiliateAccountId: input.affiliateAccountId, settlementMonth, subValue: row.subValue, actualRevenueUsd: metadata.targetRevenueUsd, reason: metadata.reason }, tx);
+        if (!resolved.baseRevenueUsd.equals(metadata.baseRevenueUsd) || !resolved.adjustmentUsd.equals(row.incomeUsd) || resolved.employeeId !== row.employeeId || resolved.adjustmentUsd.isZero()) throw new AppError(ERROR_CODES.CONFLICT, `SUB ${row.subValue} 的基础收入、归属或差额已变化，请重新保存草稿；整批未处理。`);
+        changes.push({ before: row, data: { status: 'confirmed', importedBy: actor.userId, rawData: buildCakeAdjustmentMetadata(resolved) as unknown as Prisma.InputJsonObject } });
+      }
+      for (const change of changes) {
+        const after = await tx.incomeRecord.update({ where: { id: change.before.id }, data: change.data });
+        await this.audit.success({ actorUserId: actor.userId, actorRole: actor.roleCode, action: `cake_income_adjustment.${operation}`, objectType: 'income_records', objectId: after.id, settlementMonth, beforeData: change.before, afterData: after, changedFields: Object.keys(change.data), requestPayload: { requestId: input.requestId, batch: true }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, tx);
+      }
+      await this.audit.success({ actorUserId: actor.userId, actorRole: actor.roleCode, action, objectType: 'income_records', objectId: input.affiliateAccountId, settlementMonth, afterData: { processed: rows.length, operation }, requestPayload: { requestId: input.requestId, selectionDigest }, changedFields: ['status'], ipAddress: actor.ipAddress, userAgent: actor.userAgent }, tx);
+      return { processed: rows.length, operation, reused: false };
+    }, { timeout: 30000 });
   }
 
   private async writeMonthlyReview(input: CakeMonthlyReviewInput, actor: Actor, confirm: boolean) {
@@ -362,22 +419,22 @@ export class CakeIncomeAdjustmentsService {
     return { filename: `cake-sub-revenue-adjustments-${payload.account.accountCode}-${payload.settlementMonth}.csv`, csv };
   }
 
-  private async resolveInput(input: SaveCakeIncomeAdjustmentInput) {
+  private async resolveInput(input: SaveCakeIncomeAdjustmentInput, db: Prisma.TransactionClient | PrismaService = this.prisma) {
     const affiliateAccountId = requireNonBlank(input.affiliateAccountId, 'affiliateAccountId');
     const settlementMonth = parseMonthStart(input.settlementMonth, 'settlementMonth');
     const subValue = requireNonBlank(input.subValue, 'subValue');
     const actualRevenueUsd = parseDecimalString(input.actualRevenueUsd, 'actualRevenueUsd');
     const reason = requireNonBlank(input.reason, 'reason');
     if (reason.length > MAX_REASON_LENGTH) throw new AppError(ERROR_CODES.VALIDATION_ERROR, `reason must be at most ${MAX_REASON_LENGTH} characters.`);
-    await this.getCakeAccount(affiliateAccountId);
+    await this.getCakeAccount(affiliateAccountId, db);
     const [mappings, baseRows] = await Promise.all([
-      resolveEffectiveSubIdMappings(this.prisma as unknown as EffectiveSubIdMappingReader, {
+      resolveEffectiveSubIdMappings(db as unknown as EffectiveSubIdMappingReader, {
         affiliateAccountId,
         settlementMonth,
         subField: CAKE_SUB_FIELD,
         subValue,
       }),
-      this.prisma.incomeRecord.findMany({
+      db.incomeRecord.findMany({
         where: { affiliateAccountId, settlementMonth, source: CAKE_BASE_SOURCE, status: CommonStatus.confirmed, subField: CAKE_SUB_FIELD, subValue },
         select: { employeeId: true, incomeUsd: true },
       }),
@@ -406,8 +463,8 @@ export class CakeIncomeAdjustmentsService {
     return { affiliateAccountId, settlementMonth, subValue, employeeId, baseRevenueUsd, actualRevenueUsd, adjustmentUsd, reason };
   }
 
-  private async getCakeAccount(id: string) {
-    const account = await this.prisma.affiliateAccount.findUnique({
+  private async getCakeAccount(id: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    const account = await db.affiliateAccount.findUnique({
       where: { id },
       select: { id: true, platform: true, accountCode: true, accountName: true },
     });

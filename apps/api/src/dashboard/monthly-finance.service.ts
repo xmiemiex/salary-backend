@@ -1,3 +1,6 @@
+import { ManualIncomeRecordsService } from '../manual-income-records/manual-income-records.service';
+import { MonthLockService } from '../month-lock/month-lock.service';
+import { sanitizeAuditText } from '../audit/audit-sanitizer';
 import { monthlySourceStatus } from './monthly-source-status';
 import { readCakeMonthlyReview } from '../cake-income-adjustments/cake-monthly-review';
 import { hasSufficientMonthlyCoverage, isMonthlyLedgerRequest, monthlyCoverageRequirement, readMonthlyCoverage } from '../sync-tasks/monthly-coverage';
@@ -178,6 +181,56 @@ export class MonthlyFinanceService {
       else await tx.manualCardSpendEntry.create({ data: { ...data, settlementMonth: month, employeeId: owners[0], providerName: 'Adpos', cardIdentifier: 'monthly-dashboard', createdBy: actor.userId, reason: '月度收支原始花费调整' } });
       return { saved: true, subId, previousAmount: retained.plus(editable?.settledSpendUsd ?? 0).toString(), amount: amount.toString() };
     });
+  }
+
+  async manualIncome(input: string, rowKey: string, actor: Actor) {
+    await this.manualIncomeOwner(rowKey, actor);
+    const month = parseSettlementMonthParam(input);
+    const rows = await this.prisma.incomeRecord.findMany({ where: { settlementMonth: month, employeeId: rowKey, affiliateAccountId: null, status: { in: ['confirmed', 'draft', 'disabled'] } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+    const manual = rows.filter(row => !this.isProviderIncome(row.source));
+    return { items: manual.map(row => ({ id: row.id, source: row.source, amount: row.incomeUsd.toString(), status: row.status, updatedAt: row.updatedAt, reason: typeof (row.rawData as Record<string, unknown>)?.reason === 'string' ? sanitizeAuditText((row.rawData as Record<string, unknown>).reason as string) : null })), confirmedTotal: manual.filter(row => row.status === 'confirmed').reduce((sum, row) => sum.plus(row.incomeUsd), D(0)).toString() };
+  }
+
+  async saveManualIncome(input: string, rowKey: string, value: string, entry: { id?: string; expectedUpdatedAt?: string; requestId?: string; reason?: string }, actor: Actor) {
+    const month = parseSettlementMonthParam(input), amount = decimal(value, 999999999999);
+    await this.manualIncomeOwner(rowKey, actor);
+    if (entry.id ? !/^[0-9a-f-]{36}$/i.test(entry.id) : !/^[0-9a-f-]{36}$/i.test(entry.requestId ?? '')) throw new AppError(ERROR_CODES.VALIDATION_ERROR, '收入条目或请求标识无效。');
+    if (entry.reason != null && (typeof entry.reason !== 'string' || entry.reason.length > 1000)) throw new AppError(ERROR_CODES.VALIDATION_ERROR, '备注最多1000个字符。');
+    return this.write(month, actor, 'monthly_finance.manual_income', async tx => {
+      await this.manualIncomeOwner(rowKey, actor, tx);
+      const scopedAudit = new AuditService(tx as never);
+      const records = new ManualIncomeRecordsService(tx as never, new MonthLockService(tx as never, scopedAudit), scopedAudit);
+      if (entry.id) {
+        const before = await tx.incomeRecord.findUnique({ where: { id: entry.id } });
+        if (!before || before.employeeId !== rowKey || before.affiliateAccountId !== null || before.settlementMonth.getTime() !== month.getTime() || this.isProviderIncome(before.source) || !['draft', 'confirmed', 'disabled'].includes(before.status)) throw new AppError(ERROR_CODES.CONFLICT, '该条目不属于此员工本月可编辑的手动收入，未修改。');
+        if (before.incomeUsd.equals(amount)) return { saved: true, unchanged: true, id: before.id };
+        if (entry.expectedUpdatedAt !== before.updatedAt.toISOString()) throw new AppError(ERROR_CODES.CONFLICT, '该收入条目已变化，请刷新后重新编辑。');
+        // Reuse manual-entry validation/status/audit rules; only the chosen amount changes.
+        const after = await records.update(before.id, { incomeUsd: amount.toString() }, actor);
+        return { saved: true, id: after.id, amount: after.incomeUsd.toString(), status: after.status };
+      }
+      const externalRecordId = `monthly-dashboard-add:${entry.requestId}`;
+      const previous = await tx.incomeRecord.findUnique({ where: { source_externalRecordId: { source: 'manual', externalRecordId } } });
+      const reason = entry.reason?.trim() ?? '';
+      if (previous) {
+        const metadata = previous.rawData as Record<string, unknown>;
+        if (previous.employeeId !== rowKey || previous.settlementMonth.getTime() !== month.getTime() || previous.affiliateAccountId !== null || metadata?.initialAmount !== amount.toString() || metadata?.reason !== reason) throw new AppError(ERROR_CODES.CONFLICT, '该新增请求已用于其他收入，请重新新增。');
+        return { saved: true, id: previous.id, reused: true };
+      }
+      const after = await records.create({ employeeId: rowKey, settlementMonth: month, source: 'manual', incomeUsd: amount.toString(), status: 'confirmed', externalRecordId, rawData: { kind: 'dashboard_manual_income', initialAmount: amount.toString(), reason } }, actor);
+      return { saved: true, id: after.id, amount: after.incomeUsd.toString(), status: after.status };
+    });
+  }
+
+  private isProviderIncome(source: string) {
+    return ['cake', 'cake_adjustment', 'everflow'].includes(source.trim().toLowerCase());
+  }
+
+  private async manualIncomeOwner(rowKey: string, actor: Actor, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    if (!actor.permissions.includes('income.import')) throw new AppError(ERROR_CODES.FORBIDDEN, '没有手动收入管理权限。');
+    if (typeof rowKey !== 'string' || !/^[0-9a-f-]{36}$/i.test(rowKey)) throw new AppError(ERROR_CODES.VALIDATION_ERROR, '请选择有明确员工归属的收入行。');
+    const employee = await db.employee.findUnique({ where: { id: rowKey } });
+    if (!employee || employee.status !== 'active') throw new AppError(ERROR_CODES.CONFLICT, '该收入行没有启用的员工归属，不能编辑。');
   }
 
   async refresh(input: string, actor: Actor, source?: string) {

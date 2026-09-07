@@ -33,6 +33,18 @@ export class DashboardController {
   @RequirePermissions('sub_id_mapping.manage')
   subId(@Body() body: { settlementMonth: string; rowKey: string; subId: string }, @CurrentActor() actor: Actor) { return this.finance.saveSubId(body.settlementMonth, body.rowKey, body.subId, actor); }
 
+  @Post('monthly/manual-income')
+  @RequirePermissions('income.import')
+  saveManualIncome(@Body() body: { settlementMonth: string; rowKey: string; amount: string; id?: string; expectedUpdatedAt?: string; requestId?: string; reason?: string }, @CurrentActor() actor: Actor) {
+    return this.finance.saveManualIncome(body.settlementMonth, body.rowKey, body.amount, body, actor);
+  }
+
+  @Get('monthly/manual-income')
+  @RequirePermissions('income.import')
+  manualIncome(@Query('settlementMonth') month: string, @Query('rowKey') rowKey: string, @CurrentActor() actor: Actor) {
+    return this.finance.manualIncome(month, rowKey, actor);
+  }
+
   @Post('monthly/refresh')
   @RequirePermissions('income.import', 'manual_card_spend.manage')
   refresh(@Body() body: { settlementMonth: string; source?: string }, @CurrentActor() actor: Actor) { return this.finance.refresh(body.settlementMonth, actor, body.source); }

@@ -4,6 +4,7 @@ import { CurrentActor } from '../auth/current-actor.decorator';
 import { RequirePermissions } from '../auth/require-permissions.decorator';
 import {
   CakeIncomeAdjustmentQuery,
+  CakeBatchInput,
   CakeMonthlyReviewInput,
   CakeIncomeAdjustmentsService,
   SaveCakeIncomeAdjustmentInput,
@@ -46,6 +47,16 @@ export class CakeIncomeAdjustmentsController {
   @Patch(':id/confirm')
   confirm(@Param('id') id: string, @CurrentActor() actor: Actor) {
     return this.adjustments.confirm(id, actor);
+  }
+
+  @Post('batch/confirm')
+  batchConfirm(@Body() body: CakeBatchInput, @CurrentActor() actor: Actor) {
+    return this.adjustments.batch(body, 'confirm', actor);
+  }
+
+  @Post('batch/disable')
+  batchDisable(@Body() body: CakeBatchInput, @CurrentActor() actor: Actor) {
+    return this.adjustments.batch(body, 'disable', actor);
   }
 
   @Patch(':id/disable')

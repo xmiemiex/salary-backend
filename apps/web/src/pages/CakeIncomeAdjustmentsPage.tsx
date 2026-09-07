@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   Modal,
@@ -14,8 +15,9 @@ import {
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiClient } from '../lib/api-client';
+import { cakePageTotals, exactUsd, sumUsd, usdUnits, unitsToUsd } from './cake-adjustment-totals';
 
 type AffiliateAccount = {
   id: string;
@@ -79,8 +81,7 @@ function errorMessage(error: unknown) {
 }
 
 function money(value: string | null | undefined) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '-';
+  return exactUsd(value);
 }
 
 export function CakeIncomeAdjustmentsPage() {
@@ -98,12 +99,20 @@ export function CakeIncomeAdjustmentsPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<AdjustmentRow | null>(null);
+  const [selected, setSelected] = useState<AdjustmentRow[]>([]);
+  const [page, setPage] = useState(1), [batchOpen, setBatchOpen] = useState(false);
+  const requestSequence = useRef(0), currentScope = useRef('');
+  currentScope.current = `${affiliateAccountId}|${settlementMonth}`;
+  const displayed = payload && payload.account.id === affiliateAccountId && payload.settlementMonth === settlementMonth ? payload.items : [];
+  const currentPage = displayed.slice((page - 1) * 20, page * 20);
+  const selectable = (row: AdjustmentRow) => !!row.id && !payload?.locked && ['draft', 'confirmed'].includes(row.status ?? '');
+  const confirmable = (row: AdjustmentRow) => selectable(row) && row.status === 'draft' && row.editable && !row.stale;
+  const currentSelectable = currentPage.filter(selectable);
   const livePreview = useMemo(() => {
     if (!editing) return null;
-    const base = Number(editing.baseRevenueUsd);
-    const target = Number(watchedTargetRevenue);
-    if (!Number.isFinite(base) || !Number.isFinite(target) || target < 0) return null;
-    return { base, target, adjustment: target - base };
+    if (typeof watchedTargetRevenue !== 'string' || !/^\d+(?:\.\d{1,6})?$/.test(watchedTargetRevenue)) return null;
+    const base = editing.baseRevenueUsd, target = watchedTargetRevenue;
+    return { base, target, adjustment: unitsToUsd(usdUnits(target) - usdUnits(base)) };
   }, [editing, watchedTargetRevenue]);
 
   const loadAccounts = useCallback(async () => {
@@ -119,20 +128,61 @@ export function CakeIncomeAdjustmentsPage() {
 
   const load = useCallback(async () => {
     if (!affiliateAccountId || !settlementMonth) return;
+    const sequence = ++requestSequence.current, scope = `${affiliateAccountId}|${settlementMonth}`;
     setLoading(true);
     try {
       const query = new URLSearchParams({ affiliateAccountId, settlementMonth });
-      setPayload(await apiClient.request<AdjustmentList>(`/cake-income-adjustments?${query}`));
+      const next = await apiClient.request<AdjustmentList>(`/cake-income-adjustments?${query}`);
+      if (sequence !== requestSequence.current || scope !== currentScope.current) return;
+      setPayload(next);
+      setSelected(previous => previous.filter(row => !next.locked && next.items.some(item => item.id === row.id && item.updatedAt === row.updatedAt && ['draft', 'confirmed'].includes(item.status ?? ''))));
+      setPage(previous => Math.min(previous, Math.max(1, Math.ceil(next.items.length / 20))));
     } catch (error) {
+      if (sequence !== requestSequence.current || scope !== currentScope.current) return;
       setPayload(null);
+      setSelected([]);
       messageApi.error(errorMessage(error));
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current && scope === currentScope.current) setLoading(false);
     }
   }, [affiliateAccountId, settlementMonth, messageApi]);
 
   useEffect(() => { void loadAccounts(); }, [loadAccounts]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setSelected([]); setPage(1); setEditing(null); }, [affiliateAccountId, settlementMonth]);
+
+  const batch = (operation: 'confirm' | 'disable') => {
+    if (editing) { messageApi.warning('请先保存正在编辑的草稿。'); return; }
+    if (!selected.length || selected.some(row => operation === 'confirm' ? !confirmable(row) : !selectable(row))) {
+      messageApi.warning(operation === 'confirm' ? '确认仅支持基准有效的草稿，请检查所选状态。' : '停用仅支持草稿或已确认记录。'); return;
+    }
+    const requestId = crypto.randomUUID();
+    const body = { affiliateAccountId, settlementMonth, requestId, items: selected.map(row => ({ id: row.id, updatedAt: row.updatedAt })) };
+    setBatchOpen(true);
+    let inFlight = false;
+    const dialog = modalApi.confirm({
+      title: `${operation === 'confirm' ? '确认' : '停用'}所选 ${selected.length} 条调整？`,
+      content: `${payload?.account.accountName ?? payload?.account.accountCode} / ${settlementMonth}；SUB：${selected.map(row => row.subValue).join('、')}；所选调整额合计 $${money(sumUsd(selected.map(row => row.adjustmentUsd)))}。整批成功或整批不处理，${operation === 'confirm' ? '确认后计入结算' : '停用后不再计入结算'}。`,
+      okText: operation === 'confirm' ? '确认计入所选' : '确认停用所选', cancelText: '返回', okButtonProps: { danger: operation === 'disable' },
+      onCancel: () => setBatchOpen(false),
+      onOk: (close: () => void) => {
+        if (inFlight) return;
+        inFlight = true;
+        dialog.update({ okButtonProps: { loading: true, danger: operation === 'disable' }, cancelButtonProps: { disabled: true } });
+        void (async () => {
+        setSaving(true);
+        try {
+          await apiClient.request(`/cake-income-adjustments/batch/${operation}`, { method: 'POST', body: JSON.stringify(body) });
+          setSelected([]); setBatchOpen(false);
+          close();
+          messageApi.success(operation === 'confirm' ? '所选调整已全部确认。' : '所选调整已全部停用。');
+          await load();
+        } catch (error) { messageApi.error(errorMessage(error)); }
+        finally { setSaving(false); inFlight = false; dialog.update({ okButtonProps: { loading: false, danger: operation === 'disable' }, cancelButtonProps: { disabled: false } }); }
+        })();
+      },
+    });
+  };
 
   const openAdjustment = useCallback((row: AdjustmentRow) => {
     setEditing(row);
@@ -218,7 +268,7 @@ export function CakeIncomeAdjustmentsPage() {
     { title: '调整确认时基础快照', width: 160, align: 'right', render: (_, row) => `$${money(row.previousBaseRevenueUsd ?? row.baseRevenueUsd)}` },
     { title: 'China Standard Time 实际 Revenue', width: 210, align: 'right', render: (_, row) => row.actualRevenueUsd === null ? '-' : `$${money(row.actualRevenueUsd)}` },
     { title: '调整额', width: 120, align: 'right', render: (_, row) => `$${money(row.adjustmentUsd)}` },
-    { title: '确认后最终 Revenue', width: 165, align: 'right', render: (_, row) => `$${money(row.previewRevenueUsd)}` },
+    { title: '确认后最终 Revenue（预览）', width: 185, align: 'right', render: (_, row) => `$${money(row.previewRevenueUsd)}` },
     { title: '状态', width: 120, render: (_, row) => row.stale ? <Tag color="red">基础已变化</Tag> : row.status === 'confirmed' ? <Tag color="green">已确认</Tag> : row.status === 'draft' ? <Tag color="orange">草稿</Tag> : row.status === 'disabled' ? <Tag>已停用</Tag> : <Tag>无调整</Tag> },
     { title: '原因', dataIndex: 'reason', width: 220, ellipsis: true, render: (value) => value || '-' },
     { title: '操作人', dataIndex: 'importedBy', width: 150, ellipsis: true, render: (value) => value || '-' },
@@ -227,11 +277,11 @@ export function CakeIncomeAdjustmentsPage() {
       title: '操作', fixed: 'right', width: 230,
       render: (_, row) => <Space wrap>
         <Button size="small" disabled={!row.editable || row.status === 'confirmed'} onClick={() => openAdjustment(row)}>{row.id ? '编辑草稿' : '新增调整'}</Button>
-        <Button size="small" type="primary" disabled={!row.id || row.status !== 'draft'} onClick={() => confirmAdjustment(row)}>确认</Button>
-        <Button size="small" danger disabled={!row.id || row.status === 'disabled'} onClick={() => disableAdjustment(row)}>停用</Button>
+        <Button size="small" type="primary" disabled={loading || saving || payload?.locked || !row.id || row.status !== 'draft'} onClick={() => confirmAdjustment(row)}>确认</Button>
+        <Button size="small" danger disabled={loading || saving || payload?.locked || !row.id || row.status === 'disabled'} onClick={() => disableAdjustment(row)}>停用</Button>
       </Space>,
     },
-  ], [confirmAdjustment, disableAdjustment, openAdjustment]);
+  ], [confirmAdjustment, disableAdjustment, openAdjustment, payload?.locked, loading, saving]);
 
   return <Space direction="vertical" size={16} style={{ width: '100%' }}>
     {messageHolder}{modalHolder}
@@ -249,12 +299,14 @@ export function CakeIncomeAdjustmentsPage() {
         <Select
           style={{ width: 260 }}
           placeholder="选择CAKE联盟账号"
+          aria-label="CAKE联盟账号"
+          disabled={saving || batchOpen || !!editing}
           value={affiliateAccountId}
           options={accounts.map((row) => ({ value: row.id, label: `${row.accountName ?? row.accountCode} / ${row.accountCode}` }))}
           onChange={setAffiliateAccountId}
         />
-        <Input type="month" style={{ width: 150 }} value={settlementMonth} onChange={(event) => setSettlementMonth(event.target.value)} />
-        <Button loading={loading} onClick={() => void load()}>刷新基础记录显示</Button>
+        <Input aria-label="调整月份" type="month" style={{ width: 150 }} disabled={saving || batchOpen || !!editing} value={settlementMonth} onChange={(event) => setSettlementMonth(event.target.value)} />
+        <Button loading={loading} disabled={saving || batchOpen || !!editing} onClick={() => void load()}>刷新基础记录显示</Button>
         <Button onClick={() => void exportCsv()} disabled={!payload}>导出核对CSV</Button>
       </Space>
     </Card>
@@ -264,7 +316,22 @@ export function CakeIncomeAdjustmentsPage() {
       <Statistic title="结算Revenue" prefix="$" value={payload.summary.finalRevenueUsd} precision={2} />
       <Statistic title="草稿调整数" value={payload.summary.draftAdjustmentCount} />
     </Space> : null}
-    <Table rowKey={(row) => row.subValue} loading={loading} dataSource={payload?.items ?? []} columns={columns} scroll={{ x: 1960 }} pagination={false} />
+    <Space wrap>
+      <span>已选 {selected.length} 条</span>
+      <Button type="primary" disabled={loading || saving || batchOpen || !!editing || !selected.length || !selected.every(confirmable)} onClick={() => batch('confirm')}>确认所选</Button>
+      <Button danger disabled={loading || saving || batchOpen || !!editing || !selected.length || !selected.every(selectable)} onClick={() => batch('disable')}>停用所选</Button>
+      <Typography.Text type="secondary">确认仅支持有效草稿；停用支持草稿和已确认记录。换页或切换账号、月份后清除选择。</Typography.Text>
+    </Space>
+    <Table<AdjustmentRow> rowKey="subValue" loading={loading} dataSource={displayed} columns={columns} scroll={{ x: 2060 }}
+      pagination={{ current: page, pageSize: 20, showSizeChanger: false, onChange: next => { setPage(next); setSelected([]); } }}
+      rowSelection={{ fixed: true, columnWidth: 48, selectedRowKeys: selected.map(row => row.subValue),
+        columnTitle: <Checkbox aria-label="全选当前页" disabled={loading || saving || !currentSelectable.length} checked={!!currentSelectable.length && currentSelectable.every(row => selected.some(s => s.id === row.id))} indeterminate={selected.length > 0 && !currentSelectable.every(row => selected.some(s => s.id === row.id))} onChange={event => setSelected(event.target.checked ? currentSelectable : [])} />,
+        onChange: (_, rows) => setSelected(rows.filter(row => currentPage.some(item => item.id === row.id))),
+        getCheckboxProps: row => ({ disabled: loading || saving || !selectable(row), 'aria-label': `选择 ${row.subValue}` }),
+      }}
+      summary={rows => <Table.Summary><Table.Summary.Row><Table.Summary.Cell index={0} colSpan={3}><strong>当前页合计</strong></Table.Summary.Cell>{cakePageTotals([...rows]).map((value, index) => <Table.Summary.Cell key={index} index={index + 3} align="right"><strong>{value == null ? '—' : `$${money(value)}`}</strong></Table.Summary.Cell>)}<Table.Summary.Cell index={8} colSpan={4} /><Table.Summary.Cell index={12} /></Table.Summary.Row></Table.Summary>}
+    />
+    <span style={{ color: '#64748b' }}>当前页目标空值不计入合计；预览合计包含草稿，不代表已确认收入。</span>
     <Modal
       title={editing ? `${editing.subValue} / ${editing.employeeCode ?? '-'} 月度Revenue调整` : '月度Revenue调整'}
       open={Boolean(editing)}
@@ -280,7 +347,7 @@ export function CakeIncomeAdjustmentsPage() {
         type="warning"
         showIcon
         message={livePreview
-          ? `API基础 $${money(String(livePreview.base))}；CST目标 $${money(String(livePreview.target))}；自动调整 ${livePreview.adjustment >= 0 ? '+' : ''}$${money(String(livePreview.adjustment))}；最终 $${money(String(livePreview.target))}`
+          ? `API基础 $${money(livePreview.base)}；CST目标 $${money(livePreview.target)}；自动调整 ${livePreview.adjustment.startsWith('-') ? '' : '+'}$${money(livePreview.adjustment)}；最终 $${money(livePreview.target)}`
           : `API默认时区基础：$${money(editing.baseRevenueUsd)}；请输入同月China Standard Time实际Revenue。`}
       /> : null}
       <Form form={form} layout="vertical">
