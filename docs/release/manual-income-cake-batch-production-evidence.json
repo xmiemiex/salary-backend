@@ -1,0 +1,241 @@
+{
+  "candidate": "e72202161c24624dc5b39a05031731a4899cf234",
+  "tag": "manual-cake-e722021",
+  "recordedAt": "2026-09-07T09:00:48.670Z",
+  "formalWeb": "https://admin-salary.lovemiemie.com",
+  "formalApi": "https://api-salary.lovemiemie.com",
+  "sourceArchiveSha256": "4017614eaed45df37825cd2b80a7b89f8a068cf075d6d4922564b47fe890f8e2",
+  "approvedHelperManifestSha256": "de19106b40148d54180c9a9164786d7189b3aa31bf656a2b3784526109e310b7",
+  "productionImages": {
+    "api": "sha256:a30077ebf7eb6d3c8b60a2b006205d9e228ec4da4a1e2ea8ea871511aeb20b3b",
+    "web": "sha256:2657a4e1c3ebced061baccc7c772aa6f9144d8aadd549f7490299283c26c7785"
+  },
+  "builtOnProductionFromVerifiedSourceArchive": true,
+  "previousTag": "cake-review-ea3b9f31e398",
+  "migrations": {
+    "before": 28,
+    "after": 28,
+    "executed": false
+  },
+  "backup": {
+    "file": "postgres-full-20260907T084453Z.sql.gz.enc",
+    "sizeBytes": 1326850,
+    "sha256": "eafb869dd144ee1d2fc0f03de4beecbd635509205a99ac1d8f037c12c6f838d4",
+    "checksum": "match",
+    "authenticatedDecryptAndGzip": "pass"
+  },
+  "preservedHashes": {
+    "cakeReviews": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "allCardSpend": "caf47c169e8788bc30f62e038d1c2b90786183e49e5bc92875fe90ad510d9222",
+    "allSyncTasks": "91074eeaaaa94275232ae3e7df974abd287be7fb430750d3fc973c86ac961102",
+    "allIncome": "0048763c0566e0921b629877e1f9199898d1b892e6e37b51c6d86f5376f97077",
+    "manualIncome": "a0178b294e4945b61f15cd5ccb210c031642015699570abc7b87b1dee10688db",
+    "manualCost": "4be989c0ba6a173f4274ecd1620365bd5060200eab30ca8f78e3a66d98234fc6",
+    "providerFees": "7f2eb813f445290e6f3ff72c77013ccb046e5c30371af45191b1ff5f85cb228a",
+    "adposFees": "65d0408d16ba16f25ddaa3d3182ad57eeffa816b551565a77c4ed3ee039fbe07",
+    "mappings": "e7c7119179213be21bc4ce6805e041a31fdb7ad5b515d76ddbf0c0e4dca13cba",
+    "employeeSubIds": "1a4364174212e5aa3251d11ca007b161c7c6966a28e9acac598a0c55e48d4cdb",
+    "locks": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "providerEmailAliases": "3bcc11bf6c137df637e0e0ee0ce2596cfdf18fb4dfdb452566aa8e9c6fa39beb",
+    "providerCardExclusions": "6b1e0a43ae8a865f7256533fec0e60c1c252a9e92defe4af93dd3b8f45e25504"
+  },
+  "photonpay": {
+    "status": "completed",
+    "attemptCount": 1,
+    "successCount": 5807,
+    "failedCount": 0,
+    "errorCategory": null,
+    "nextAttemptAt": null,
+    "monthlyCoverage": {
+      "from": "2026-06-30T16:00:00.000Z",
+      "month": "2026-07",
+      "scope": "all_accounts_cards",
+      "posted": true,
+      "through": "2026-07-31T16:00:00.000Z",
+      "version": 1
+    },
+    "resumedFromPage": null,
+    "resumedFromWindow": null,
+    "providerCode": null
+  },
+  "reviewCount": 0,
+  "readOnlyApi": {
+    "at": "2026-09-07T08:45:14.132Z",
+    "months": [
+      {
+        "month": "2026-07",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "adjusted",
+            "confirmedAdjustmentCount": 3,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "adjusted",
+            "confirmedAdjustmentCount": 4,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "completed",
+        "photonpayCoverageComplete": true
+      },
+      {
+        "month": "2026-08",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "completed",
+        "photonpayCoverageComplete": true
+      },
+      {
+        "month": "2026-09",
+        "reviews": [
+          {
+            "accountName": "Blitzads",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          },
+          {
+            "accountName": "BA2",
+            "status": "unreviewed",
+            "confirmedAdjustmentCount": 0,
+            "staleAdjustmentCount": 0,
+            "manualConfirmationAt": null
+          }
+        ],
+        "photonpayStatus": "missing",
+        "photonpayCoverageComplete": false
+      }
+    ],
+    "financeHashesUnchanged": true,
+    "authenticatedRead": true,
+    "anonymousStatus": 401,
+    "businessWrites": false,
+    "refreshedProviders": false
+  },
+  "browser": {
+    "candidate": "e72202161c24624dc5b39a05031731a4899cf234",
+    "at": "2026-09-07T09:00:24.444Z",
+    "formalOrigin": "https://admin-salary.lovemiemie.com",
+    "realBrowser": "Edge",
+    "months": [
+      {
+        "month": "2026-07",
+        "cakeLoadedRows": 4,
+        "fiveMoneyColumnTotalsMatchApi": true,
+        "horizontalPositions": [
+          "left",
+          "middle",
+          "right"
+        ],
+        "manualEntryVisible": true,
+        "locked": false,
+        "cakeScopeNavigation": true,
+        "uncheckedBatchDisabled": true
+      },
+      {
+        "month": "2026-08",
+        "cakeLoadedRows": 4,
+        "fiveMoneyColumnTotalsMatchApi": true,
+        "horizontalPositions": [
+          "left",
+          "middle",
+          "right"
+        ],
+        "manualEntryVisible": true,
+        "locked": false,
+        "cakeScopeNavigation": true,
+        "uncheckedBatchDisabled": true
+      },
+      {
+        "month": "2026-09",
+        "cakeLoadedRows": 4,
+        "fiveMoneyColumnTotalsMatchApi": true,
+        "horizontalPositions": [
+          "left",
+          "middle",
+          "right"
+        ],
+        "manualEntryVisible": true,
+        "locked": false,
+        "cakeScopeNavigation": true,
+        "uncheckedBatchDisabled": true
+      }
+    ],
+    "businessWrites": false,
+    "providerRefresh": false,
+    "pageErrors": 0
+  },
+  "session": {
+    "logoutStatus": 201,
+    "afterLogoutStatus": 401
+  },
+  "timeline": [
+    "2026-09-07T08:43:02Z STARTED",
+    "2026-09-07T08:43:18Z BUILDING_APPROVED_SOURCE",
+    "2026-09-07T08:44:53Z CREATING_FRESH_BACKUP_WHILE_OLD_API_RUNNING",
+    "2026-09-07T08:44:57Z STOPPING_WRITERS_FOR_APPLICATION_SWITCH",
+    "2026-09-07T08:44:59Z VERIFYING_UNCHANGED_SCHEMA_NO_MIGRATION",
+    "2026-09-07T08:45:14Z DEPLOYED_FORMAL_LOGIN_AND_HEALTH_PASSED",
+    "2026-09-07T08:45:17Z MANUAL_CAKE_DEPLOYMENT_COMPLETE_READ_ONLY_ACCEPTANCE"
+  ],
+  "evidenceDirectory": "tmp/manual-income-cake-batch-release/production-evidence",
+  "artifactHashes": {
+    "acceptance.json": "6493176bb551ef8caed8ec7db48c16891dbfdad4f8296882c96d05e3dbf71bc1",
+    "after-acceptance.json": "6485b4e3af16436ae4a9bde193eb3c2517b33346c5d2b0e8fe0792bd9ca03483",
+    "after-start.json": "ab78114bfbeafc73804dd4a8357f112e2b71c97966c4375f5225d13b3dc4a310",
+    "archive-check.txt": "a747af7e13323b42c34e9e6dc8171cb569ac95b36de9b93c006a15118e3623b0",
+    "before.json": "7ac1fee4c9178c35af176e3abec803c3c0558af391f8caf873d28d78bc56d640",
+    "browser-evidence.json": "24b2e87a675bf21a3f974244bb45182c72074d05b22420fa8b5d76e8201e5e1d",
+    "cake-2026-07-left.png": "b2056d2a3b1f345c64b9557fa919da38efc2d16cc20d99b1f91cd6a485c1a72f",
+    "cake-2026-07-middle.png": "71058d8420abe60316d38a5fb3a479d4cbef2747d6982916aa4f853cdaaf736c",
+    "cake-2026-07-right.png": "91e5d9cd795340b8ed4442dcea375bdd9bafc53b38c0ed48f32d4c5401469c45",
+    "cake-2026-07.png": "2940e2318bdaf957b688dae3dda755236c59f225c775cf370826800dda5de539",
+    "cake-2026-08-left.png": "71323062e209100d2c125bf15260ca4eaaf8056f4c0a20c7103e4da296410a90",
+    "cake-2026-08-middle.png": "5308d74b0951c3d158a2840d679e124623abe25d93bed9c58aeb0069eda5f3f7",
+    "cake-2026-08-right.png": "2901a3a1b3411a57e9bd2e4b4f9df199b681c9a72c6f0ddd9b57de05ab21dd54",
+    "cake-2026-08.png": "05fb800fdf00620f06715da7f921905de5f890430e57d82cf9bcd725bae2e247",
+    "cake-2026-09-left.png": "963da6238701506a75b2ca8805e9cd04be785ad09fdf8b0301a55ae92d7dd148",
+    "cake-2026-09-middle.png": "6af6d2a7f685eb6b129792747857f6a6e4961db0ea67c31b8b31e2d1cb042952",
+    "cake-2026-09-right.png": "38fe4e7dc2fbf0922607ad13ed7ad094eaa2681c39c482b0a05c9cac7c56b78d",
+    "cake-2026-09.png": "9ba3da3ed6357517933c23eb32978efaf969446ff2aa357b34fd857371223e70",
+    "candidate-schema.json": "868e73cf3265912dd39cf270a4d464e75b38bcd61985ba6406a3964c900caeef",
+    "dashboard-2026-07.png": "7f237cd1f5653e46c4929e0dd55b4f4a9a600f9206479a285addc82617238922",
+    "dashboard-2026-08.png": "f8c34d985fdb8760de3747a152ae59b5a7a4126abde643ebb8bace0b2fd5da7c",
+    "dashboard-2026-09.png": "4952680fff65cd0645f6a81344b01694da77079025c5d4037d7742cdaea251ec",
+    "financial-baseline.json": "9931853e406d51f5978675c62914f5d0a4ce7fcb53eceb85f19b4a1278e15bb9",
+    "formal-ready.json": "31bf75f4c0a97cc1f7b60df824fa390b3be9ba014f29b63c87c698ba63d9a9fd",
+    "formal-web-health.txt": "dc51b8c96c2d745df3bd5590d990230a482fd247123599548e0632fdbf97fc22",
+    "fresh-backup-health.txt": "d50f0a96090101a76cca6f2b17ee5005b77f114232f5bdbf2e2801ddaf18ecc6",
+    "fresh-backup-sha256.txt": "f63fd9c3946518b582781ad2b6b511fae029fdd49129ebfeeeaf6802c5417cc7",
+    "immediate-before.json": "5fa4659808147a77ef8316bf2316f7f6965b62111db2e9739962c3787aac2418",
+    "manual-income-2026-07.png": "dbd39423f241292badc7f808878a3a3d774d134ce6f7f2df460075bb10308a72",
+    "manual-income-2026-08.png": "d9778650866cb1313c02e54b953813f0a06ccc2b52556fb6c39575f3aca2fc6e",
+    "manual-income-2026-09.png": "da06804459e4ced8c81098ad0a02c24fa385aa8eb0af10f46df16279327a0fa5",
+    "new-images.txt": "e7c50846b727800b75ff57df93767b1a71cec5fb279998cabb2aba949b901b54",
+    "pre-stop.json": "106405092b842c67970421a50acf3ad1fd93cd58648d726a491d0a27be7753af",
+    "schema-check.txt": "d5da36edf335021c2be19dd24732598470e0c0a905896ce1ab1cbf692cd40093",
+    "session-cleanup.json": "e689269a7593e2f73c430a10480f8c5213e94c4a7652acedb1596b976f13ff1f",
+    "status.txt": "6ec6cbbf87fea2f977bb16d606f60e29a9fada0ba85a15b29e4f3c0d3da1c38a",
+    "stopped.json": "910363f34ee5db6fc69a248b6cd4c7f70d05fd80f9696ea06ea9a210684db0d5"
+  }
+}
