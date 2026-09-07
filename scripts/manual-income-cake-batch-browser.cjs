@@ -46,9 +46,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (const provider of ['airwallex', 'photonpay']) await db.monthlyCardProviderFeeRate.create({ data: { settlementMonth: month, provider, feeRate: '0.03', createdBy: user.id } });
     await db.monthlyAdposFeeRate.create({ data: { settlementMonth: month, feeRate: '0.035', createdBy: user.id } });
     const apiLog = fs.openSync(path.join(output, 'api.log'), 'w');
-    api = spawn(process.execPath, ['apps/api/dist/apps/api/src/main.js'], { cwd: root, windowsHide: true, env: { ...process.env, DATABASE_URL: url.toString(), API_PORT: '3050', SYNC_PLANNER_ENABLED: 'false', SYNC_AUTO_EXECUTION_ENABLED: 'false', CORS_ALLOWED_ORIGIN: 'http://localhost:5190', WEB_ORIGIN: 'http://localhost:5190' }, stdio: ['ignore', apiLog, apiLog] });
+    api = spawn(process.execPath, ['apps/api/dist/apps/api/src/main.js'], { cwd: root, windowsHide: true, detached: process.env.KEEP_LOCAL_REVIEW === '1', env: { ...process.env, DATABASE_URL: url.toString(), API_PORT: '3050', SYNC_PLANNER_ENABLED: 'false', SYNC_AUTO_EXECUTION_ENABLED: 'false', CORS_ALLOWED_ORIGIN: 'http://localhost:5190', WEB_ORIGIN: 'http://localhost:5190' }, stdio: ['ignore', apiLog, apiLog] });
     const webLog = fs.openSync(path.join(output, 'web.log'), 'w');
-    web = spawn(process.execPath, ['apps/web/node_modules/vite/bin/vite.js', 'preview', 'apps/web', '--port', '5190', '--host', '127.0.0.1', '--strictPort'], { cwd: root, windowsHide: true, stdio: ['ignore', webLog, webLog] });
+    web = spawn(process.execPath, ['apps/web/node_modules/vite/bin/vite.js', 'preview', 'apps/web', '--port', '5190', '--host', '127.0.0.1', '--strictPort'], { cwd: root, windowsHide: true, detached: process.env.KEEP_LOCAL_REVIEW === '1', stdio: ['ignore', webLog, webLog] });
     for (let i = 0; i < 80; i++) { try { if ((await fetch('http://localhost:3050/health/live')).ok && (await fetch('http://localhost:5190')).ok) break; } catch {} await pause(250); }
     const viewer = await db.adminUser.create({ data: { username: 'browser-viewer', displayName: '只读验收', passwordHash: reviewUser.passwordHash } });
     const viewerRole = await db.role.create({ data: { code: 'audit_viewer', name: 'Read only' } });
