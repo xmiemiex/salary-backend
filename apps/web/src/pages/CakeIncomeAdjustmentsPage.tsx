@@ -329,7 +329,7 @@ export function CakeIncomeAdjustmentsPage() {
         onChange: (_, rows) => setSelected(rows.filter(row => currentPage.some(item => item.id === row.id))),
         getCheckboxProps: row => ({ disabled: loading || saving || !selectable(row), 'aria-label': `选择 ${row.subValue}` }),
       }}
-      summary={rows => <Table.Summary><Table.Summary.Row><Table.Summary.Cell index={0} colSpan={3}><strong>当前页合计</strong></Table.Summary.Cell>{cakePageTotals([...rows]).map((value, index) => <Table.Summary.Cell key={index} index={index + 3} align="right"><strong>{value == null ? '—' : `$${money(value)}`}</strong></Table.Summary.Cell>)}<Table.Summary.Cell index={8} colSpan={4} /><Table.Summary.Cell index={12} /></Table.Summary.Row></Table.Summary>}
+      summary={rows => <Table.Summary><Table.Summary.Row><Table.Summary.Cell index={0} colSpan={2}><strong>当前页合计</strong></Table.Summary.Cell><Table.Summary.Cell index={2} />{cakePageTotals([...rows]).map((value, index) => <Table.Summary.Cell key={index} index={index + 3} align="right"><strong>{value == null ? '—' : `$${money(value)}`}</strong></Table.Summary.Cell>)}<Table.Summary.Cell index={8} colSpan={4} /><Table.Summary.Cell index={12} /></Table.Summary.Row></Table.Summary>}
     />
     <span style={{ color: '#64748b' }}>当前页目标空值不计入合计；预览合计包含草稿，不代表已确认收入。</span>
     <Modal

@@ -125,7 +125,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
       for (let i = 0; i < values.length; i++) {
         const value = values[i].reduce((sum, v) => sum.plus(v), new Prisma.Decimal(0)).toFixed(6);
         const [whole, fraction] = value.split('.'), expected = '$' + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + fraction.replace(/0+$/, '').padEnd(2, '0');
-        await expect(cells.nth(i + 1)).toHaveText(values[i].length ? expected : '—');
+        await expect(cells.nth(i + 2)).toHaveText(values[i].length ? expected : '—');
       }
     };
     await assertFooter(list.items.slice(0, 20));
