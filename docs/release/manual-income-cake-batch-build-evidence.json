@@ -1,23 +1,23 @@
 {
-  "commit": "02e03353cbb521b06cb6ccda66f0e286c2eba143",
-  "tag": "manual-cake-02e0335",
-  "preparedAt": "2026-09-07T07:30:05.123Z",
-  "sourceArchive": "source-02e0335.tar.gz",
-  "sourceArchiveSha256": "5f4bfd67630700c5f465e120d0d7e20d9150e108c07d0d11b2e776d662c87c19",
-  "sourceFilesVerified": 516,
-  "sourceTreeSha256": "01f296009f4004dd1f64f4abed422df9fd1eeb8746bd57b0c74e44a180573fca",
+  "commit": "e72202161c24624dc5b39a05031731a4899cf234",
+  "tag": "manual-cake-e722021",
+  "preparedAt": "2026-09-07T08:27:31.227Z",
+  "sourceArchive": "source-e722021.tar.gz",
+  "sourceArchiveSha256": "4017614eaed45df37825cd2b80a7b89f8a068cf075d6d4922564b47fe890f8e2",
+  "sourceFilesVerified": 517,
+  "sourceTreeSha256": "fed847372e7f30879c24d3f400a46b0bad560c2563d32a3e0dfa3c6c7c7c3cdb",
   "nodeVersion": "v22.23.2",
   "apiImage": {
-    "tag": "salary-settlement-api:manual-cake-02e0335",
-    "id": "sha256:0bd38db65f1cb022cd3305977201011821bbd78f8021b7162639e787f5164600",
+    "tag": "salary-settlement-api:manual-cake-e722021",
+    "id": "sha256:f561149584143a210aff3d8499f7753e5663441bb60ceb3919c4db794f95dde6",
     "buildPassed": true
   },
   "webImage": {
-    "tag": "salary-settlement-web:manual-cake-02e0335",
-    "id": "sha256:c516b979abaf39a306155457426ca8169dfd50eb20b8ee78c26c16cd9cea1b59",
+    "tag": "salary-settlement-web:manual-cake-e722021",
+    "id": "sha256:603c6d027613c64c65cecd6b9990a65a429680ad84b3d6b0a857790b8bcc9ade",
     "buildPassed": true,
     "apiOrigin": "https://api-salary.lovemiemie.com",
-    "compiledOriginFoundIn": "assets/index-BF6kMVgA.js"
+    "compiledOriginFoundIn": "assets/index-ToFRR90d.js"
   },
   "migration": {
     "beforeCount": 28,
@@ -30,16 +30,20 @@
     "api-tests.log": "cb825eb6243e641c4705d9d4c4533f5dcc385e1dec7c7cd3b158c71731049b29",
     "database-tests.log": "29967f309186c13d7c51fe5ad139434bcd866857e0838abf8c300363579db542",
     "web-tests.log": "9ad78ec29bfe65feb6dfc87d71cb3707e1b57069df2e2b2450a60a146f2f75ba",
-    "typecheck.log": "1247db6911f81292be633d5e9ae41908701d0399253a0ce48bc0e70d4c440d00",
-    "browser-evidence.json": "638a26e227ff87ac1f5ee1d3018d120016034fbd984d29cf451c4c6cd7a1baee",
-    "manual-income-1024.png": "1fa5743cf30aa044f686bfca9f99f9e6811eb7cae83d58f6430ab9bea4d92277",
-    "cake-batch-1024.png": "1a91c8cdc33751382b0a097eb628dcafcccdd064d70aba5f218256946777e699",
-    "cake-batch-1440.png": "96195caf2287923ee25c22a4be443d9876706415dfa03203bcb93f7c6b68e7a5",
-    "cake-money-columns-1440.png": "cf12f8d40d58bfd872bc13242778c38151c92abc8c634d042a5ed3f380f38050"
+    "typecheck.log": "995d8f53293539cf520426a2569e3afc675d2fa631c975b62cfe998bc41c7571",
+    "browser-evidence.json": "c841f1061ed0db1726f68ef9f5789a2dd9007946950d7336b36dccda88b39d90",
+    "manual-income-1024.png": "6c07952b98bb5cdfa8338e020b2b4bc426cec3eff4f3dfab9f6551838c038fd7",
+    "cake-batch-1024.png": "95076959113a2fb1bdadca7cf422b611abe42e20e0d988e792f1aa021e647ef4",
+    "cake-batch-1440.png": "e3802b553caad00599111b1977f83adfdba32692f106bef70e2e81d2da3c516a",
+    "cake-money-columns-1440.png": "e43bbd4b7392b5789085bdaaa3bfd1b71397162e09f229bdf4fa9f157f88f122",
+    "cake-scroll-left.png": "f00fe102bfc8325a79eb1bca3c45edf5f5ebac908ce422484a23040dc038d2c2",
+    "cake-scroll-middle.png": "0e69f032cf879bf018497a06b7c2851ae3b126e5b2722f27d66adeb9d9abe24b",
+    "cake-scroll-right.png": "1c872e7edf2f37dffc65c7f111c6b7996a3a85d189aa304bf7739790d130d676",
+    "scroll-evidence.json": "9c867c97258bed83675c670c75bef06ccf7591a43a355ffacf506c03bc4ab66f"
   },
   "productionBuildLogs": [
-    "tmp/manual-income-cake-batch-release/api-build-02e0335.log",
-    "tmp/manual-income-cake-batch-release/web-build-02e0335.log"
+    "tmp/manual-income-cake-batch-release/api-build-e722021.log",
+    "tmp/manual-income-cake-batch-release/web-build-e722021.log"
   ],
   "deploymentPerformed": false
 }
